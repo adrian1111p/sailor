@@ -5,3 +5,8 @@ obj/
 *.user
 *.suo
 *.log
+
+# Sailor logs
+src/Sailor.App/Logs/**/*.log
+src/Sailor.App/Logs/**/*.txt
+!src/Sailor.App/Logs/**/.gitkeep

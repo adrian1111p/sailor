@@ -1,0 +1,12 @@
+﻿Bucket: large_100_plus
+Description: Latest close at or above $100
+Classification: latest-close-price
+Thresholds: small < 20, medium < 100, large >= 100
+
+Symbols:
+PLTR	145.86
+NVDA	179.36
+AMD	192.59
+AAPL	261.82
+TSLA	395.19
+META	646.76

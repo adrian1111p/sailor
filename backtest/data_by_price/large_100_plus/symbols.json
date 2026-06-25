@@ -1,0 +1,42 @@
+﻿{
+    "Bucket":  "large_100_plus",
+    "Description":  "Latest close at or above $100",
+    "SourceRoot":  "backtest/data",
+    "Classification":  "latest-close-price",
+    "Thresholds":  {
+                       "SmallMaxPrice":  20,
+                       "MediumMaxPrice":  100
+                   },
+    "Symbols":  [
+                    {
+                        "Symbol":  "PLTR",
+                        "LastClose":  145.86,
+                        "Bucket":  "large_100_plus"
+                    },
+                    {
+                        "Symbol":  "NVDA",
+                        "LastClose":  179.36,
+                        "Bucket":  "large_100_plus"
+                    },
+                    {
+                        "Symbol":  "AMD",
+                        "LastClose":  192.59,
+                        "Bucket":  "large_100_plus"
+                    },
+                    {
+                        "Symbol":  "AAPL",
+                        "LastClose":  261.82,
+                        "Bucket":  "large_100_plus"
+                    },
+                    {
+                        "Symbol":  "TSLA",
+                        "LastClose":  395.19,
+                        "Bucket":  "large_100_plus"
+                    },
+                    {
+                        "Symbol":  "META",
+                        "LastClose":  646.76,
+                        "Bucket":  "large_100_plus"
+                    }
+                ]
+}

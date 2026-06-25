@@ -7,4 +7,17 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- SAILOR-002:
+         Keep copied Harvester backtest code as reference,
+         but do not compile it yet because it depends on:
+         - Harvester.App.Strategy
+         - Harvester.Contracts.Risk
+         - IBKR / live runtime
+         - self-learning
+         - live conduct snapshots
+    -->
+    <Compile Remove="Backtest\HarvesterLegacy\**\*.cs" />
+  </ItemGroup>
+
 </Project>

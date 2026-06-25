@@ -1,0 +1,47 @@
+﻿{
+    "Bucket":  "medium_20_to_100",
+    "Description":  "Latest close from $20 up to but not including $100",
+    "SourceRoot":  "backtest/data",
+    "Classification":  "latest-close-price",
+    "Thresholds":  {
+                       "SmallMaxPrice":  20,
+                       "MediumMaxPrice":  100
+                   },
+    "Symbols":  [
+                    {
+                        "Symbol":  "HIMS",
+                        "LastClose":  24.77,
+                        "Bucket":  "medium_20_to_100"
+                    },
+                    {
+                        "Symbol":  "DKNG",
+                        "LastClose":  25.87,
+                        "Bucket":  "medium_20_to_100"
+                    },
+                    {
+                        "Symbol":  "UPST",
+                        "LastClose":  26.36,
+                        "Bucket":  "medium_20_to_100"
+                    },
+                    {
+                        "Symbol":  "IONQ",
+                        "LastClose":  32.98,
+                        "Bucket":  "medium_20_to_100"
+                    },
+                    {
+                        "Symbol":  "BTO",
+                        "LastClose":  33.04,
+                        "Bucket":  "medium_20_to_100"
+                    },
+                    {
+                        "Symbol":  "AFRM",
+                        "LastClose":  46.88,
+                        "Bucket":  "medium_20_to_100"
+                    },
+                    {
+                        "Symbol":  "HOOD",
+                        "LastClose":  79.45,
+                        "Bucket":  "medium_20_to_100"
+                    }
+                ]
+}

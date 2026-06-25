@@ -1,0 +1,24 @@
+﻿{
+    "SourceRoot":  "backtest/data",
+    "OutputRoot":  "backtest/data_by_price",
+    "Classification":  "latest-close-price",
+    "Thresholds":  {
+                       "SmallMaxPrice":  20,
+                       "MediumMaxPrice":  100
+                   },
+    "TotalSymbols":  59,
+    "BucketCounts":  [
+                         {
+                             "Bucket":  "small_under_20",
+                             "Count":  46
+                         },
+                         {
+                             "Bucket":  "medium_20_to_100",
+                             "Count":  7
+                         },
+                         {
+                             "Bucket":  "large_100_plus",
+                             "Count":  6
+                         }
+                     ]
+}

@@ -1,0 +1,242 @@
+﻿{
+    "Bucket":  "small_under_20",
+    "Description":  "Latest close below $20",
+    "SourceRoot":  "backtest/data",
+    "Classification":  "latest-close-price",
+    "Thresholds":  {
+                       "SmallMaxPrice":  20,
+                       "MediumMaxPrice":  100
+                   },
+    "Symbols":  [
+                    {
+                        "Symbol":  "IMMP",
+                        "LastClose":  0.48,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "DVLT",
+                        "LastClose":  0.67,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "BARK",
+                        "LastClose":  0.8084,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "ORBS",
+                        "LastClose":  0.9161,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "ALIT",
+                        "LastClose":  0.92,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "IMUX",
+                        "LastClose":  1.3726,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "SOS",
+                        "LastClose":  1.46,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "SRFM",
+                        "LastClose":  1.46,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "SNDL",
+                        "LastClose":  1.51,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "TPET",
+                        "LastClose":  1.52,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "EONR",
+                        "LastClose":  1.53,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "BTBT",
+                        "LastClose":  1.615,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "CDXS",
+                        "LastClose":  1.675,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "DOUG",
+                        "LastClose":  1.7,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "KLC",
+                        "LastClose":  1.95,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "CLOV",
+                        "LastClose":  1.98,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "EVGO",
+                        "LastClose":  2.08,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "BIAF",
+                        "LastClose":  2.12,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "PLUG",
+                        "LastClose":  2.15,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "MVST",
+                        "LastClose":  2.23,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "TMDE",
+                        "LastClose":  2.41,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "TLYS",
+                        "LastClose":  2.475,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "PLTK",
+                        "LastClose":  2.85,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "SKLZ",
+                        "LastClose":  3.25,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "IXHL",
+                        "LastClose":  3.26,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "WKHS",
+                        "LastClose":  3.31,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "GRAB",
+                        "LastClose":  3.71,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "NIO",
+                        "LastClose":  4.71,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "OPEN",
+                        "LastClose":  4.95,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "SNAP",
+                        "LastClose":  5.17,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "CHPT",
+                        "LastClose":  5.34,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "SERV",
+                        "LastClose":  9.12,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "BKKT",
+                        "LastClose":  9.45,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "BYRN",
+                        "LastClose":  9.64,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "JOBY",
+                        "LastClose":  9.7,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "NTSK",
+                        "LastClose":  9.71,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "MARA",
+                        "LastClose":  9.73,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "CLSK",
+                        "LastClose":  9.76,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "LCID",
+                        "LastClose":  9.9,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "PATH",
+                        "LastClose":  11.38,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "F",
+                        "LastClose":  13.33,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "CIFR",
+                        "LastClose":  14.08,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "RIVN",
+                        "LastClose":  15.1,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "ZETA",
+                        "LastClose":  17.84,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "SOFI",
+                        "LastClose":  18.09,
+                        "Bucket":  "small_under_20"
+                    },
+                    {
+                        "Symbol":  "U",
+                        "LastClose":  19.43,
+                        "Bucket":  "small_under_20"
+                    }
+                ]
+}

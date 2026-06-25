@@ -1,0 +1,13 @@
+﻿Bucket: medium_20_to_100
+Description: Latest close from $20 up to but not including $100
+Classification: latest-close-price
+Thresholds: small < 20, medium < 100, large >= 100
+
+Symbols:
+HIMS	24.77
+DKNG	25.87
+UPST	26.36
+IONQ	32.98
+BTO	33.04
+AFRM	46.88
+HOOD	79.45
