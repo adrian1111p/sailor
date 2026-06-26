@@ -4,6 +4,7 @@ using Sailor.App.Backtest.Indicators;
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Strategies;
+using Sailor.App.Backtest.Strategies.HarvesterConduct;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
 
@@ -372,7 +373,9 @@ public static class SimpleBacktestRunner
 
     private static IBacktestStrategy CreateStrategy(SailorStrategyProfile profile)
     {
-        if (profile.UseConductExits || profile.Name.Contains("conduct", StringComparison.OrdinalIgnoreCase))
+        if (profile.UseConductExits ||
+            profile.Name.Contains("conduct", StringComparison.OrdinalIgnoreCase) ||
+            SailorConductStrategyRegistry.IsSupported(profile.Name))
         {
             return new SailorConductBacktestStrategy(profile);
         }
@@ -395,6 +398,11 @@ public static class SimpleBacktestRunner
         if (settings.ConductProfiles.TryGetValue(profile.Name, out ConductExitSettings? profileByName))
         {
             return profileByName;
+        }
+
+        if (SailorConductStrategyRegistry.TryCreateDefaultExitSettings(profile.Name, out ConductExitSettings builtInConductSettings))
+        {
+            return builtInConductSettings;
         }
 
         return settings.Conduct;

@@ -227,3 +227,53 @@ dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m harvester-condu
 ```bash
 dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m harvester-conduct-v9 20 smallcaps
 ```
+
+## SAILOR-010 Harvester strategy table conduct layer
+
+SAILOR-010 adds Sailor-native conduct entry profiles inspired by the Harvester strategy table. The old Harvester strategy/scanner code remains excluded from compilation. Sailor still uses its own scanner and data pipeline.
+
+Implemented conduct profiles from the table, with V11 intentionally excluded:
+
+```text
+v21-15minutes
+v23-5minutes
+v24-5minutes
+v22-15minutes
+v16-sqzbreakout
+v13
+v10-hybrid
+v17-hybridflow
+v2-conduct
+v18-silver
+v1-first
+conduct-v3
+v19-purplecloud
+v15-shortcap
+v14-smallcap
+v20-gen001-choppyshield
+v12
+```
+
+Each profile is implemented in its own folder under:
+
+```text
+src/Sailor.App/Backtest/Strategies/HarvesterConduct
+```
+
+Examples:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m v21-15minutes
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m v24-5minutes
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m v21-15minutes 20 smallcaps
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m v16-sqzbreakout 20 smallcaps
+```

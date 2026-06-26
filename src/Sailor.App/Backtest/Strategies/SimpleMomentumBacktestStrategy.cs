@@ -21,7 +21,7 @@ public sealed class SimpleMomentumBacktestStrategy : IBacktestStrategy
         decimal sellThreshold = previousBar.Close * 0.998m;
 
         bool hasTrendData = indicators.Ema9.HasValue && indicators.Sma20.HasValue;
-        bool fastTrendOk = !hasTrendData || indicators.Ema9.Value >= indicators.Sma20.Value;
+        bool fastTrendOk = !hasTrendData || indicators.Ema9.GetValueOrDefault() >= indicators.Sma20.GetValueOrDefault();
         bool vwapOk = !indicators.Vwap.HasValue || currentBar.Close >= indicators.Vwap.Value;
         bool volumeOk = !indicators.VolumeAverage20.HasValue || currentBar.Volume >= indicators.VolumeAverage20.Value;
 

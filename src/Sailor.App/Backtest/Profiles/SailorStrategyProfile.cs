@@ -1,3 +1,4 @@
+using Sailor.App.Backtest.Strategies.HarvesterConduct;
 using Sailor.App.Configuration;
 
 namespace Sailor.App.Backtest.Profiles;
@@ -110,6 +111,7 @@ public sealed record SailorStrategyProfile(
             ExitMomentumPercent = 0.15m,
             MinimumVolume = 50_000,
             MinimumVolumeRatio = 0.75m,
+            MaximumPrice = 1_000.00m,
             RequirePriceAboveVwap = true,
             RequireEma9AboveSma20 = true,
             RequirePriceAboveSma200WhenAvailable = false,
@@ -130,6 +132,7 @@ public sealed record SailorStrategyProfile(
             ExitMomentumPercent = 0.18m,
             MinimumVolume = 100_000,
             MinimumVolumeRatio = 1.00m,
+            MaximumPrice = 1_000.00m,
             RequirePriceAboveVwap = true,
             RequireEma9AboveSma20 = true,
             RequirePriceAboveSma200WhenAvailable = false,
@@ -161,8 +164,8 @@ public sealed record SailorStrategyProfile(
             "sailor" => CreateDefault(),
             "sailor-trend" => CreateDefault(),
             "sailor-trend-volume" => CreateDefault(),
-            "conduct" => CreateConductV3(),
-            "conduct-v3" => CreateConductV3(),
+            "conduct" => CreateConductV3() with { Name = "conduct-v3", ConductProfileName = "conduct-v3" },
+            "conduct-v3" => CreateConductV3() with { Name = "conduct-v3", ConductProfileName = "conduct-v3" },
             "sailor-conduct" => CreateConductV3(),
             "sailor-conduct-v3" => CreateConductV3(),
             "harvester-conduct" => CreateHarvesterConductV3(),
@@ -170,11 +173,12 @@ public sealed record SailorStrategyProfile(
             "harvester-v3" => CreateHarvesterConductV3(),
             "harvester-conduct-v9" => CreateHarvesterConductV9(),
             "harvester-v9" => CreateHarvesterConductV9(),
+            _ when SailorConductStrategyRegistry.TryCreateBuiltInProfile(normalized, out SailorStrategyProfile conductProfile) => conductProfile,
             "simple" => CreateSimpleMomentum(),
             "simple-momentum" => CreateSimpleMomentum(),
             _ when TryGetConfiguredProfile(normalized, settings, out SailorStrategyProfile configuredOnlyProfile) => configuredOnlyProfile,
             _ => throw new ArgumentException(
-                $"Unknown Sailor strategy profile '{profileName}'. Valid profiles: sailor-trend-volume, sailor-conduct-v3, harvester-conduct-v3, harvester-conduct-v9, simple-momentum, or a profile configured in appsettings.json.")
+                $"Unknown Sailor strategy profile '{profileName}'. Valid profiles include sailor-trend-volume, simple-momentum, conduct-v3, harvester-conduct-v3, harvester-conduct-v9, v21-15minutes, v23-5minutes, v24-5minutes, v22-15minutes, v16-sqzbreakout, v13, v10-hybrid, v17-hybridflow, v2-conduct, v18-silver, v1-first, v19-purplecloud, v15-shortcap, v14-smallcap, v20-gen001-choppyshield, v12, or a profile configured in appsettings.json. V11 is intentionally excluded.")
         };
 
         return ApplyConfiguredOverrides(builtInProfile, settings);
