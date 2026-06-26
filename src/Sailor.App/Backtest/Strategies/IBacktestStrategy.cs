@@ -9,5 +9,6 @@ public interface IBacktestStrategy
     BacktestSignal Evaluate(
         BacktestBar currentBar,
         BacktestBar? previousBar,
+        BacktestIndicatorSnapshot indicators,
         bool hasOpenPosition);
 }

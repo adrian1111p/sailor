@@ -1,4 +1,5 @@
 using Sailor.App.Backtest.Data;
+using Sailor.App.Backtest.Indicators;
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Strategies;
 
@@ -37,6 +38,7 @@ public static class SimpleBacktestRunner
 
         BacktestDataSet dataSet = dataProvider.LoadBars(options.Symbol, options.Timeframe);
         IReadOnlyList<BacktestBar> bars = dataSet.Bars;
+        IReadOnlyList<BacktestIndicatorSnapshot> indicators = TechnicalIndicatorCalculator.Calculate(bars);
 
         decimal cash = options.InitialCash;
 
@@ -55,6 +57,7 @@ public static class SimpleBacktestRunner
         Log($"Timeframe: {options.Timeframe}");
         Log($"Strategy: {strategy.Name}");
         Log($"Bars: {bars.Count}");
+        Log("Indicators: EMA9, SMA20, SMA200, VWAP, VolumeAverage20");
         Log($"Initial cash: {cash:F2}");
         Log($"Max position notional: {options.MaxPositionNotional:F2}");
         Log($"Stop loss: {options.StopLossPercent:F2}%");
@@ -67,6 +70,12 @@ public static class SimpleBacktestRunner
         for (int barIndex = 0; barIndex < bars.Count; barIndex++)
         {
             BacktestBar bar = bars[barIndex];
+            BacktestIndicatorSnapshot indicator = indicators[barIndex];
+
+            if (barIndex == 0 || barIndex == 8 || barIndex == 19 || barIndex == 199)
+            {
+                Log($"{bar.Time:yyyy-MM-dd HH:mm} | indicators ready check | {indicator.ToCompactString()}");
+            }
 
             if (hasOpenPosition)
             {
@@ -94,6 +103,7 @@ public static class SimpleBacktestRunner
             BacktestSignal signal = strategy.Evaluate(
                 bar,
                 previousBar,
+                indicator,
                 hasOpenPosition);
 
             if (signal.Type == BacktestSignalType.Buy && !hasOpenPosition)
@@ -186,6 +196,11 @@ public static class SimpleBacktestRunner
         Log($"Symbol:       {summary.Symbol}");
         Log($"Timeframe:    {options.Timeframe}");
         Log($"Bars:         {bars.Count}");
+        Log($"Last EMA9:    {FormatIndicator(indicators[^1].Ema9)}");
+        Log($"Last SMA20:   {FormatIndicator(indicators[^1].Sma20)}");
+        Log($"Last SMA200:  {FormatIndicator(indicators[^1].Sma200)}");
+        Log($"Last VWAP:    {FormatIndicator(indicators[^1].Vwap)}");
+        Log($"Last VolAvg:  {FormatIndicator(indicators[^1].VolumeAverage20)}");
         Log($"Trades:       {summary.TotalTrades}");
         Log($"Winners:      {summary.Winners}");
         Log($"Losers:       {summary.Losers}");
@@ -330,6 +345,11 @@ public static class SimpleBacktestRunner
         openEntryPrice = 0m;
         openEntryReason = string.Empty;
         entryBarIndex = -1;
+    }
+
+    private static string FormatIndicator(decimal? value)
+    {
+        return value.HasValue ? value.Value.ToString("F2") : "n/a";
     }
 
     private static int CalculateQuantity(decimal maxPositionNotional, decimal price)
