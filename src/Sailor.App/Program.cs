@@ -1,6 +1,7 @@
 ﻿using Sailor.App.Backtest;
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Profiles;
+using Sailor.App.Backtest.Runner;
 using Sailor.App.Backtest.Scanner;
 using Sailor.App.Logging;
 
@@ -59,6 +60,37 @@ switch (command)
         }
 
         await RunScannerAsync(timeframe, profileName, topCount);
+        break;
+    }
+
+    case "rank":
+    case "scan-backtest":
+    case "batch":
+    {
+        string timeframe = args.Length >= 2
+            ? args[1].Trim()
+            : "1m";
+
+        string profileName = args.Length >= 3
+            ? args[2].Trim()
+            : "sailor-trend-volume";
+
+        int? topCount = null;
+        if (args.Length >= 4 && int.TryParse(args[3], out int parsedTopCount))
+        {
+            topCount = parsedTopCount;
+        }
+
+        string universeNameOrCsv = args.Length >= 5
+            ? args[4].Trim()
+            : "all";
+
+        await SailorBatchBacktestRunner.RunAsync(
+            timeframe,
+            profileName,
+            topCount,
+            universeNameOrCsv);
+
         break;
     }
 
@@ -168,4 +200,8 @@ static void PrintHelp()
     Console.WriteLine("  sailor scan");
     Console.WriteLine("  sailor scan 1m");
     Console.WriteLine("  sailor scan 1m sailor-trend-volume 20");
+    Console.WriteLine("  sailor rank");
+    Console.WriteLine("  sailor rank 1m sailor-trend-volume 20 all");
+    Console.WriteLine("  sailor rank 1m sailor-trend-volume 20 smallcaps");
+    Console.WriteLine("  sailor rank 1m simple-momentum 20 ALIT,BARK,SOFI,PLTR");
 }

@@ -17,7 +17,8 @@ public sealed class SailorScanner
     public IReadOnlyList<ScannerCandidate> Scan(
         string timeframe,
         SailorStrategyProfile profile,
-        int? topCount = null)
+        int? topCount = null,
+        IEnumerable<string>? symbols = null)
     {
         string normalizedTimeframe = string.IsNullOrWhiteSpace(timeframe)
             ? "1m"
@@ -26,7 +27,13 @@ public sealed class SailorScanner
         int effectiveTopCount = topCount.GetValueOrDefault(profile.ScannerTopCount);
         var candidates = new List<ScannerCandidate>();
 
-        foreach (string symbol in _dataProvider.ListSymbols())
+        IEnumerable<string> symbolsToScan = symbols ?? _dataProvider.ListSymbols();
+
+        foreach (string symbol in symbolsToScan
+                     .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
+                     .Select(symbol => symbol.Trim().ToUpperInvariant())
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(symbol => symbol, StringComparer.OrdinalIgnoreCase))
         {
             ScannerCandidate? candidate = TryCreateCandidate(symbol, normalizedTimeframe, profile);
             if (candidate is not null)

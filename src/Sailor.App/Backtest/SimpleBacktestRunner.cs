@@ -8,7 +8,7 @@ namespace Sailor.App.Backtest;
 
 public static class SimpleBacktestRunner
 {
-    public static async Task RunAsync(string symbol, string timeframe = "1m", string profileName = "sailor-trend-volume")
+    public static async Task<BacktestRunResult> RunAsync(string symbol, string timeframe = "1m", string profileName = "sailor-trend-volume", bool echoToConsole = true)
     {
         BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe, profileName);
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName);
@@ -30,7 +30,11 @@ public static class SimpleBacktestRunner
 
         void Log(string message)
         {
-            Console.WriteLine(message);
+            if (echoToConsole)
+            {
+                Console.WriteLine(message);
+            }
+
             writer.WriteLine(message);
             writer.Flush();
         }
@@ -220,9 +224,31 @@ public static class SimpleBacktestRunner
         Log("");
         Log("sailor backtest finished");
 
-        Console.WriteLine();
-        Console.WriteLine("Backtest log created:");
-        Console.WriteLine(logFilePath);
+        if (echoToConsole)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Backtest log created:");
+            Console.WriteLine(logFilePath);
+        }
+
+        return new BacktestRunResult(
+            Symbol: options.Symbol,
+            Timeframe: options.Timeframe,
+            ProfileName: profile.Name,
+            StrategyName: strategy.Name,
+            Bars: bars.Count,
+            TotalTrades: summary.TotalTrades,
+            Winners: summary.Winners,
+            Losers: summary.Losers,
+            TotalPnl: summary.TotalPnl,
+            FinalCash: summary.FinalCash,
+            LastEma9: indicators[^1].Ema9,
+            LastSma20: indicators[^1].Sma20,
+            LastSma200: indicators[^1].Sma200,
+            LastVwap: indicators[^1].Vwap,
+            LastVolumeAverage20: indicators[^1].VolumeAverage20,
+            DataSourcePath: dataSet.SourcePath,
+            LogFilePath: logFilePath);
     }
 
     private static IBacktestStrategy CreateStrategy(SailorStrategyProfile profile)

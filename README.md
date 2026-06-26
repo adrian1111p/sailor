@@ -82,3 +82,35 @@ Later live and paper logs will stay under:
 src/Sailor.App/Logs/Live
 src/Sailor.App/Logs/Paper
 ```
+
+## SAILOR-006 scanner + automatic backtest ranking
+
+Run scanner, automatically backtest the top candidates, and create one Markdown ranking report:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m sailor-trend-volume 20 all
+```
+
+Small-cap universe from the user list:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m sailor-trend-volume 20 smallcaps
+```
+
+Custom comma-separated universe:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m simple-momentum 20 ALIT,BARK,SOFI,PLTR
+```
+
+Aliases are also supported:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- scan-backtest 1m sailor-trend-volume 20 smallcaps
+```
+
+The ranking report is written to:
+
+```text
+src/Sailor.App/Logs/Backtest/ranking_<universe>_<profile>_<timeframe>_<timestamp>.md
+```

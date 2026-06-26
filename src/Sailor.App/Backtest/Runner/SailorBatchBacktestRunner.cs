@@ -1,0 +1,247 @@
+using Sailor.App.Backtest.Data;
+using Sailor.App.Backtest.Models;
+using Sailor.App.Backtest.Profiles;
+using Sailor.App.Backtest.Scanner;
+using Sailor.App.Logging;
+
+namespace Sailor.App.Backtest.Runner;
+
+public static class SailorBatchBacktestRunner
+{
+    public static async Task<string> RunAsync(
+        string timeframe,
+        string profileName,
+        int? topCount,
+        string? universeNameOrCsv)
+    {
+        string normalizedTimeframe = string.IsNullOrWhiteSpace(timeframe)
+            ? "1m"
+            : timeframe.Trim();
+
+        SailorStrategyProfile profile = SailorStrategyProfile.FromName(profileName);
+        int effectiveTopCount = Math.Max(1, topCount.GetValueOrDefault(profile.ScannerTopCount));
+
+        var provider = new CsvBacktestDataProvider();
+        IReadOnlyList<string> availableSymbols = provider.ListSymbols();
+        IReadOnlyList<string> requestedUniverse = SailorSymbolUniverses.Resolve(universeNameOrCsv, availableSymbols);
+        IReadOnlyList<string> availableUniverse = requestedUniverse
+            .Where(symbol => availableSymbols.Contains(symbol, StringComparer.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(symbol => symbol, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        IReadOnlyList<string> missingSymbols = requestedUniverse
+            .Where(symbol => !availableSymbols.Contains(symbol, StringComparer.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(symbol => symbol, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var scanner = new SailorScanner(provider);
+        IReadOnlyList<ScannerCandidate> candidates = scanner.Scan(
+            normalizedTimeframe,
+            profile,
+            effectiveTopCount,
+            availableUniverse);
+
+        string universeName = string.IsNullOrWhiteSpace(universeNameOrCsv)
+            ? "all"
+            : universeNameOrCsv.Trim();
+
+        string reportPath = Path.Combine(
+            SailorLogPaths.Backtest,
+            $"ranking_{SanitizeFilePart(universeName)}_{profile.Name}_{normalizedTimeframe}_{DateTime.Now:yyyyMMdd_HHmmss}.md");
+
+        Console.WriteLine("sailor batch backtest started");
+        Console.WriteLine($"Timeframe: {normalizedTimeframe}");
+        Console.WriteLine($"Profile: {profile.Name}");
+        Console.WriteLine($"Universe: {universeName}");
+        Console.WriteLine($"Universe symbols with data: {availableUniverse.Count}");
+        Console.WriteLine($"Scanner top count: {effectiveTopCount}");
+        Console.WriteLine();
+
+        var rows = new List<BacktestRankingRow>();
+        var errors = new List<string>();
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            ScannerCandidate candidate = candidates[i];
+            Console.WriteLine($"Backtesting {i + 1}/{candidates.Count}: {candidate.Symbol}");
+
+            try
+            {
+                BacktestRunResult result = await SimpleBacktestRunner.RunAsync(
+                    candidate.Symbol,
+                    normalizedTimeframe,
+                    profile.Name,
+                    echoToConsole: false);
+
+                rows.Add(new BacktestRankingRow(
+                    ScannerRank: i + 1,
+                    Candidate: candidate,
+                    Result: result));
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{candidate.Symbol}: {ex.Message}");
+            }
+        }
+
+        IReadOnlyList<BacktestRankingRow> rankedRows = rows
+            .OrderByDescending(row => row.Result.TotalPnl)
+            .ThenByDescending(row => row.Result.WinRatePercent)
+            .ThenByDescending(row => row.Candidate.Score)
+            .ThenBy(row => row.Candidate.Symbol, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        await WriteReportAsync(
+            reportPath,
+            normalizedTimeframe,
+            profile,
+            universeName,
+            requestedUniverse,
+            availableUniverse,
+            missingSymbols,
+            candidates,
+            rankedRows,
+            errors);
+
+        Console.WriteLine();
+        Console.WriteLine("sailor batch backtest finished");
+        Console.WriteLine("Ranking report created:");
+        Console.WriteLine(reportPath);
+
+        return reportPath;
+    }
+
+    private static async Task WriteReportAsync(
+        string reportPath,
+        string timeframe,
+        SailorStrategyProfile profile,
+        string universeName,
+        IReadOnlyList<string> requestedUniverse,
+        IReadOnlyList<string> availableUniverse,
+        IReadOnlyList<string> missingSymbols,
+        IReadOnlyList<ScannerCandidate> scannerCandidates,
+        IReadOnlyList<BacktestRankingRow> rankedRows,
+        IReadOnlyList<string> errors)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+
+        await using var fileStream = new FileStream(reportPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+        await using var writer = new StreamWriter(fileStream);
+
+        await writer.WriteLineAsync("# Sailor scanner + backtest ranking report");
+        await writer.WriteLineAsync();
+        await writer.WriteLineAsync($"Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+        await writer.WriteLineAsync($"Timeframe: `{timeframe}`");
+        await writer.WriteLineAsync($"Profile: `{profile.Name}`");
+        await writer.WriteLineAsync($"Universe: `{universeName}`");
+        await writer.WriteLineAsync($"Requested symbols: {requestedUniverse.Count}");
+        await writer.WriteLineAsync($"Symbols with data: {availableUniverse.Count}");
+        await writer.WriteLineAsync($"Scanner candidates: {scannerCandidates.Count}");
+        await writer.WriteLineAsync($"Backtested candidates: {rankedRows.Count}");
+        await writer.WriteLineAsync();
+
+        await writer.WriteLineAsync("## Profile filters");
+        await writer.WriteLineAsync();
+        await writer.WriteLineAsync($"- Price: {profile.MinimumPrice:F2}-{profile.MaximumPrice:F2}");
+        await writer.WriteLineAsync($"- Minimum volume: {profile.MinimumVolume}");
+        await writer.WriteLineAsync($"- Minimum volume ratio: {profile.MinimumVolumeRatio:F2}");
+        await writer.WriteLineAsync($"- Entry momentum: {profile.EntryMomentumPercent:F2}%");
+        await writer.WriteLineAsync($"- Exit momentum: {profile.ExitMomentumPercent:F2}%");
+        await writer.WriteLineAsync($"- Require EMA9 > SMA20: {profile.RequireEma9AboveSma20}");
+        await writer.WriteLineAsync($"- Require close > VWAP: {profile.RequirePriceAboveVwap}");
+        await writer.WriteLineAsync($"- Require close > SMA200 when available: {profile.RequirePriceAboveSma200WhenAvailable}");
+        await writer.WriteLineAsync();
+
+        if (missingSymbols.Count > 0)
+        {
+            await writer.WriteLineAsync("## Symbols from universe without local CSV data");
+            await writer.WriteLineAsync();
+            await writer.WriteLineAsync(string.Join(", ", missingSymbols));
+            await writer.WriteLineAsync();
+        }
+
+        await writer.WriteLineAsync("## Final ranking by backtest result");
+        await writer.WriteLineAsync();
+
+        if (rankedRows.Count == 0)
+        {
+            await writer.WriteLineAsync("No candidates could be backtested.");
+            await writer.WriteLineAsync();
+        }
+        else
+        {
+            await writer.WriteLineAsync("| Rank | Symbol | Scanner rank | PnL | Trades | Win rate | Winners | Losers | Scanner score | Momentum | Vol ratio | Close |");
+            await writer.WriteLineAsync("|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+
+            for (int i = 0; i < rankedRows.Count; i++)
+            {
+                await writer.WriteLineAsync(rankedRows[i].ToMarkdownRow(i + 1));
+            }
+
+            await writer.WriteLineAsync();
+        }
+
+        await writer.WriteLineAsync("## Scanner order before backtest");
+        await writer.WriteLineAsync();
+
+        if (scannerCandidates.Count == 0)
+        {
+            await writer.WriteLineAsync("No scanner candidates passed the profile filters.");
+            await writer.WriteLineAsync();
+        }
+        else
+        {
+            await writer.WriteLineAsync("| Scanner rank | Symbol | Score | Momentum | Vol ratio | Close | Reason |");
+            await writer.WriteLineAsync("|---:|---|---:|---:|---:|---:|---|");
+
+            for (int i = 0; i < scannerCandidates.Count; i++)
+            {
+                ScannerCandidate candidate = scannerCandidates[i];
+                await writer.WriteLineAsync($"| {i + 1} | {candidate.Symbol} | {candidate.Score:F2} | {candidate.MomentumPercent:F2}% | {candidate.VolumeRatio:F2} | {candidate.Close:F2} | {EscapeMarkdown(candidate.Reason)} |");
+            }
+
+            await writer.WriteLineAsync();
+        }
+
+        if (rankedRows.Count > 0)
+        {
+            await writer.WriteLineAsync("## Backtest log files");
+            await writer.WriteLineAsync();
+
+            foreach (BacktestRankingRow row in rankedRows)
+            {
+                await writer.WriteLineAsync($"- {row.Candidate.Symbol}: `{row.Result.LogFilePath}`");
+            }
+
+            await writer.WriteLineAsync();
+        }
+
+        if (errors.Count > 0)
+        {
+            await writer.WriteLineAsync("## Errors");
+            await writer.WriteLineAsync();
+
+            foreach (string error in errors)
+            {
+                await writer.WriteLineAsync($"- {EscapeMarkdown(error)}");
+            }
+        }
+    }
+
+    private static string SanitizeFilePart(string value)
+    {
+        string sanitized = string.Join(
+            "_",
+            value.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries));
+
+        sanitized = sanitized.Replace(',', '_').Replace(' ', '_');
+        return string.IsNullOrWhiteSpace(sanitized) ? "all" : sanitized;
+    }
+
+    private static string EscapeMarkdown(string value)
+    {
+        return value.Replace("|", "\\|");
+    }
+}
