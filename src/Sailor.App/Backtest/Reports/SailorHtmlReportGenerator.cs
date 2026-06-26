@@ -102,7 +102,7 @@ public static class SailorHtmlReportGenerator
                             Variant: strategy.Variant,
                             Symbol: trade.Symbol,
                             Sequence: ++tradeSequence,
-                            Side: "Long",
+                            Side: trade.SideName,
                             Quantity: trade.Quantity,
                             EntryTime: trade.EntryTime,
                             ExitTime: trade.ExitTime,
@@ -279,7 +279,7 @@ public static class SailorHtmlReportGenerator
         {
             string searchable = Html($"{trade.Strategy} {trade.Symbol} {trade.EntryReason} {trade.ExitReason}");
             await writer.WriteLineAsync(
-                $"<tr data-strategy=\"{Html(trade.Strategy)}\" data-search=\"{searchable.ToLowerInvariant()}\"><td>{Html(trade.Strategy)}</td><td>{Html(trade.Variant)}</td><td>{trade.Sequence}</td><td>{Html(trade.Symbol)}</td><td class=\"side-long\">{Html(trade.Side)}</td><td>{trade.Quantity}</td><td>{Html(trade.EntryTime.ToString("yyyy-MM-dd HH:mm"))}</td><td>{trade.EntryPrice:F4}</td><td>{Html(trade.ExitTime.ToString("yyyy-MM-dd HH:mm"))}</td><td>{trade.ExitPrice:F4}</td><td class=\"{PnlClass(trade.Pnl)}\">{trade.Pnl:F2}</td><td class=\"{PnlClass(trade.Pnl)}\">{trade.PnlPercent:F2}%</td><td>{Html(Shorten(trade.EntryReason, 180))}</td><td>{Html(Shorten(trade.ExitReason, 180))}</td></tr>");
+                $"<tr data-strategy=\"{Html(trade.Strategy)}\" data-search=\"{searchable.ToLowerInvariant()}\"><td>{Html(trade.Strategy)}</td><td>{Html(trade.Variant)}</td><td>{trade.Sequence}</td><td>{Html(trade.Symbol)}</td><td class=\"{SideClass(trade.Side)}\">{Html(trade.Side)}</td><td>{trade.Quantity}</td><td>{Html(trade.EntryTime.ToString("yyyy-MM-dd HH:mm"))}</td><td>{trade.EntryPrice:F4}</td><td>{Html(trade.ExitTime.ToString("yyyy-MM-dd HH:mm"))}</td><td>{trade.ExitPrice:F4}</td><td class=\"{PnlClass(trade.Pnl)}\">{trade.Pnl:F2}</td><td class=\"{PnlClass(trade.Pnl)}\">{trade.PnlPercent:F2}%</td><td>{Html(Shorten(trade.EntryReason, 180))}</td><td>{Html(Shorten(trade.ExitReason, 180))}</td></tr>");
         }
 
         await writer.WriteLineAsync("</tbody></table>");
@@ -402,6 +402,11 @@ public static class SailorHtmlReportGenerator
         return value >= 999.99m ? "999.99" : value.ToString("F2");
     }
 
+    private static string SideClass(string side)
+    {
+        return side.Equals("SHORT", StringComparison.OrdinalIgnoreCase) ? "side-short" : "side-long";
+    }
+
     private static string PnlClass(decimal value)
     {
         return value >= 0m ? "positive" : "negative";
@@ -432,7 +437,7 @@ public static class SailorHtmlReportGenerator
     private static string GetCss()
     {
         return """
-body{font-family:Segoe UI,Arial,sans-serif;background:#f3efe6;color:#1e2430;margin:0;padding:24px;}h1{margin:0 0 18px;}h2{margin:0 0 10px;}table{border-collapse:collapse;width:100%;background:#fff;}th,td{border:1px solid #d8d2c3;padding:8px 10px;font-size:13px;text-align:left;vertical-align:top;}th{background:#e8ddc5;position:sticky;top:0;z-index:1;}tr:nth-child(even){background:#fffdf8;}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;}select,input{padding:8px;border:1px solid #c9c1b0;border-radius:8px;background:#fff;min-width:140px;}.muted{color:#5f5a51;}.positive{color:#007a3d;font-weight:700;}.negative{color:#c21b10;font-weight:700;}.side-long{color:#007a3d;font-weight:700;}.section-title{margin-top:32px;}.card{background:#fff;border:1px solid #d8d2c3;border-radius:12px;padding:16px;margin:18px 0;}@media print{th{position:static;}body{background:#fff;}}
+body{font-family:Segoe UI,Arial,sans-serif;background:#f3efe6;color:#1e2430;margin:0;padding:24px;}h1{margin:0 0 18px;}h2{margin:0 0 10px;}table{border-collapse:collapse;width:100%;background:#fff;}th,td{border:1px solid #d8d2c3;padding:8px 10px;font-size:13px;text-align:left;vertical-align:top;}th{background:#e8ddc5;position:sticky;top:0;z-index:1;}tr:nth-child(even){background:#fffdf8;}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;}select,input{padding:8px;border:1px solid #c9c1b0;border-radius:8px;background:#fff;min-width:140px;}.muted{color:#5f5a51;}.positive{color:#007a3d;font-weight:700;}.negative{color:#c21b10;font-weight:700;}.side-long{color:#007a3d;font-weight:700;}.side-short{color:#b00020;font-weight:700;}.section-title{margin-top:32px;}.card{background:#fff;border:1px solid #d8d2c3;border-radius:12px;padding:16px;margin:18px 0;}@media print{th{position:static;}body{background:#fff;}}
 """;
     }
 

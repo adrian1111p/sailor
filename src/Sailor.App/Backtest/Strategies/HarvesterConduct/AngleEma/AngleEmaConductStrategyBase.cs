@@ -8,6 +8,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
 {
     private readonly AngleEmaConductSettings _settings;
     private AngleConductSide _side = AngleConductSide.Flat;
+    private DateTimeOffset? _lastEntrySignalCandleStart;
+    private DateTimeOffset? _lastExitSignalCandleStart;
 
     protected AngleEmaConductStrategyBase(AngleEmaConductSettings settings)
     {
@@ -19,6 +21,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
     public string StrategyName => _settings.StrategyName;
 
     public string VariantName => _settings.VariantName;
+
+    public bool AllowsShortEntries => _settings.AllowShort;
 
     public BacktestSignal EvaluateEntry(
         BacktestBar currentBar,
@@ -52,19 +56,26 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
         string prefix = $"{StrategyName}/{VariantName}";
         AngleEmaState state = CalculateState(recentBars, currentBar.Symbol);
 
-        if (!state.IsReady || state.CurrentCandle is null)
+        if (!state.IsReady || state.SignalCandle is null)
         {
             return BacktestSignal.Hold(
-                $"{prefix}: waiting for {_settings.CandleMinutes}m EMA9 angle readiness.");
+                $"{prefix}: waiting for completed {_settings.CandleMinutes}m EMA9/ATR angle readiness.");
         }
 
-        AngleConductCandle candle = state.CurrentCandle;
+        AngleConductCandle candle = state.SignalCandle;
         decimal ema9 = state.Ema9!.Value;
         decimal angle = state.AngleDegrees;
+        decimal atr = state.Atr!.Value;
         decimal volumeRatio = CalculateVolumeRatio(currentBar, indicators);
 
         if (!hasOpenPosition)
         {
+            if (_lastEntrySignalCandleStart == candle.StartTime)
+            {
+                return BacktestSignal.Hold(
+                    $"{prefix}: completed {_settings.CandleMinutes}m candle {candle.StartTime:yyyy-MM-dd HH:mm} already emitted an entry signal.");
+            }
+
             if (!PassesBasicFilters(currentBar, indicators, volumeRatio, prefix, out string filterRejectReason))
             {
                 return BacktestSignal.Hold(filterRejectReason);
@@ -73,21 +84,37 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
             if (angle >= _settings.AngleThresholdDegrees && PassesLongReEntry(candle, state, ema9))
             {
                 _side = AngleConductSide.Long;
+                _lastEntrySignalCandleStart = candle.StartTime;
                 return BacktestSignal.Buy(
-                    $"{prefix}: LONG angle setup, {_settings.CandleMinutes}m EMA9 angle {angle:F2}° >= {_settings.AngleThresholdDegrees:F2}°, " +
-                    $"candle O/H/L/C={candle.Open:F2}/{candle.High:F2}/{candle.Low:F2}/{candle.Close:F2}, EMA9={ema9:F2}, VolRatio={volumeRatio:F2}.");
+                    $"{prefix}: LONG completed {_settings.CandleMinutes}m EMA9 angle setup, angle {angle:F2}° >= {_settings.AngleThresholdDegrees:F2}°, " +
+                    $"EMA9={ema9:F2}, ATR={atr:F2}, candle O/H/L/C={candle.Open:F2}/{candle.High:F2}/{candle.Low:F2}/{candle.Close:F2}, VolRatio={volumeRatio:F2}.");
             }
 
             if (_settings.AllowShort && angle <= -_settings.AngleThresholdDegrees && PassesShortReEntry(candle, state, ema9))
             {
                 _side = AngleConductSide.Short;
+                _lastEntrySignalCandleStart = candle.StartTime;
                 return BacktestSignal.Sell(
-                    $"{prefix}: SHORT angle setup, {_settings.CandleMinutes}m EMA9 angle {angle:F2}° <= -{_settings.AngleThresholdDegrees:F2}°, " +
-                    $"candle O/H/L/C={candle.Open:F2}/{candle.High:F2}/{candle.Low:F2}/{candle.Close:F2}, EMA9={ema9:F2}, VolRatio={volumeRatio:F2}.");
+                    $"{prefix}: SHORT completed {_settings.CandleMinutes}m EMA9 angle setup, angle {angle:F2}° <= -{_settings.AngleThresholdDegrees:F2}°, " +
+                    $"EMA9={ema9:F2}, ATR={atr:F2}, candle O/H/L/C={candle.Open:F2}/{candle.High:F2}/{candle.Low:F2}/{candle.Close:F2}, VolRatio={volumeRatio:F2}.");
             }
 
             return BacktestSignal.Hold(
-                $"{prefix}: no angle entry, {_settings.CandleMinutes}m EMA9 angle={angle:F2}°, EMA9={ema9:F2}, candleClose={candle.Close:F2}.");
+                $"{prefix}: no completed-candle angle entry, {_settings.CandleMinutes}m EMA9 angle={angle:F2}°, EMA9={ema9:F2}, ATR={atr:F2}, candleClose={candle.Close:F2}.");
+        }
+
+        // Harvester V21/V23 do not evaluate the same higher-timeframe candle for exit immediately after entry.
+        // The original code starts exit resolution at source candle + 1 and then fills at the next 1m open.
+        if (_lastEntrySignalCandleStart == candle.StartTime)
+        {
+            return BacktestSignal.Hold(
+                $"{prefix}: hold through entry signal candle {_settings.CandleMinutes}m {candle.StartTime:yyyy-MM-dd HH:mm}; waiting for next completed candle.");
+        }
+
+        if (_lastExitSignalCandleStart == candle.StartTime)
+        {
+            return BacktestSignal.Hold(
+                $"{prefix}: completed {_settings.CandleMinutes}m candle {candle.StartTime:yyyy-MM-dd HH:mm} already emitted an exit signal.");
         }
 
         if (_side == AngleConductSide.Long)
@@ -95,11 +122,12 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
             if (ShouldFlattenLong(candle, state, ema9, angle, out string exitReason))
             {
                 _side = AngleConductSide.Flat;
+                _lastExitSignalCandleStart = candle.StartTime;
                 return BacktestSignal.Sell($"{prefix}: FLATTEN LONG, {exitReason}");
             }
 
             return BacktestSignal.Hold(
-                $"{prefix}: hold long, {_settings.CandleMinutes}m EMA9 angle={angle:F2}°, EMA9={ema9:F2}, close={candle.Close:F2}.");
+                $"{prefix}: hold long, completed {_settings.CandleMinutes}m EMA9 angle={angle:F2}°, EMA9={ema9:F2}, ATR={atr:F2}, close={candle.Close:F2}.");
         }
 
         if (_side == AngleConductSide.Short)
@@ -107,11 +135,12 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
             if (ShouldFlattenShort(candle, state, ema9, angle, out string exitReason))
             {
                 _side = AngleConductSide.Flat;
+                _lastExitSignalCandleStart = candle.StartTime;
                 return BacktestSignal.Buy($"{prefix}: FLATTEN SHORT, {exitReason}");
             }
 
             return BacktestSignal.Hold(
-                $"{prefix}: hold short, {_settings.CandleMinutes}m EMA9 angle={angle:F2}°, EMA9={ema9:F2}, close={candle.Close:F2}.");
+                $"{prefix}: hold short, completed {_settings.CandleMinutes}m EMA9 angle={angle:F2}°, EMA9={ema9:F2}, ATR={atr:F2}, close={candle.Close:F2}.");
         }
 
         return BacktestSignal.Hold(
@@ -171,14 +200,14 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
 
         if (candle.IsRed && candle.Crosses(ema9))
         {
-            reason = $"red {_settings.CandleMinutes}m candle crosses rising EMA9 {ema9:F2}.";
+            reason = $"red completed {_settings.CandleMinutes}m candle crosses rising EMA9 {ema9:F2}.";
             return true;
         }
 
         if (candle.IsRed && state.LastGreenCandle is not null)
         {
             decimal support = state.LastGreenCandle.LongSupport;
-            if (candle.Low < support || candle.Close < support)
+            if (candle.Low <= support || candle.Close <= support)
             {
                 reason = $"red candle broke last green support {support:F2}; low={candle.Low:F2}, close={candle.Close:F2}.";
                 return true;
@@ -204,14 +233,14 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
 
         if (candle.IsGreen && candle.Crosses(ema9))
         {
-            reason = $"green {_settings.CandleMinutes}m candle crosses bearish EMA9 {ema9:F2}.";
+            reason = $"green completed {_settings.CandleMinutes}m candle crosses bearish EMA9 {ema9:F2}.";
             return true;
         }
 
         if (candle.IsGreen && state.LastRedCandle is not null)
         {
             decimal resistance = state.LastRedCandle.ShortResistance;
-            if (candle.High > resistance || candle.Close > resistance)
+            if (candle.High >= resistance || candle.Close >= resistance)
             {
                 reason = $"green candle broke last red resistance {resistance:F2}; high={candle.High:F2}, close={candle.Close:F2}.";
                 return true;
@@ -272,27 +301,73 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
 
         List<AngleConductCandle> candles = BuildCandles(rawBars, symbol);
 
-        if (candles.Count < _settings.EmaPeriod + 1)
+        // Use only fully completed higher-timeframe candles for backtest signals.
+        // This matches Harvester StrategyV21/V23, which generates a signal on a completed 15m/5m bar
+        // and enters on the first following 1m bar. It also avoids repainting the unfinished candle.
+        List<AngleConductCandle> closedCandles = candles.Count > 1
+            ? candles.Take(candles.Count - 1).ToList()
+            : [];
+
+        if (closedCandles.Count < _settings.EmaPeriod + 1)
         {
-            return new AngleEmaState(null, null, 0m, candles.LastOrDefault(), null, LastGreen(candles), LastRed(candles));
+            return new AngleEmaState(
+                null,
+                null,
+                null,
+                0m,
+                closedCandles.LastOrDefault(),
+                closedCandles.Count > 1 ? closedCandles[^2] : null,
+                LastGreen(closedCandles),
+                LastRed(closedCandles));
         }
 
-        List<decimal> emaValues = CalculateEma(candles.Select(candle => candle.Close).ToArray(), _settings.EmaPeriod);
+        IReadOnlyList<decimal> closes = closedCandles.Select(candle => candle.Close).ToArray();
+        List<decimal> emaValues = CalculateEma(closes, _settings.EmaPeriod);
+
+        if (emaValues.Count < 2)
+        {
+            return new AngleEmaState(
+                null,
+                null,
+                null,
+                0m,
+                closedCandles.LastOrDefault(),
+                closedCandles.Count > 1 ? closedCandles[^2] : null,
+                LastGreen(closedCandles),
+                LastRed(closedCandles));
+        }
+
+        List<AngleConductCandle> candlesWithAtr = ApplyAtr(closedCandles);
+        AngleConductCandle signalCandle = candlesWithAtr[^1];
+        AngleConductCandle? previousSignalCandle = candlesWithAtr.Count > 1 ? candlesWithAtr[^2] : null;
         decimal ema9 = emaValues[^1];
         decimal previousEma9 = emaValues[^2];
-        decimal angle = CalculateAngleDegrees(previousEma9, ema9);
+        decimal? atr = signalCandle.Atr14 ?? previousSignalCandle?.Atr14;
 
-        AngleConductCandle? currentCandle = candles.LastOrDefault();
-        AngleConductCandle? previousClosedCandle = candles.Count > 1 ? candles[^2] : null;
+        if (!atr.HasValue || atr.Value <= 0m)
+        {
+            return new AngleEmaState(
+                null,
+                null,
+                null,
+                0m,
+                signalCandle,
+                previousSignalCandle,
+                LastGreen(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1))),
+                LastRed(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1))));
+        }
+
+        decimal angle = CalculateAngleDegrees(previousEma9, ema9, atr.Value);
 
         return new AngleEmaState(
             Ema9: decimal.Round(ema9, 4),
             PreviousEma9: decimal.Round(previousEma9, 4),
+            Atr: decimal.Round(atr.Value, 4),
             AngleDegrees: decimal.Round(angle, 4),
-            CurrentCandle: currentCandle,
-            PreviousClosedCandle: previousClosedCandle,
-            LastGreenCandle: LastGreen(candles.Take(Math.Max(0, candles.Count - 1))),
-            LastRedCandle: LastRed(candles.Take(Math.Max(0, candles.Count - 1))));
+            SignalCandle: signalCandle,
+            PreviousSignalCandle: previousSignalCandle,
+            LastGreenCandle: LastGreen(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1))),
+            LastRedCandle: LastRed(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1))));
     }
 
     private List<AngleConductCandle> BuildCandles(
@@ -376,17 +451,52 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
         return result;
     }
 
+    private static List<AngleConductCandle> ApplyAtr(IReadOnlyList<AngleConductCandle> candles)
+    {
+        var result = new List<AngleConductCandle>(candles.Count);
+        var trueRanges = new List<decimal>(candles.Count);
+
+        for (int i = 0; i < candles.Count; i++)
+        {
+            AngleConductCandle candle = candles[i];
+            decimal trueRange;
+
+            if (i == 0)
+            {
+                trueRange = candle.High - candle.Low;
+            }
+            else
+            {
+                decimal previousClose = candles[i - 1].Close;
+                decimal highLow = candle.High - candle.Low;
+                decimal highPreviousClose = Math.Abs(candle.High - previousClose);
+                decimal lowPreviousClose = Math.Abs(candle.Low - previousClose);
+                trueRange = Math.Max(highLow, Math.Max(highPreviousClose, lowPreviousClose));
+            }
+
+            trueRanges.Add(Math.Max(0m, trueRange));
+            int atrPeriod = Math.Min(14, trueRanges.Count);
+            decimal atr = trueRanges.TakeLast(atrPeriod).Average();
+            result.Add(candle with { Atr14 = atr });
+        }
+
+        return result;
+    }
+
     private static decimal CalculateAngleDegrees(
         decimal previousEma,
-        decimal currentEma)
+        decimal currentEma,
+        decimal atr)
     {
-        if (previousEma == 0m)
+        if (atr <= 0m)
         {
             return 0m;
         }
 
-        double percentSlope = (double)((currentEma - previousEma) / previousEma * 100m);
-        return (decimal)(Math.Atan(percentSlope) * 180.0 / Math.PI);
+        // Harvester StrategyV21/V23 normalize EMA slope by ATR, not by percent price change.
+        // This keeps the degree threshold comparable across high- and low-priced symbols.
+        double normalizedSlope = (double)((currentEma - previousEma) / atr);
+        return (decimal)(Math.Atan(normalizedSlope) * 180.0 / Math.PI);
     }
 
     private static decimal CalculateVolumeRatio(

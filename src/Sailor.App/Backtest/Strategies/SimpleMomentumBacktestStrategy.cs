@@ -4,6 +4,8 @@ namespace Sailor.App.Backtest.Strategies;
 
 public sealed class SimpleMomentumBacktestStrategy : IBacktestStrategy
 {
+    public bool AllowsShortEntries => false;
+
     public string Name => "SimpleMomentumWithIndicators";
 
     public BacktestSignal Evaluate(

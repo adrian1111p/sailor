@@ -5,6 +5,8 @@ namespace Sailor.App.Backtest.Strategies.HarvesterConduct;
 
 public interface ISailorConductPositionStrategy : ISailorConductEntryStrategy
 {
+    bool AllowsShortEntries { get; }
+
     BacktestSignal Evaluate(
         BacktestBar currentBar,
         BacktestBar previousBar,

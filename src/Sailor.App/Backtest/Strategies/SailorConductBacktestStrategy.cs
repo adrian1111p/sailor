@@ -18,6 +18,8 @@ public sealed class SailorConductBacktestStrategy : IBacktestStrategy
 
     public string Name => _entryStrategy.StrategyName;
 
+    public bool AllowsShortEntries => _entryStrategy is ISailorConductPositionStrategy positionStrategy && positionStrategy.AllowsShortEntries;
+
     public BacktestSignal Evaluate(
         BacktestBar currentBar,
         BacktestBar? previousBar,
@@ -60,7 +62,7 @@ public sealed class SailorConductBacktestStrategy : IBacktestStrategy
     {
         _recentBars.Add(bar);
 
-        if (_recentBars.Count > 500)
+        if (_recentBars.Count > 2500)
         {
             _recentBars.RemoveAt(0);
         }

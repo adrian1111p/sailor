@@ -6,6 +6,8 @@ public interface IBacktestStrategy
 {
     string Name { get; }
 
+    bool AllowsShortEntries => false;
+
     BacktestSignal Evaluate(
         BacktestBar currentBar,
         BacktestBar? previousBar,

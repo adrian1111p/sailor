@@ -12,6 +12,8 @@ public sealed class SailorTrendVolumeBacktestStrategy : IBacktestStrategy
         _profile = profile;
     }
 
+    public bool AllowsShortEntries => false;
+
     public string Name => _profile.Name;
 
     public BacktestSignal Evaluate(

@@ -27,13 +27,14 @@ public sealed record AngleEmaConductSettings(
 internal sealed record AngleEmaState(
     decimal? Ema9,
     decimal? PreviousEma9,
+    decimal? Atr,
     decimal AngleDegrees,
-    AngleConductCandle? CurrentCandle,
-    AngleConductCandle? PreviousClosedCandle,
+    AngleConductCandle? SignalCandle,
+    AngleConductCandle? PreviousSignalCandle,
     AngleConductCandle? LastGreenCandle,
     AngleConductCandle? LastRedCandle)
 {
-    public bool IsReady => Ema9.HasValue && PreviousEma9.HasValue && CurrentCandle is not null;
+    public bool IsReady => Ema9.HasValue && PreviousEma9.HasValue && Atr.HasValue && SignalCandle is not null;
 }
 
 internal sealed record AngleConductCandle(
@@ -44,7 +45,8 @@ internal sealed record AngleConductCandle(
     decimal High,
     decimal Low,
     decimal Close,
-    long Volume)
+    long Volume,
+    decimal? Atr14 = null)
 {
     public bool IsGreen => Close > Open;
 

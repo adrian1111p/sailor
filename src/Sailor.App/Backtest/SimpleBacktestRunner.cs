@@ -65,6 +65,7 @@ public static class SimpleBacktestRunner
 
         bool hasOpenPosition = false;
         int quantity = 0;
+        int positionSide = 0;
         int entryBarIndex = -1;
         int lastExitBarIndex = -10_000;
         decimal entryPrice = 0m;
@@ -139,6 +140,7 @@ public static class SimpleBacktestRunner
                     bar.Time,
                     bar.Close,
                     quantity,
+                    positionSide,
                     entryTime,
                     entryPrice,
                     entryReason,
@@ -146,6 +148,7 @@ public static class SimpleBacktestRunner
                     ref cash,
                     ref hasOpenPosition,
                     ref quantity,
+                    ref positionSide,
                     ref entryPrice,
                     ref entryReason,
                     ref entryBarIndex);
@@ -160,6 +163,7 @@ public static class SimpleBacktestRunner
                     bar,
                     bar.Open,
                     barIndex,
+                    ResolveEntrySide(pendingNextBarEntry, strategy),
                     options,
                     profile,
                     pendingNextBarEntry with
@@ -170,6 +174,7 @@ public static class SimpleBacktestRunner
                     ref cash,
                     ref hasOpenPosition,
                     ref quantity,
+                    ref positionSide,
                     ref entryPrice,
                     ref entryTime,
                     ref entryReason,
@@ -196,6 +201,7 @@ public static class SimpleBacktestRunner
                         ref cash,
                         ref hasOpenPosition,
                         ref quantity,
+                        ref positionSide,
                         ref entryPrice,
                         ref entryTime,
                         ref entryReason,
@@ -210,6 +216,7 @@ public static class SimpleBacktestRunner
                         ref cash,
                         ref hasOpenPosition,
                         ref quantity,
+                        ref positionSide,
                         ref entryPrice,
                         ref entryTime,
                         ref entryReason,
@@ -230,13 +237,16 @@ public static class SimpleBacktestRunner
                 indicator,
                 hasOpenPosition);
 
-            if (signal.Type == BacktestSignalType.Buy && !hasOpenPosition)
+            int requestedEntrySide = ResolveEntrySide(signal, strategy);
+
+            if (!hasOpenPosition && requestedEntrySide != 0)
             {
                 if (profile.UseNextBarOpenEntry)
                 {
                     pendingNextBarEntry = signal;
                     pendingSignalTime = bar.Time;
-                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY signal scheduled for next bar open | {signal.Reason}");
+                    string scheduledAction = requestedEntrySide < 0 ? "SELL_SHORT" : "BUY";
+                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | {scheduledAction} signal scheduled for next bar open | {signal.Reason}");
                 }
                 else
                 {
@@ -244,6 +254,7 @@ public static class SimpleBacktestRunner
                         bar,
                         bar.Close,
                         barIndex,
+                        requestedEntrySide,
                         options,
                         profile,
                         signal,
@@ -251,6 +262,7 @@ public static class SimpleBacktestRunner
                         ref cash,
                         ref hasOpenPosition,
                         ref quantity,
+                        ref positionSide,
                         ref entryPrice,
                         ref entryTime,
                         ref entryReason,
@@ -259,7 +271,7 @@ public static class SimpleBacktestRunner
                         lastExitBarIndex);
                 }
             }
-            else if (signal.Type == BacktestSignalType.Sell && hasOpenPosition)
+            else if (hasOpenPosition && IsExitSignal(signal, positionSide))
             {
                 ClosePosition(
                     trades,
@@ -268,6 +280,7 @@ public static class SimpleBacktestRunner
                     bar.Time,
                     bar.Close,
                     quantity,
+                    positionSide,
                     entryTime,
                     entryPrice,
                     entryReason,
@@ -275,6 +288,7 @@ public static class SimpleBacktestRunner
                     ref cash,
                     ref hasOpenPosition,
                     ref quantity,
+                    ref positionSide,
                     ref entryPrice,
                     ref entryReason,
                     ref entryBarIndex);
@@ -297,6 +311,7 @@ public static class SimpleBacktestRunner
                 finalBar.Time,
                 finalBar.Close,
                 quantity,
+                positionSide,
                 entryTime,
                 entryPrice,
                 entryReason,
@@ -304,6 +319,7 @@ public static class SimpleBacktestRunner
                 ref cash,
                 ref hasOpenPosition,
                 ref quantity,
+                ref positionSide,
                 ref entryPrice,
                 ref entryReason,
                 ref entryBarIndex);
@@ -413,6 +429,7 @@ public static class SimpleBacktestRunner
         BacktestBar bar,
         decimal entryExecutionPrice,
         int barIndex,
+        int newPositionSide,
         BacktestOptions options,
         SailorStrategyProfile profile,
         BacktestSignal signal,
@@ -420,6 +437,7 @@ public static class SimpleBacktestRunner
         ref decimal cash,
         ref bool hasOpenPosition,
         ref int quantity,
+        ref int positionSide,
         ref decimal entryPrice,
         ref DateTimeOffset entryTime,
         ref string entryReason,
@@ -433,32 +451,40 @@ public static class SimpleBacktestRunner
             return false;
         }
 
+        if (newPositionSide == 0)
+        {
+            log($"{bar.Time:yyyy-MM-dd HH:mm} | entry skipped: signal is not an enabled entry side.");
+            return false;
+        }
+
         quantity = CalculateQuantity(options.MaxPositionNotional, entryExecutionPrice);
-        decimal cost = quantity * entryExecutionPrice;
+        decimal reservedNotional = quantity * entryExecutionPrice;
+        string action = newPositionSide < 0 ? "SELL_SHORT" : "BUY";
 
         if (quantity <= 0)
         {
-            log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: invalid quantity at price {entryExecutionPrice:F2}");
+            log($"{bar.Time:yyyy-MM-dd HH:mm} | {action} skipped: invalid quantity at price {entryExecutionPrice:F2}");
             return false;
         }
 
-        if (cash < cost)
+        if (cash < reservedNotional)
         {
-            log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: cost {cost:F2} > cash {cash:F2}");
+            log($"{bar.Time:yyyy-MM-dd HH:mm} | {action} skipped: reserved notional {reservedNotional:F2} > cash {cash:F2}");
             return false;
         }
 
-        cash -= cost;
+        cash -= reservedNotional;
         hasOpenPosition = true;
+        positionSide = newPositionSide;
         entryPrice = entryExecutionPrice;
         entryTime = bar.Time;
         entryReason = signal.Reason;
         entryBarIndex = barIndex;
-        conductState = profile.UseConductExits
+        conductState = profile.UseConductExits && newPositionSide > 0
             ? new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity)
             : null;
 
-        log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY  {quantity} {options.Symbol} @ {entryExecutionPrice:F2} | Cash={cash:F2} | {signal.Reason}");
+        log($"{bar.Time:yyyy-MM-dd HH:mm} | {action} {quantity} {options.Symbol} @ {entryExecutionPrice:F2} | Reserved={reservedNotional:F2} | Cash={cash:F2} | {signal.Reason}");
         return true;
     }
 
@@ -475,12 +501,18 @@ public static class SimpleBacktestRunner
         ref decimal cash,
         ref bool hasOpenPosition,
         ref int quantity,
+        ref int positionSide,
         ref decimal entryPrice,
         ref DateTimeOffset entryTime,
         ref string entryReason,
         ref int entryBarIndex,
         ref SailorConductExitState? conductState)
     {
+        if (positionSide < 0)
+        {
+            return false;
+        }
+
         if (conductState is null)
         {
             conductState = new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity);
@@ -507,6 +539,7 @@ public static class SimpleBacktestRunner
             bar.Time,
             decision.ExitPrice,
             quantity,
+            positionSide,
             entryTime,
             entryPrice,
             entryReason,
@@ -514,6 +547,7 @@ public static class SimpleBacktestRunner
             ref cash,
             ref hasOpenPosition,
             ref quantity,
+            ref positionSide,
             ref entryPrice,
             ref entryReason,
             ref entryBarIndex);
@@ -531,16 +565,24 @@ public static class SimpleBacktestRunner
         ref decimal cash,
         ref bool hasOpenPosition,
         ref int quantity,
+        ref int positionSide,
         ref decimal entryPrice,
         ref DateTimeOffset entryTime,
         ref string entryReason,
         ref int entryBarIndex)
     {
-        decimal stopPrice = entryPrice * (1m - options.StopLossPercent / 100m);
-        decimal takeProfitPrice = entryPrice * (1m + options.TakeProfitPercent / 100m);
+        decimal stopPrice = positionSide < 0
+            ? entryPrice * (1m + options.StopLossPercent / 100m)
+            : entryPrice * (1m - options.StopLossPercent / 100m);
+        decimal takeProfitPrice = positionSide < 0
+            ? entryPrice * (1m - options.TakeProfitPercent / 100m)
+            : entryPrice * (1m + options.TakeProfitPercent / 100m);
         int barsHeld = barIndex - entryBarIndex;
 
-        if (bar.Low <= stopPrice)
+        bool stopHit = positionSide < 0 ? bar.High >= stopPrice : bar.Low <= stopPrice;
+        bool takeProfitHit = positionSide < 0 ? bar.Low <= takeProfitPrice : bar.High >= takeProfitPrice;
+
+        if (stopHit)
         {
             ClosePosition(
                 trades,
@@ -549,6 +591,7 @@ public static class SimpleBacktestRunner
                 bar.Time,
                 stopPrice,
                 quantity,
+                positionSide,
                 entryTime,
                 entryPrice,
                 entryReason,
@@ -556,6 +599,7 @@ public static class SimpleBacktestRunner
                 ref cash,
                 ref hasOpenPosition,
                 ref quantity,
+                ref positionSide,
                 ref entryPrice,
                 ref entryReason,
                 ref entryBarIndex);
@@ -563,7 +607,7 @@ public static class SimpleBacktestRunner
             return true;
         }
 
-        if (bar.High >= takeProfitPrice)
+        if (takeProfitHit)
         {
             ClosePosition(
                 trades,
@@ -572,6 +616,7 @@ public static class SimpleBacktestRunner
                 bar.Time,
                 takeProfitPrice,
                 quantity,
+                positionSide,
                 entryTime,
                 entryPrice,
                 entryReason,
@@ -579,6 +624,7 @@ public static class SimpleBacktestRunner
                 ref cash,
                 ref hasOpenPosition,
                 ref quantity,
+                ref positionSide,
                 ref entryPrice,
                 ref entryReason,
                 ref entryBarIndex);
@@ -595,6 +641,7 @@ public static class SimpleBacktestRunner
                 bar.Time,
                 bar.Close,
                 quantity,
+                positionSide,
                 entryTime,
                 entryPrice,
                 entryReason,
@@ -602,6 +649,7 @@ public static class SimpleBacktestRunner
                 ref cash,
                 ref hasOpenPosition,
                 ref quantity,
+                ref positionSide,
                 ref entryPrice,
                 ref entryReason,
                 ref entryBarIndex);
@@ -619,6 +667,7 @@ public static class SimpleBacktestRunner
         DateTimeOffset exitTime,
         decimal exitPrice,
         int quantity,
+        int positionSide,
         DateTimeOffset entryTime,
         decimal entryPrice,
         string entryReason,
@@ -626,13 +675,11 @@ public static class SimpleBacktestRunner
         ref decimal cash,
         ref bool hasOpenPosition,
         ref int openQuantity,
+        ref int openPositionSide,
         ref decimal openEntryPrice,
         ref string openEntryReason,
         ref int entryBarIndex)
     {
-        decimal proceeds = quantity * exitPrice;
-        cash += proceeds;
-
         var trade = new BacktestTrade(
             Symbol: symbol,
             EntryTime: entryTime,
@@ -641,17 +688,41 @@ public static class SimpleBacktestRunner
             ExitPrice: exitPrice,
             Quantity: quantity,
             EntryReason: entryReason,
-            ExitReason: exitReason);
+            ExitReason: exitReason,
+            PositionSide: positionSide);
+
+        decimal cashRelease = positionSide < 0
+            ? (quantity * entryPrice) + trade.Pnl
+            : quantity * exitPrice;
+        cash += cashRelease;
 
         trades.Add(trade);
 
-        log($"{exitTime:yyyy-MM-dd HH:mm} | SELL {quantity} {symbol} @ {exitPrice:F2} | PnL={trade.Pnl:F2} ({trade.PnlPercent:F2}%) | Cash={cash:F2} | {exitReason}");
+        string action = positionSide < 0 ? "BUY_TO_COVER" : "SELL";
+        log($"{exitTime:yyyy-MM-dd HH:mm} | {action} {quantity} {symbol} @ {exitPrice:F2} | Side={trade.SideName} | PnL={trade.Pnl:F2} ({trade.PnlPercent:F2}%) | Cash={cash:F2} | {exitReason}");
 
         hasOpenPosition = false;
         openQuantity = 0;
+        openPositionSide = 0;
         openEntryPrice = 0m;
         openEntryReason = string.Empty;
         entryBarIndex = -1;
+    }
+
+    private static int ResolveEntrySide(BacktestSignal signal, IBacktestStrategy strategy)
+    {
+        return signal.Type switch
+        {
+            BacktestSignalType.Buy => 1,
+            BacktestSignalType.Sell when strategy.AllowsShortEntries => -1,
+            _ => 0
+        };
+    }
+
+    private static bool IsExitSignal(BacktestSignal signal, int positionSide)
+    {
+        return (positionSide > 0 && signal.Type == BacktestSignalType.Sell) ||
+               (positionSide < 0 && signal.Type == BacktestSignalType.Buy);
     }
 
     private static bool CanOpenNewPosition(
