@@ -13,5 +13,6 @@ public interface ISailorConductPositionStrategy : ISailorConductEntryStrategy
         BacktestIndicatorSnapshot indicators,
         IReadOnlyList<BacktestBar> recentBars,
         SailorStrategyProfile profile,
-        bool hasOpenPosition);
+        bool hasOpenPosition,
+        int positionSide);
 }

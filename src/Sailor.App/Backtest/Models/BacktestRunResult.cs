@@ -27,4 +27,12 @@ public sealed record BacktestRunResult(
     public decimal ReturnPercent => FinalCash > 0m
         ? TotalPnl / (FinalCash - TotalPnl == 0m ? FinalCash : FinalCash - TotalPnl) * 100m
         : 0m;
+
+    public int LongTrades => Trades.Count(trade => trade.PositionSide > 0);
+
+    public int ShortTrades => Trades.Count(trade => trade.PositionSide < 0);
+
+    public decimal LongPnl => Trades.Where(trade => trade.PositionSide > 0).Sum(trade => trade.Pnl);
+
+    public decimal ShortPnl => Trades.Where(trade => trade.PositionSide < 0).Sum(trade => trade.Pnl);
 }

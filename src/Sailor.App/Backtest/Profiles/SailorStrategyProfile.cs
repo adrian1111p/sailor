@@ -1,3 +1,4 @@
+using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Strategies.HarvesterConduct;
 using Sailor.App.Configuration;
 
@@ -25,7 +26,8 @@ public sealed record SailorStrategyProfile(
     bool UseNextBarOpenEntry,
     int ScannerLookbackBars,
     int ScannerMinimumBars,
-    int ScannerTopCount)
+    int ScannerTopCount,
+    BacktestSideMode SideMode)
 {
     public static SailorStrategyProfile CreateDefault()
     {
@@ -51,7 +53,8 @@ public sealed record SailorStrategyProfile(
             UseNextBarOpenEntry: false,
             ScannerLookbackBars: 20,
             ScannerMinimumBars: 20,
-            ScannerTopCount: 20);
+            ScannerTopCount: 20,
+            SideMode: BacktestSideMode.LongAndShort);
     }
 
     public static SailorStrategyProfile CreateSimpleMomentum()
@@ -259,7 +262,8 @@ public sealed record SailorStrategyProfile(
             UseNextBarOpenEntry = settings.UseNextBarOpenEntry ?? profile.UseNextBarOpenEntry,
             ScannerLookbackBars = settings.ScannerLookbackBars ?? profile.ScannerLookbackBars,
             ScannerMinimumBars = settings.ScannerMinimumBars ?? profile.ScannerMinimumBars,
-            ScannerTopCount = settings.ScannerTopCount ?? profile.ScannerTopCount
+            ScannerTopCount = settings.ScannerTopCount ?? profile.ScannerTopCount,
+            SideMode = BacktestSideModeExtensions.ParseOrDefault(settings.SideMode, profile.SideMode)
         };
     }
 }

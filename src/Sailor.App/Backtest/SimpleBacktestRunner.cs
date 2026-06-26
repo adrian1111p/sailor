@@ -80,6 +80,7 @@ public static class SimpleBacktestRunner
         Log($"Timeframe: {options.Timeframe}");
         Log($"Strategy profile: {profile.Name}");
         Log($"Strategy: {strategy.Name}");
+        Log($"Side mode: {profile.SideMode}");
         Log($"Bars: {bars.Count}");
         Log("Indicators: EMA9, SMA20, SMA200, VWAP, VolumeAverage20");
         Log($"Initial cash: {cash:F2}");
@@ -163,7 +164,7 @@ public static class SimpleBacktestRunner
                     bar,
                     bar.Open,
                     barIndex,
-                    ResolveEntrySide(pendingNextBarEntry, strategy),
+                    ResolveEntrySide(pendingNextBarEntry, strategy, profile),
                     options,
                     profile,
                     pendingNextBarEntry with
@@ -235,9 +236,10 @@ public static class SimpleBacktestRunner
                 bar,
                 previousBar,
                 indicator,
-                hasOpenPosition);
+                hasOpenPosition,
+                positionSide);
 
-            int requestedEntrySide = ResolveEntrySide(signal, strategy);
+            int requestedEntrySide = ResolveEntrySide(signal, strategy, profile);
 
             if (!hasOpenPosition && requestedEntrySide != 0)
             {
@@ -330,6 +332,10 @@ public static class SimpleBacktestRunner
         int winners = trades.Count(t => t.Pnl > 0);
         int losers = trades.Count(t => t.Pnl < 0);
         decimal totalPnl = trades.Sum(t => t.Pnl);
+        int longTrades = trades.Count(t => t.PositionSide > 0);
+        int shortTrades = trades.Count(t => t.PositionSide < 0);
+        decimal longPnl = trades.Where(t => t.PositionSide > 0).Sum(t => t.Pnl);
+        decimal shortPnl = trades.Where(t => t.PositionSide < 0).Sum(t => t.Pnl);
 
         var summary = new BacktestSummary(
             Symbol: options.Symbol,
@@ -352,6 +358,10 @@ public static class SimpleBacktestRunner
         Log($"Last VWAP:    {FormatIndicator(indicators[^1].Vwap)}");
         Log($"Last VolAvg:  {FormatIndicator(indicators[^1].VolumeAverage20)}");
         Log($"Trades:       {summary.TotalTrades}");
+        Log($"Long trades:  {longTrades}");
+        Log($"Short trades: {shortTrades}");
+        Log($"Long PnL:     {longPnl:F2}");
+        Log($"Short PnL:    {shortPnl:F2}");
         Log($"Winners:      {summary.Winners}");
         Log($"Losers:       {summary.Losers}");
         Log($"Win rate:     {summary.WinRatePercent:F2}%");
@@ -398,7 +408,7 @@ public static class SimpleBacktestRunner
         }
 
         return profile.Name.Equals("simple-momentum", StringComparison.OrdinalIgnoreCase)
-            ? new SimpleMomentumBacktestStrategy()
+            ? new SimpleMomentumBacktestStrategy(profile)
             : new SailorTrendVolumeBacktestStrategy(profile);
     }
 
@@ -447,7 +457,7 @@ public static class SimpleBacktestRunner
     {
         if (!CanOpenNewPosition(profile, bar, barIndex, lastExitBarIndex, out string rejectReason))
         {
-            log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: {rejectReason}");
+            log($"{bar.Time:yyyy-MM-dd HH:mm} | entry skipped: {rejectReason}");
             return false;
         }
 
@@ -480,8 +490,8 @@ public static class SimpleBacktestRunner
         entryTime = bar.Time;
         entryReason = signal.Reason;
         entryBarIndex = barIndex;
-        conductState = profile.UseConductExits && newPositionSide > 0
-            ? new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity)
+        conductState = profile.UseConductExits
+            ? new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity, newPositionSide)
             : null;
 
         log($"{bar.Time:yyyy-MM-dd HH:mm} | {action} {quantity} {options.Symbol} @ {entryExecutionPrice:F2} | Reserved={reservedNotional:F2} | Cash={cash:F2} | {signal.Reason}");
@@ -508,17 +518,13 @@ public static class SimpleBacktestRunner
         ref int entryBarIndex,
         ref SailorConductExitState? conductState)
     {
-        if (positionSide < 0)
-        {
-            return false;
-        }
-
         if (conductState is null)
         {
-            conductState = new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity);
+            conductState = new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity, positionSide);
         }
 
-        SailorConductExitDecision decision = conductExitEngine.EvaluateLongExit(
+        SailorConductExitDecision decision = conductExitEngine.EvaluateExit(
+            positionSide,
             bar,
             previousBar,
             indicator,
@@ -709,12 +715,15 @@ public static class SimpleBacktestRunner
         entryBarIndex = -1;
     }
 
-    private static int ResolveEntrySide(BacktestSignal signal, IBacktestStrategy strategy)
+    private static int ResolveEntrySide(
+        BacktestSignal signal,
+        IBacktestStrategy strategy,
+        SailorStrategyProfile profile)
     {
         return signal.Type switch
         {
-            BacktestSignalType.Buy => 1,
-            BacktestSignalType.Sell when strategy.AllowsShortEntries => -1,
+            BacktestSignalType.Buy when profile.SideMode.AllowsLong() => 1,
+            BacktestSignalType.Sell when strategy.AllowsShortEntries && profile.SideMode.AllowsShort() => -1,
             _ => 0
         };
     }

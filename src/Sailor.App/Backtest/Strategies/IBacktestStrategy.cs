@@ -12,5 +12,6 @@ public interface IBacktestStrategy
         BacktestBar currentBar,
         BacktestBar? previousBar,
         BacktestIndicatorSnapshot indicators,
-        bool hasOpenPosition);
+        bool hasOpenPosition,
+        int positionSide);
 }

@@ -37,7 +37,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
             indicators,
             recentBars,
             profile,
-            hasOpenPosition: false);
+            hasOpenPosition: false,
+            positionSide: 0);
     }
 
     public BacktestSignal Evaluate(
@@ -46,7 +47,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
         BacktestIndicatorSnapshot indicators,
         IReadOnlyList<BacktestBar> recentBars,
         SailorStrategyProfile profile,
-        bool hasOpenPosition)
+        bool hasOpenPosition,
+        int positionSide)
     {
         if (!hasOpenPosition && _side != AngleConductSide.Flat)
         {
@@ -81,7 +83,7 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
                 return BacktestSignal.Hold(filterRejectReason);
             }
 
-            if (angle >= _settings.AngleThresholdDegrees && PassesLongReEntry(candle, state, ema9))
+            if (profile.SideMode.AllowsLong() && angle >= _settings.AngleThresholdDegrees && PassesLongReEntry(candle, state, ema9))
             {
                 _side = AngleConductSide.Long;
                 _lastEntrySignalCandleStart = candle.StartTime;
@@ -90,7 +92,7 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
                     $"EMA9={ema9:F2}, ATR={atr:F2}, candle O/H/L/C={candle.Open:F2}/{candle.High:F2}/{candle.Low:F2}/{candle.Close:F2}, VolRatio={volumeRatio:F2}.");
             }
 
-            if (_settings.AllowShort && angle <= -_settings.AngleThresholdDegrees && PassesShortReEntry(candle, state, ema9))
+            if (_settings.AllowShort && profile.SideMode.AllowsShort() && angle <= -_settings.AngleThresholdDegrees && PassesShortReEntry(candle, state, ema9))
             {
                 _side = AngleConductSide.Short;
                 _lastEntrySignalCandleStart = candle.StartTime;

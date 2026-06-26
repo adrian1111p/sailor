@@ -17,6 +17,6 @@ public sealed record BacktestRankingRow(
 
     public string ToMarkdownRow(int rank)
     {
-        return $"| {rank} | {Candidate.Symbol} | {ScannerRank} | {Result.TotalPnl:F2} | {Result.TotalTrades} | {Result.WinRatePercent:F2}% | {Result.Winners} | {Result.Losers} | {Candidate.Score:F2} | {Candidate.MomentumPercent:F2}% | {Candidate.VolumeRatio:F2} | {Candidate.Close:F2} |";
+        return $"| {rank} | {Candidate.Symbol} | {Candidate.Side} | {ScannerRank} | {Result.TotalPnl:F2} | {Result.TotalTrades} | {Result.WinRatePercent:F2}% | {Result.Winners} | {Result.Losers} | {Candidate.Score:F2} | {Candidate.MomentumPercent:F2}% | {Candidate.VolumeRatio:F2} | {Candidate.Close:F2} |";
     }
 }

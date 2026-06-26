@@ -228,8 +228,8 @@ public static class SailorBatchBacktestRunner
         }
         else
         {
-            await writer.WriteLineAsync("| Rank | Symbol | Scanner rank | PnL | Trades | Win rate | Winners | Losers | Scanner score | Momentum | Vol ratio | Close |");
-            await writer.WriteLineAsync("|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+            await writer.WriteLineAsync("| Rank | Symbol | Side | Scanner rank | PnL | Trades | Win rate | Winners | Losers | Scanner score | Momentum | Vol ratio | Close |");
+            await writer.WriteLineAsync("|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
 
             for (int i = 0; i < rankedRows.Count; i++)
             {
@@ -249,13 +249,13 @@ public static class SailorBatchBacktestRunner
         }
         else
         {
-            await writer.WriteLineAsync("| Scanner rank | Symbol | Score | Momentum | Vol ratio | Close | Reason |");
-            await writer.WriteLineAsync("|---:|---|---:|---:|---:|---:|---|");
+            await writer.WriteLineAsync("| Scanner rank | Symbol | Side | Score | Momentum | Vol ratio | Close | Reason |");
+            await writer.WriteLineAsync("|---:|---|---|---:|---:|---:|---:|---|");
 
             for (int i = 0; i < scannerCandidates.Count; i++)
             {
                 ScannerCandidate candidate = scannerCandidates[i];
-                await writer.WriteLineAsync($"| {i + 1} | {candidate.Symbol} | {candidate.Score:F2} | {candidate.MomentumPercent:F2}% | {candidate.VolumeRatio:F2} | {candidate.Close:F2} | {EscapeMarkdown(candidate.Reason)} |");
+                await writer.WriteLineAsync($"| {i + 1} | {candidate.Symbol} | {candidate.Side} | {candidate.Score:F2} | {candidate.MomentumPercent:F2}% | {candidate.VolumeRatio:F2} | {candidate.Close:F2} | {EscapeMarkdown(candidate.Reason)} |");
             }
 
             await writer.WriteLineAsync();

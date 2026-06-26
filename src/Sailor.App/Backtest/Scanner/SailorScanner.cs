@@ -84,34 +84,6 @@ public sealed class SailorScanner
             return null;
         }
 
-        if (profile.RequireEma9AboveSma20)
-        {
-            if (!latestIndicators.Ema9.HasValue || !latestIndicators.Sma20.HasValue)
-            {
-                return null;
-            }
-
-            if (latestIndicators.Ema9.Value <= latestIndicators.Sma20.Value)
-            {
-                return null;
-            }
-        }
-
-        if (profile.RequirePriceAboveVwap)
-        {
-            if (!latestIndicators.Vwap.HasValue || latestBar.Close <= latestIndicators.Vwap.Value)
-            {
-                return null;
-            }
-        }
-
-        if (profile.RequirePriceAboveSma200WhenAvailable &&
-            latestIndicators.Sma200.HasValue &&
-            latestBar.Close <= latestIndicators.Sma200.Value)
-        {
-            return null;
-        }
-
         decimal volumeRatio = 0m;
         if (latestIndicators.VolumeAverage20.HasValue && latestIndicators.VolumeAverage20.Value > 0m)
         {
@@ -129,22 +101,105 @@ public sealed class SailorScanner
             ? (latestBar.Close - lookbackClose) / lookbackClose * 100m
             : 0m;
 
+        ScannerCandidate? longCandidate = profile.SideMode.AllowsLong()
+            ? TryCreateDirectionalCandidate(dataSet, latestBar, latestIndicators, profile, volumeRatio, momentumPercent, "LONG")
+            : null;
+
+        ScannerCandidate? shortCandidate = profile.SideMode.AllowsShort()
+            ? TryCreateDirectionalCandidate(dataSet, latestBar, latestIndicators, profile, volumeRatio, momentumPercent, "SHORT")
+            : null;
+
+        return new[] { longCandidate, shortCandidate }
+            .Where(candidate => candidate is not null)
+            .Select(candidate => candidate!)
+            .OrderByDescending(candidate => candidate.Score)
+            .FirstOrDefault();
+    }
+
+    private static ScannerCandidate? TryCreateDirectionalCandidate(
+        BacktestDataSet dataSet,
+        BacktestBar latestBar,
+        BacktestIndicatorSnapshot latestIndicators,
+        SailorStrategyProfile profile,
+        decimal volumeRatio,
+        decimal momentumPercent,
+        string side)
+    {
+        bool isShort = side.Equals("SHORT", StringComparison.OrdinalIgnoreCase);
+
+        if (profile.RequireEma9AboveSma20)
+        {
+            if (!latestIndicators.Ema9.HasValue || !latestIndicators.Sma20.HasValue)
+            {
+                return null;
+            }
+
+            bool trendOk = isShort
+                ? latestIndicators.Ema9.Value < latestIndicators.Sma20.Value
+                : latestIndicators.Ema9.Value > latestIndicators.Sma20.Value;
+
+            if (!trendOk)
+            {
+                return null;
+            }
+        }
+
+        if (profile.RequirePriceAboveVwap)
+        {
+            if (!latestIndicators.Vwap.HasValue)
+            {
+                return null;
+            }
+
+            bool vwapOk = isShort
+                ? latestBar.Close < latestIndicators.Vwap.Value
+                : latestBar.Close > latestIndicators.Vwap.Value;
+
+            if (!vwapOk)
+            {
+                return null;
+            }
+        }
+
+        if (profile.RequirePriceAboveSma200WhenAvailable && latestIndicators.Sma200.HasValue)
+        {
+            bool sma200Ok = isShort
+                ? latestBar.Close < latestIndicators.Sma200.Value
+                : latestBar.Close > latestIndicators.Sma200.Value;
+
+            if (!sma200Ok)
+            {
+                return null;
+            }
+        }
+
         decimal emaSpreadPercent = CalculatePercentSpread(latestIndicators.Ema9, latestIndicators.Sma20);
         decimal vwapSpreadPercent = CalculatePercentSpread(latestBar.Close, latestIndicators.Vwap);
         decimal sma200SpreadPercent = CalculatePercentSpread(latestBar.Close, latestIndicators.Sma200);
 
-        decimal score =
-            momentumPercent * 2.0m +
-            emaSpreadPercent * 2.0m +
-            vwapSpreadPercent * 1.5m +
-            Math.Min(volumeRatio, 5m) * 10m +
-            Math.Max(0m, sma200SpreadPercent) * 0.5m;
+        decimal directionalMomentum = isShort ? -momentumPercent : momentumPercent;
+        decimal directionalEmaSpread = isShort ? -emaSpreadPercent : emaSpreadPercent;
+        decimal directionalVwapSpread = isShort ? -vwapSpreadPercent : vwapSpreadPercent;
+        decimal directionalSma200Spread = isShort ? -sma200SpreadPercent : sma200SpreadPercent;
 
-        string reason = BuildReason(latestBar, latestIndicators, volumeRatio);
+        decimal score =
+            directionalMomentum * 2.0m +
+            directionalEmaSpread * 2.0m +
+            directionalVwapSpread * 1.5m +
+            Math.Min(volumeRatio, 5m) * 10m +
+            Math.Max(0m, directionalSma200Spread) * 0.5m;
+
+        if (score <= 0m)
+        {
+            return null;
+        }
+
+        string reason = BuildReason(latestBar, latestIndicators, volumeRatio, side);
 
         return new ScannerCandidate(
             Symbol: dataSet.Symbol,
             Timeframe: dataSet.Timeframe,
+            Side: side.ToUpperInvariant(),
             Close: latestBar.Close,
             Volume: latestBar.Volume,
             Ema9: latestIndicators.Ema9,
@@ -181,29 +236,30 @@ public sealed class SailorScanner
     private static string BuildReason(
         BacktestBar latestBar,
         BacktestIndicatorSnapshot latestIndicators,
-        decimal volumeRatio)
+        decimal volumeRatio,
+        string side)
     {
-        var parts = new List<string>();
+        var parts = new List<string> { side.ToUpperInvariant() };
 
         if (latestIndicators.Ema9.HasValue && latestIndicators.Sma20.HasValue)
         {
             parts.Add(latestIndicators.Ema9.Value > latestIndicators.Sma20.Value
                 ? "EMA9>SMA20"
-                : "EMA9<=SMA20");
+                : "EMA9<SMA20");
         }
 
         if (latestIndicators.Vwap.HasValue)
         {
             parts.Add(latestBar.Close > latestIndicators.Vwap.Value
                 ? "Close>VWAP"
-                : "Close<=VWAP");
+                : "Close<VWAP");
         }
 
         if (latestIndicators.Sma200.HasValue)
         {
             parts.Add(latestBar.Close > latestIndicators.Sma200.Value
                 ? "Close>SMA200"
-                : "Close<=SMA200");
+                : "Close<SMA200");
         }
         else
         {

@@ -18,13 +18,14 @@ public sealed class SailorConductBacktestStrategy : IBacktestStrategy
 
     public string Name => _entryStrategy.StrategyName;
 
-    public bool AllowsShortEntries => _entryStrategy is ISailorConductPositionStrategy positionStrategy && positionStrategy.AllowsShortEntries;
+    public bool AllowsShortEntries => _profile.SideMode.AllowsShort();
 
     public BacktestSignal Evaluate(
         BacktestBar currentBar,
         BacktestBar? previousBar,
         BacktestIndicatorSnapshot indicators,
-        bool hasOpenPosition)
+        bool hasOpenPosition,
+        int positionSide)
     {
         Remember(currentBar);
 
@@ -41,7 +42,8 @@ public sealed class SailorConductBacktestStrategy : IBacktestStrategy
                 indicators,
                 _recentBars,
                 _profile,
-                hasOpenPosition);
+                hasOpenPosition,
+                positionSide);
         }
 
         if (hasOpenPosition)

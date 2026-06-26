@@ -3,6 +3,7 @@ namespace Sailor.App.Backtest.Scanner;
 public sealed record ScannerCandidate(
     string Symbol,
     string Timeframe,
+    string Side,
     decimal Close,
     long Volume,
     decimal? Ema9,
@@ -17,7 +18,7 @@ public sealed record ScannerCandidate(
 {
     public string ToDisplayLine(int rank)
     {
-        return $"{rank,2}. {Symbol,-6} | Close={Close,8:F2} | Score={Score,7:F2} | " +
+        return $"{rank,2}. {Symbol,-6} | Side={Side,-5} | Close={Close,8:F2} | Score={Score,7:F2} | " +
                $"Mom={MomentumPercent,7:F2}% | VolRatio={VolumeRatio,5:F2} | " +
                $"EMA9={Format(Ema9),8} | SMA20={Format(Sma20),8} | SMA200={Format(Sma200),8} | VWAP={Format(Vwap),8} | {Reason}";
     }

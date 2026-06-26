@@ -76,6 +76,8 @@ public sealed class ScannerSettings
 
 public sealed class SailorProfileSettings
 {
+    public string? SideMode { get; set; }
+
     public decimal? EntryMomentumPercent { get; set; }
 
     public decimal? ExitMomentumPercent { get; set; }
