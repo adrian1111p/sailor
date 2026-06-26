@@ -1,17 +1,22 @@
-﻿using Sailor.App.Backtest;
+using Sailor.App.Backtest;
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Runner;
 using Sailor.App.Backtest.Scanner;
+using Sailor.App.Configuration;
 using Sailor.App.Logging;
+
+SailorAppSettings settings = SailorSettingsLoader.Load();
 
 Console.WriteLine("sailor - C# day trading application");
 Console.WriteLine("Mode: development / paper / backtest only");
+Console.WriteLine($"Default timeframe: {settings.DefaultTimeframe}");
+Console.WriteLine($"Default profile: {settings.DefaultProfile}");
 Console.WriteLine();
 
 if (args.Length == 0)
 {
-    PrintHelp();
+    PrintHelp(settings);
     return;
 }
 
@@ -33,13 +38,13 @@ switch (command)
 
         string timeframe = args.Length >= 3
             ? args[2].Trim()
-            : "1m";
+            : settings.DefaultTimeframe;
 
         string profileName = args.Length >= 4
             ? args[3].Trim()
-            : "sailor-trend-volume";
+            : settings.DefaultProfile;
 
-        await SimpleBacktestRunner.RunAsync(symbol, timeframe, profileName);
+        await SimpleBacktestRunner.RunAsync(symbol, timeframe, profileName, echoToConsole: true, settings: settings);
         break;
     }
 
@@ -47,11 +52,11 @@ switch (command)
     {
         string timeframe = args.Length >= 2
             ? args[1].Trim()
-            : "1m";
+            : settings.DefaultTimeframe;
 
         string profileName = args.Length >= 3
             ? args[2].Trim()
-            : "sailor-trend-volume";
+            : settings.DefaultProfile;
 
         int? topCount = null;
         if (args.Length >= 4 && int.TryParse(args[3], out int parsedTopCount))
@@ -59,7 +64,7 @@ switch (command)
             topCount = parsedTopCount;
         }
 
-        await RunScannerAsync(timeframe, profileName, topCount);
+        await RunScannerAsync(timeframe, profileName, topCount, settings);
         break;
     }
 
@@ -69,11 +74,11 @@ switch (command)
     {
         string timeframe = args.Length >= 2
             ? args[1].Trim()
-            : "1m";
+            : settings.DefaultTimeframe;
 
         string profileName = args.Length >= 3
             ? args[2].Trim()
-            : "sailor-trend-volume";
+            : settings.DefaultProfile;
 
         int? topCount = null;
         if (args.Length >= 4 && int.TryParse(args[3], out int parsedTopCount))
@@ -83,30 +88,41 @@ switch (command)
 
         string universeNameOrCsv = args.Length >= 5
             ? args[4].Trim()
-            : "all";
+            : settings.DefaultUniverse;
 
         await SailorBatchBacktestRunner.RunAsync(
             timeframe,
             profileName,
             topCount,
-            universeNameOrCsv);
+            universeNameOrCsv,
+            settings);
 
         break;
     }
 
     default:
         Console.WriteLine($"Unknown command: {command}");
-        PrintHelp();
+        PrintHelp(settings);
         break;
 }
 
-static async Task RunScannerAsync(string timeframe, string profileName, int? topCount)
+static async Task RunScannerAsync(
+    string timeframe,
+    string profileName,
+    int? topCount,
+    SailorAppSettings settings)
 {
-    SailorStrategyProfile profile = SailorStrategyProfile.FromName(profileName);
+    SailorStrategyProfile profile = SailorStrategyProfile.FromName(profileName, settings);
     var provider = new CsvBacktestDataProvider();
     var scanner = new SailorScanner(provider);
 
-    IReadOnlyList<ScannerCandidate> candidates = scanner.Scan(timeframe, profile, topCount);
+    int effectiveTopCount = Math.Max(
+        1,
+        topCount.GetValueOrDefault(profile.ScannerTopCount > 0
+            ? profile.ScannerTopCount
+            : settings.Scanner.DefaultTopCount));
+
+    IReadOnlyList<ScannerCandidate> candidates = scanner.Scan(timeframe, profile, effectiveTopCount);
 
     string logFilePath = Path.Combine(
         SailorLogPaths.Backtest,
@@ -130,9 +146,10 @@ static async Task RunScannerAsync(string timeframe, string profileName, int? top
     Log("sailor scanner started");
     Log($"Timeframe: {timeframe}");
     Log($"Profile: {profile.Name}");
-    Log($"Top count: {topCount.GetValueOrDefault(profile.ScannerTopCount)}");
+    Log($"Top count: {effectiveTopCount}");
     Log($"Filters: price {profile.MinimumPrice:F2}-{profile.MaximumPrice:F2}, min volume {profile.MinimumVolume}, min volume ratio {profile.MinimumVolumeRatio:F2}");
     Log($"Trend filters: EMA9>SMA20={profile.RequireEma9AboveSma20}, Close>VWAP={profile.RequirePriceAboveVwap}, Close>SMA200 when available={profile.RequirePriceAboveSma200WhenAvailable}");
+    Log($"Risk settings: initial cash {settings.Risk.InitialCash:F2}, max position {settings.Risk.MaxPositionNotional:F2}, SL {settings.Risk.StopLossPercent:F2}%, TP {settings.Risk.TakeProfitPercent:F2}%, max hold {settings.Risk.MaxHoldBars}");
     Log("");
 
     if (candidates.Count == 0)
@@ -187,7 +204,7 @@ static void PrintAvailableBacktestData(string[] args)
     }
 }
 
-static void PrintHelp()
+static void PrintHelp(SailorAppSettings settings)
 {
     Console.WriteLine("Usage:");
     Console.WriteLine("  sailor backtest");
@@ -204,4 +221,10 @@ static void PrintHelp()
     Console.WriteLine("  sailor rank 1m sailor-trend-volume 20 all");
     Console.WriteLine("  sailor rank 1m sailor-trend-volume 20 smallcaps");
     Console.WriteLine("  sailor rank 1m simple-momentum 20 ALIT,BARK,SOFI,PLTR");
+    Console.WriteLine();
+    Console.WriteLine("Current appsettings defaults:");
+    Console.WriteLine($"  timeframe: {settings.DefaultTimeframe}");
+    Console.WriteLine($"  profile:   {settings.DefaultProfile}");
+    Console.WriteLine($"  universe:  {settings.DefaultUniverse}");
+    Console.WriteLine($"  top count: {settings.Scanner.DefaultTopCount}");
 }

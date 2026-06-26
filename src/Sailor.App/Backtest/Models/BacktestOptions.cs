@@ -1,3 +1,5 @@
+using Sailor.App.Configuration;
+
 namespace Sailor.App.Backtest.Models;
 
 public sealed record BacktestOptions(
@@ -12,17 +14,21 @@ public sealed record BacktestOptions(
 {
     public static BacktestOptions CreateDefault(
         string symbol,
-        string timeframe,
-        string profileName = "sailor-trend-volume")
+        string? timeframe,
+        string? profileName = null,
+        SailorAppSettings? settings = null)
     {
+        settings ??= new SailorAppSettings();
+        BacktestRiskSettings risk = settings.Risk ?? new BacktestRiskSettings();
+
         return new BacktestOptions(
             Symbol: symbol.Trim().ToUpperInvariant(),
-            Timeframe: string.IsNullOrWhiteSpace(timeframe) ? "1m" : timeframe.Trim(),
-            ProfileName: string.IsNullOrWhiteSpace(profileName) ? "sailor-trend-volume" : profileName.Trim(),
-            InitialCash: 10_000.00m,
-            MaxPositionNotional: 1_000.00m,
-            StopLossPercent: 1.00m,
-            TakeProfitPercent: 2.00m,
-            MaxHoldBars: 30);
+            Timeframe: string.IsNullOrWhiteSpace(timeframe) ? settings.DefaultTimeframe : timeframe.Trim(),
+            ProfileName: string.IsNullOrWhiteSpace(profileName) ? settings.DefaultProfile : profileName.Trim(),
+            InitialCash: risk.InitialCash,
+            MaxPositionNotional: risk.MaxPositionNotional,
+            StopLossPercent: risk.StopLossPercent,
+            TakeProfitPercent: risk.TakeProfitPercent,
+            MaxHoldBars: risk.MaxHoldBars);
     }
 }

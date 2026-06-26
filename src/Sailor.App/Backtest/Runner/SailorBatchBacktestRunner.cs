@@ -2,6 +2,7 @@ using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Scanner;
+using Sailor.App.Configuration;
 using Sailor.App.Logging;
 
 namespace Sailor.App.Backtest.Runner;
@@ -9,21 +10,31 @@ namespace Sailor.App.Backtest.Runner;
 public static class SailorBatchBacktestRunner
 {
     public static async Task<string> RunAsync(
-        string timeframe,
-        string profileName,
+        string? timeframe,
+        string? profileName,
         int? topCount,
-        string? universeNameOrCsv)
+        string? universeNameOrCsv,
+        SailorAppSettings? settings = null)
     {
+        settings ??= new SailorAppSettings();
+
         string normalizedTimeframe = string.IsNullOrWhiteSpace(timeframe)
-            ? "1m"
+            ? settings.DefaultTimeframe
             : timeframe.Trim();
 
-        SailorStrategyProfile profile = SailorStrategyProfile.FromName(profileName);
-        int effectiveTopCount = Math.Max(1, topCount.GetValueOrDefault(profile.ScannerTopCount));
+        SailorStrategyProfile profile = SailorStrategyProfile.FromName(profileName, settings);
+        int configuredTopCount = profile.ScannerTopCount > 0
+            ? profile.ScannerTopCount
+            : settings.Scanner.DefaultTopCount;
+        int effectiveTopCount = Math.Max(1, topCount.GetValueOrDefault(configuredTopCount));
+
+        string universeName = string.IsNullOrWhiteSpace(universeNameOrCsv)
+            ? settings.DefaultUniverse
+            : universeNameOrCsv.Trim();
 
         var provider = new CsvBacktestDataProvider();
         IReadOnlyList<string> availableSymbols = provider.ListSymbols();
-        IReadOnlyList<string> requestedUniverse = SailorSymbolUniverses.Resolve(universeNameOrCsv, availableSymbols);
+        IReadOnlyList<string> requestedUniverse = SailorSymbolUniverses.Resolve(universeName, availableSymbols);
         IReadOnlyList<string> availableUniverse = requestedUniverse
             .Where(symbol => availableSymbols.Contains(symbol, StringComparer.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -42,10 +53,6 @@ public static class SailorBatchBacktestRunner
             profile,
             effectiveTopCount,
             availableUniverse);
-
-        string universeName = string.IsNullOrWhiteSpace(universeNameOrCsv)
-            ? "all"
-            : universeNameOrCsv.Trim();
 
         string reportPath = Path.Combine(
             SailorLogPaths.Backtest,
@@ -73,7 +80,8 @@ public static class SailorBatchBacktestRunner
                     candidate.Symbol,
                     normalizedTimeframe,
                     profile.Name,
-                    echoToConsole: false);
+                    echoToConsole: false,
+                    settings: settings);
 
                 rows.Add(new BacktestRankingRow(
                     ScannerRank: i + 1,
@@ -97,6 +105,7 @@ public static class SailorBatchBacktestRunner
             reportPath,
             normalizedTimeframe,
             profile,
+            settings,
             universeName,
             requestedUniverse,
             availableUniverse,
@@ -117,6 +126,7 @@ public static class SailorBatchBacktestRunner
         string reportPath,
         string timeframe,
         SailorStrategyProfile profile,
+        SailorAppSettings settings,
         string universeName,
         IReadOnlyList<string> requestedUniverse,
         IReadOnlyList<string> availableUniverse,
@@ -136,6 +146,7 @@ public static class SailorBatchBacktestRunner
         await writer.WriteLineAsync($"Timeframe: `{timeframe}`");
         await writer.WriteLineAsync($"Profile: `{profile.Name}`");
         await writer.WriteLineAsync($"Universe: `{universeName}`");
+        await writer.WriteLineAsync($"Configured risk: initial cash `{settings.Risk.InitialCash:F2}`, max position `{settings.Risk.MaxPositionNotional:F2}`, stop loss `{settings.Risk.StopLossPercent:F2}%`, take profit `{settings.Risk.TakeProfitPercent:F2}%`, max hold `{settings.Risk.MaxHoldBars}` bars");
         await writer.WriteLineAsync($"Requested symbols: {requestedUniverse.Count}");
         await writer.WriteLineAsync($"Symbols with data: {availableUniverse.Count}");
         await writer.WriteLineAsync($"Scanner candidates: {scannerCandidates.Count}");
@@ -152,6 +163,15 @@ public static class SailorBatchBacktestRunner
         await writer.WriteLineAsync($"- Require EMA9 > SMA20: {profile.RequireEma9AboveSma20}");
         await writer.WriteLineAsync($"- Require close > VWAP: {profile.RequirePriceAboveVwap}");
         await writer.WriteLineAsync($"- Require close > SMA200 when available: {profile.RequirePriceAboveSma200WhenAvailable}");
+        await writer.WriteLineAsync();
+
+        await writer.WriteLineAsync("## Risk settings");
+        await writer.WriteLineAsync();
+        await writer.WriteLineAsync($"- Initial cash: {settings.Risk.InitialCash:F2}");
+        await writer.WriteLineAsync($"- Max position notional: {settings.Risk.MaxPositionNotional:F2}");
+        await writer.WriteLineAsync($"- Stop loss: {settings.Risk.StopLossPercent:F2}%");
+        await writer.WriteLineAsync($"- Take profit: {settings.Risk.TakeProfitPercent:F2}%");
+        await writer.WriteLineAsync($"- Max hold bars: {settings.Risk.MaxHoldBars}");
         await writer.WriteLineAsync();
 
         if (missingSymbols.Count > 0)

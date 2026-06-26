@@ -3,15 +3,22 @@ using Sailor.App.Backtest.Indicators;
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Strategies;
+using Sailor.App.Configuration;
 
 namespace Sailor.App.Backtest;
 
 public static class SimpleBacktestRunner
 {
-    public static async Task<BacktestRunResult> RunAsync(string symbol, string timeframe = "1m", string profileName = "sailor-trend-volume", bool echoToConsole = true)
+    public static async Task<BacktestRunResult> RunAsync(
+        string symbol,
+        string? timeframe = null,
+        string? profileName = null,
+        bool echoToConsole = true,
+        SailorAppSettings? settings = null)
     {
-        BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe, profileName);
-        SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName);
+        settings ??= new SailorAppSettings();
+        BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe, profileName, settings);
+        SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName, settings);
 
         string logDirectory = GetBacktestLogDirectory();
         Directory.CreateDirectory(logDirectory);
@@ -70,6 +77,7 @@ public static class SimpleBacktestRunner
         Log($"Stop loss: {options.StopLossPercent:F2}%");
         Log($"Take profit: {options.TakeProfitPercent:F2}%");
         Log($"Max hold bars: {options.MaxHoldBars}");
+        Log("Settings source: appsettings.json with built-in defaults fallback");
         Log($"Entry momentum: {profile.EntryMomentumPercent:F2}%");
         Log($"Exit momentum: {profile.ExitMomentumPercent:F2}%");
         Log($"Price filter: {profile.MinimumPrice:F2}-{profile.MaximumPrice:F2}");

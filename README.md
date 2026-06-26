@@ -114,3 +114,40 @@ The ranking report is written to:
 ```text
 src/Sailor.App/Logs/Backtest/ranking_<universe>_<profile>_<timeframe>_<timestamp>.md
 ```
+
+## SAILOR-007 appsettings.json configuration
+
+Risk and profile settings are now read from:
+
+```text
+src/Sailor.App/appsettings.json
+```
+
+Configurable defaults:
+
+- default timeframe
+- default profile
+- default universe
+- initial cash
+- max position notional
+- stop loss percent
+- take profit percent
+- max hold bars
+- scanner top count
+- profile filters and thresholds
+
+Examples using configured defaults:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- scan
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA
+```
+
+Command-line values still override the configured defaults.
