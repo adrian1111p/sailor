@@ -7,6 +7,7 @@ obj/
 *.log
 
 # Sailor logs
-src/Sailor.App/Logs/**/*.log
-src/Sailor.App/Logs/**/*.txt
-!src/Sailor.App/Logs/**/.gitkeep
+logs/**/*.log
+logs/**/*.txt
+logs/**/*.md
+!logs/**/.gitkeep

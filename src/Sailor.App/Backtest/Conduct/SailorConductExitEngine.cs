@@ -1,4 +1,5 @@
 using Sailor.App.Backtest.Models;
+using Sailor.App.Backtest.Profiles;
 using Sailor.App.Configuration;
 
 namespace Sailor.App.Backtest.Conduct;
@@ -14,8 +15,10 @@ public sealed class SailorConductExitEngine
 
     public SailorConductExitDecision EvaluateLongExit(
         BacktestBar bar,
+        BacktestBar? previousBar,
         BacktestIndicatorSnapshot indicators,
         BacktestOptions options,
+        SailorStrategyProfile profile,
         SailorConductExitState state,
         int currentBarIndex)
     {
@@ -27,6 +30,7 @@ public sealed class SailorConductExitEngine
             : options.StopLossPercent;
 
         decimal activeStop = state.EntryPrice * (1m - hardStopPercent / 100m);
+        string activeStopMode = "conduct hard stop";
 
         if (_settings.MoveStopToBreakevenAfterPercent > 0m &&
             state.PeakPercent >= _settings.MoveStopToBreakevenAfterPercent)
@@ -37,7 +41,11 @@ public sealed class SailorConductExitEngine
         if (state.BreakevenArmed)
         {
             decimal breakevenStop = state.EntryPrice * (1m + _settings.BreakevenBufferPercent / 100m);
-            activeStop = Math.Max(activeStop, breakevenStop);
+            if (breakevenStop > activeStop)
+            {
+                activeStop = breakevenStop;
+                activeStopMode = "conduct breakeven stop";
+            }
         }
 
         if (_settings.StartTrailingAfterPercent > 0m &&
@@ -57,20 +65,36 @@ public sealed class SailorConductExitEngine
                 trailingStop = Math.Max(trailingStop, breakevenStop);
             }
 
-            activeStop = Math.Max(activeStop, trailingStop);
+            if (trailingStop > activeStop)
+            {
+                activeStop = trailingStop;
+                activeStopMode = "conduct trailing/giveback stop";
+            }
+        }
+
+        if (_settings.UseMicroTrail &&
+            _settings.MicroTrailActivatePercent > 0m &&
+            state.PeakPercent >= _settings.MicroTrailActivatePercent)
+        {
+            decimal microTrailStop = state.PeakPrice * (1m - _settings.MicroTrailPercent / 100m);
+            if (state.BreakevenArmed)
+            {
+                decimal breakevenStop = state.EntryPrice * (1m + _settings.BreakevenBufferPercent / 100m);
+                microTrailStop = Math.Max(microTrailStop, breakevenStop);
+            }
+
+            if (microTrailStop > activeStop)
+            {
+                activeStop = microTrailStop;
+                activeStopMode = "conduct micro trail stop";
+            }
         }
 
         if (bar.Low <= activeStop)
         {
-            string stopMode = state.TrailingArmed
-                ? "conduct trailing/giveback stop"
-                : state.BreakevenArmed
-                    ? "conduct breakeven stop"
-                    : "conduct hard stop";
-
             return SailorConductExitDecision.Exit(
                 activeStop,
-                $"{stopMode}: low {bar.Low:F2} <= active stop {activeStop:F2}, peak {state.PeakPrice:F2}, held {barsHeld} bars.");
+                $"{activeStopMode}: low {bar.Low:F2} <= active stop {activeStop:F2}, peak {state.PeakPrice:F2}, held {barsHeld} bars.");
         }
 
         if (_settings.UseTakeProfitExit)
@@ -101,6 +125,17 @@ public sealed class SailorConductExitEngine
 
         if (barsHeld >= _settings.MinimumBarsBeforeIndicatorExit)
         {
+            if (_settings.UseOppositeMomentumExit && previousBar is not null)
+            {
+                decimal exitThreshold = previousBar.Close * (1m - profile.ExitMomentumPercent / 100m);
+                if (bar.Close <= exitThreshold)
+                {
+                    return SailorConductExitDecision.Exit(
+                        bar.Close,
+                        $"conduct opposite momentum: close {bar.Close:F2} <= threshold {exitThreshold:F2}, held {barsHeld} bars.");
+                }
+            }
+
             if (_settings.UseEma9Exit && indicators.Ema9.HasValue && bar.Close < indicators.Ema9.Value)
             {
                 return SailorConductExitDecision.Exit(

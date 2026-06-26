@@ -12,6 +12,8 @@ public sealed class SailorAppSettings
 
     public ConductExitSettings Conduct { get; set; } = new();
 
+    public Dictionary<string, ConductExitSettings> ConductProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     public ScannerSettings Scanner { get; set; } = new();
 
     public Dictionary<string, SailorProfileSettings> Profiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -56,6 +58,14 @@ public sealed class ConductExitSettings
 
     public bool UseTrendExit { get; set; } = true;
 
+    public bool UseOppositeMomentumExit { get; set; } = true;
+
+    public bool UseMicroTrail { get; set; } = false;
+
+    public decimal MicroTrailActivatePercent { get; set; } = 0.40m;
+
+    public decimal MicroTrailPercent { get; set; } = 0.20m;
+
     public int MaxHoldBars { get; set; } = 45;
 }
 
@@ -85,6 +95,22 @@ public sealed class SailorProfileSettings
     public bool? RequirePriceAboveSma200WhenAvailable { get; set; }
 
     public bool? UseConductExits { get; set; }
+
+    public string? ConductProfileName { get; set; }
+
+    public bool? UseMarketHours { get; set; }
+
+    public int? MarketOpenMinute { get; set; }
+
+    public int? SkipFirstMinutes { get; set; }
+
+    public int? LastEntryMinute { get; set; }
+
+    public int? ForceFlatMinute { get; set; }
+
+    public int? MinimumBarsBetweenEntries { get; set; }
+
+    public bool? UseNextBarOpenEntry { get; set; }
 
     public int? ScannerLookbackBars { get; set; }
 

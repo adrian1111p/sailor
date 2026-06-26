@@ -23,6 +23,7 @@ public static class SailorBatchBacktestRunner
             : timeframe.Trim();
 
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(profileName, settings);
+        ConductExitSettings conductSettings = ResolveConductSettings(settings, profile);
         int configuredTopCount = profile.ScannerTopCount > 0
             ? profile.ScannerTopCount
             : settings.Scanner.DefaultTopCount;
@@ -106,6 +107,7 @@ public static class SailorBatchBacktestRunner
             normalizedTimeframe,
             profile,
             settings,
+            conductSettings,
             universeName,
             requestedUniverse,
             availableUniverse,
@@ -127,6 +129,7 @@ public static class SailorBatchBacktestRunner
         string timeframe,
         SailorStrategyProfile profile,
         SailorAppSettings settings,
+        ConductExitSettings conductSettings,
         string universeName,
         IReadOnlyList<string> requestedUniverse,
         IReadOnlyList<string> availableUniverse,
@@ -164,6 +167,14 @@ public static class SailorBatchBacktestRunner
         await writer.WriteLineAsync($"- Require close > VWAP: {profile.RequirePriceAboveVwap}");
         await writer.WriteLineAsync($"- Require close > SMA200 when available: {profile.RequirePriceAboveSma200WhenAvailable}");
         await writer.WriteLineAsync($"- Use conduct exits: {profile.UseConductExits}");
+        await writer.WriteLineAsync($"- Conduct profile: {profile.ConductProfileName}");
+        await writer.WriteLineAsync($"- Market hours enabled: {profile.UseMarketHours}");
+        await writer.WriteLineAsync($"- Market open minute: {profile.MarketOpenMinute}");
+        await writer.WriteLineAsync($"- Skip first minutes: {profile.SkipFirstMinutes}");
+        await writer.WriteLineAsync($"- Last entry minute: {profile.LastEntryMinute}");
+        await writer.WriteLineAsync($"- Force flat minute: {profile.ForceFlatMinute}");
+        await writer.WriteLineAsync($"- Minimum bars between entries: {profile.MinimumBarsBetweenEntries}");
+        await writer.WriteLineAsync($"- Next-bar-open entry: {profile.UseNextBarOpenEntry}");
         await writer.WriteLineAsync();
 
         await writer.WriteLineAsync("## Risk settings");
@@ -179,19 +190,23 @@ public static class SailorBatchBacktestRunner
         {
             await writer.WriteLineAsync("## Conduct exit settings");
             await writer.WriteLineAsync();
-            await writer.WriteLineAsync($"- Hard stop: {settings.Conduct.HardStopPercent:F2}%");
-            await writer.WriteLineAsync($"- Fixed take profit enabled: {settings.Conduct.UseTakeProfitExit}");
-            await writer.WriteLineAsync($"- Take profit: {settings.Conduct.TakeProfitPercent:F2}%");
-            await writer.WriteLineAsync($"- Move stop to breakeven after: {settings.Conduct.MoveStopToBreakevenAfterPercent:F2}%");
-            await writer.WriteLineAsync($"- Breakeven buffer: {settings.Conduct.BreakevenBufferPercent:F2}%");
-            await writer.WriteLineAsync($"- Start trailing after: {settings.Conduct.StartTrailingAfterPercent:F2}%");
-            await writer.WriteLineAsync($"- Giveback percent: {settings.Conduct.GivebackPercent:F2}%");
-            await writer.WriteLineAsync($"- Giveback notional cap: {settings.Conduct.GivebackNotionalCap:F2}");
-            await writer.WriteLineAsync($"- Indicator exits after bars: {settings.Conduct.MinimumBarsBeforeIndicatorExit}");
-            await writer.WriteLineAsync($"- EMA9 exit: {settings.Conduct.UseEma9Exit}");
-            await writer.WriteLineAsync($"- VWAP exit: {settings.Conduct.UseVwapExit}");
-            await writer.WriteLineAsync($"- Trend exit: {settings.Conduct.UseTrendExit}");
-            await writer.WriteLineAsync($"- Max hold bars: {settings.Conduct.MaxHoldBars}");
+            await writer.WriteLineAsync($"- Hard stop: {conductSettings.HardStopPercent:F2}%");
+            await writer.WriteLineAsync($"- Fixed take profit enabled: {conductSettings.UseTakeProfitExit}");
+            await writer.WriteLineAsync($"- Take profit: {conductSettings.TakeProfitPercent:F2}%");
+            await writer.WriteLineAsync($"- Move stop to breakeven after: {conductSettings.MoveStopToBreakevenAfterPercent:F2}%");
+            await writer.WriteLineAsync($"- Breakeven buffer: {conductSettings.BreakevenBufferPercent:F2}%");
+            await writer.WriteLineAsync($"- Start trailing after: {conductSettings.StartTrailingAfterPercent:F2}%");
+            await writer.WriteLineAsync($"- Giveback percent: {conductSettings.GivebackPercent:F2}%");
+            await writer.WriteLineAsync($"- Giveback notional cap: {conductSettings.GivebackNotionalCap:F2}");
+            await writer.WriteLineAsync($"- Indicator exits after bars: {conductSettings.MinimumBarsBeforeIndicatorExit}");
+            await writer.WriteLineAsync($"- EMA9 exit: {conductSettings.UseEma9Exit}");
+            await writer.WriteLineAsync($"- VWAP exit: {conductSettings.UseVwapExit}");
+            await writer.WriteLineAsync($"- Trend exit: {conductSettings.UseTrendExit}");
+            await writer.WriteLineAsync($"- Opposite momentum exit: {conductSettings.UseOppositeMomentumExit}");
+            await writer.WriteLineAsync($"- Micro trail: {conductSettings.UseMicroTrail}");
+            await writer.WriteLineAsync($"- Micro trail activate: {conductSettings.MicroTrailActivatePercent:F2}%");
+            await writer.WriteLineAsync($"- Micro trail percent: {conductSettings.MicroTrailPercent:F2}%");
+            await writer.WriteLineAsync($"- Max hold bars: {conductSettings.MaxHoldBars}");
             await writer.WriteLineAsync();
         }
 
@@ -269,6 +284,24 @@ public static class SailorBatchBacktestRunner
                 await writer.WriteLineAsync($"- {EscapeMarkdown(error)}");
             }
         }
+    }
+
+    private static ConductExitSettings ResolveConductSettings(
+        SailorAppSettings settings,
+        SailorStrategyProfile profile)
+    {
+        if (!string.IsNullOrWhiteSpace(profile.ConductProfileName) &&
+            settings.ConductProfiles.TryGetValue(profile.ConductProfileName, out ConductExitSettings? conductProfile))
+        {
+            return conductProfile;
+        }
+
+        if (settings.ConductProfiles.TryGetValue(profile.Name, out ConductExitSettings? profileByName))
+        {
+            return profileByName;
+        }
+
+        return settings.Conduct;
     }
 
     private static string SanitizeFilePart(string value)

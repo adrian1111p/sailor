@@ -14,6 +14,14 @@ public sealed record SailorStrategyProfile(
     bool RequireEma9AboveSma20,
     bool RequirePriceAboveSma200WhenAvailable,
     bool UseConductExits,
+    string ConductProfileName,
+    bool UseMarketHours,
+    int MarketOpenMinute,
+    int SkipFirstMinutes,
+    int LastEntryMinute,
+    int ForceFlatMinute,
+    int MinimumBarsBetweenEntries,
+    bool UseNextBarOpenEntry,
     int ScannerLookbackBars,
     int ScannerMinimumBars,
     int ScannerTopCount)
@@ -32,6 +40,14 @@ public sealed record SailorStrategyProfile(
             RequireEma9AboveSma20: true,
             RequirePriceAboveSma200WhenAvailable: true,
             UseConductExits: false,
+            ConductProfileName: "default",
+            UseMarketHours: false,
+            MarketOpenMinute: 570,
+            SkipFirstMinutes: 0,
+            LastEntryMinute: 960,
+            ForceFlatMinute: 960,
+            MinimumBarsBetweenEntries: 0,
+            UseNextBarOpenEntry: false,
             ScannerLookbackBars: 20,
             ScannerMinimumBars: 20,
             ScannerTopCount: 20);
@@ -49,7 +65,8 @@ public sealed record SailorStrategyProfile(
             RequirePriceAboveVwap = false,
             RequireEma9AboveSma20 = false,
             RequirePriceAboveSma200WhenAvailable = false,
-            UseConductExits = false
+            UseConductExits = false,
+            ConductProfileName = "default"
         };
     }
 
@@ -68,8 +85,60 @@ public sealed record SailorStrategyProfile(
             RequireEma9AboveSma20 = true,
             RequirePriceAboveSma200WhenAvailable = false,
             UseConductExits = true,
+            ConductProfileName = "sailor-conduct-v3",
+            UseMarketHours = true,
+            MarketOpenMinute = 570,
+            SkipFirstMinutes = 5,
+            LastEntryMinute = 930,
+            ForceFlatMinute = 955,
+            MinimumBarsBetweenEntries = 2,
+            UseNextBarOpenEntry = true,
             ScannerLookbackBars = 20,
             ScannerMinimumBars = 20,
+            ScannerTopCount = 20
+        };
+    }
+
+    public static SailorStrategyProfile CreateHarvesterConductV3()
+    {
+        SailorStrategyProfile conduct = CreateConductV3();
+
+        return conduct with
+        {
+            Name = "harvester-conduct-v3",
+            EntryMomentumPercent = 0.12m,
+            ExitMomentumPercent = 0.15m,
+            MinimumVolume = 50_000,
+            MinimumVolumeRatio = 0.75m,
+            RequirePriceAboveVwap = true,
+            RequireEma9AboveSma20 = true,
+            RequirePriceAboveSma200WhenAvailable = false,
+            ConductProfileName = "harvester-conduct-v3",
+            MinimumBarsBetweenEntries = 2,
+            ScannerTopCount = 20
+        };
+    }
+
+    public static SailorStrategyProfile CreateHarvesterConductV9()
+    {
+        SailorStrategyProfile conduct = CreateConductV3();
+
+        return conduct with
+        {
+            Name = "harvester-conduct-v9",
+            EntryMomentumPercent = 0.18m,
+            ExitMomentumPercent = 0.18m,
+            MinimumVolume = 100_000,
+            MinimumVolumeRatio = 1.00m,
+            RequirePriceAboveVwap = true,
+            RequireEma9AboveSma20 = true,
+            RequirePriceAboveSma200WhenAvailable = false,
+            ConductProfileName = "harvester-conduct-v9",
+            SkipFirstMinutes = 5,
+            LastEntryMinute = 930,
+            ForceFlatMinute = 955,
+            MinimumBarsBetweenEntries = 3,
+            UseNextBarOpenEntry = true,
             ScannerTopCount = 20
         };
     }
@@ -96,11 +165,16 @@ public sealed record SailorStrategyProfile(
             "conduct-v3" => CreateConductV3(),
             "sailor-conduct" => CreateConductV3(),
             "sailor-conduct-v3" => CreateConductV3(),
+            "harvester-conduct" => CreateHarvesterConductV3(),
+            "harvester-conduct-v3" => CreateHarvesterConductV3(),
+            "harvester-v3" => CreateHarvesterConductV3(),
+            "harvester-conduct-v9" => CreateHarvesterConductV9(),
+            "harvester-v9" => CreateHarvesterConductV9(),
             "simple" => CreateSimpleMomentum(),
             "simple-momentum" => CreateSimpleMomentum(),
             _ when TryGetConfiguredProfile(normalized, settings, out SailorStrategyProfile configuredOnlyProfile) => configuredOnlyProfile,
             _ => throw new ArgumentException(
-                $"Unknown Sailor strategy profile '{profileName}'. Valid profiles: sailor-trend-volume, sailor-conduct-v3, simple-momentum, or a profile configured in appsettings.json.")
+                $"Unknown Sailor strategy profile '{profileName}'. Valid profiles: sailor-trend-volume, sailor-conduct-v3, harvester-conduct-v3, harvester-conduct-v9, simple-momentum, or a profile configured in appsettings.json.")
         };
 
         return ApplyConfiguredOverrides(builtInProfile, settings);
@@ -171,6 +245,14 @@ public sealed record SailorStrategyProfile(
             RequireEma9AboveSma20 = settings.RequireEma9AboveSma20 ?? profile.RequireEma9AboveSma20,
             RequirePriceAboveSma200WhenAvailable = settings.RequirePriceAboveSma200WhenAvailable ?? profile.RequirePriceAboveSma200WhenAvailable,
             UseConductExits = settings.UseConductExits ?? profile.UseConductExits,
+            ConductProfileName = string.IsNullOrWhiteSpace(settings.ConductProfileName) ? profile.ConductProfileName : settings.ConductProfileName.Trim(),
+            UseMarketHours = settings.UseMarketHours ?? profile.UseMarketHours,
+            MarketOpenMinute = settings.MarketOpenMinute ?? profile.MarketOpenMinute,
+            SkipFirstMinutes = settings.SkipFirstMinutes ?? profile.SkipFirstMinutes,
+            LastEntryMinute = settings.LastEntryMinute ?? profile.LastEntryMinute,
+            ForceFlatMinute = settings.ForceFlatMinute ?? profile.ForceFlatMinute,
+            MinimumBarsBetweenEntries = settings.MinimumBarsBetweenEntries ?? profile.MinimumBarsBetweenEntries,
+            UseNextBarOpenEntry = settings.UseNextBarOpenEntry ?? profile.UseNextBarOpenEntry,
             ScannerLookbackBars = settings.ScannerLookbackBars ?? profile.ScannerLookbackBars,
             ScannerMinimumBars = settings.ScannerMinimumBars ?? profile.ScannerMinimumBars,
             ScannerTopCount = settings.ScannerTopCount ?? profile.ScannerTopCount

@@ -15,8 +15,9 @@ It does **not** connect to IBKR, TWS, DAS Trader, or any real broker.
 - CSV-based backtest data
 - Technical indicators: EMA9, SMA20, SMA200, VWAP, VolumeAverage20
 - First Sailor scanner/strategy profile: `sailor-trend-volume`
+- Conduct profiles: `sailor-conduct-v3`, `harvester-conduct-v3`, `harvester-conduct-v9`
 - Optional simple profile: `simple-momentum`
-- Logs under `src/Sailor.App/Logs`
+- Logs under root `logs`
 - No Python
 
 ## Build
@@ -45,6 +46,10 @@ dotnet run --project src/Sailor.App/Sailor.App.csproj -- scan 1m
 dotnet run --project src/Sailor.App/Sailor.App.csproj -- scan 1m sailor-trend-volume 20
 ```
 
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- scan 1m harvester-conduct-v3 20
+```
+
 ## Run backtest
 
 ```bash
@@ -53,6 +58,14 @@ dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest AAPL 1m sailor
 
 ```bash
 dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m simple-momentum
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m harvester-conduct-v3
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m harvester-conduct-v9
 ```
 
 ## SAILOR-005 profile
@@ -70,17 +83,18 @@ dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m simple
 
 ## Logs
 
-Backtest and scanner logs are written to:
+SAILOR-009 moves all logs to the repository root:
 
 ```text
-src/Sailor.App/Logs/Backtest
+logs/Backtest
+logs/Live
+logs/Paper
 ```
 
-Later live and paper logs will stay under:
+The old location is no longer used:
 
 ```text
-src/Sailor.App/Logs/Live
-src/Sailor.App/Logs/Paper
+src/Sailor.App/Logs
 ```
 
 ## SAILOR-006 scanner + automatic backtest ranking
@@ -112,7 +126,7 @@ dotnet run --project src/Sailor.App/Sailor.App.csproj -- scan-backtest 1m sailor
 The ranking report is written to:
 
 ```text
-src/Sailor.App/Logs/Backtest/ranking_<universe>_<profile>_<timeframe>_<timestamp>.md
+logs/Backtest/ranking_<universe>_<profile>_<timeframe>_<timestamp>.md
 ```
 
 ## SAILOR-007 appsettings.json configuration
@@ -135,6 +149,8 @@ Configurable defaults:
 - max hold bars
 - scanner top count
 - profile filters and thresholds
+- conduct exit profile settings
+- market-hours entry and force-flat settings
 
 Examples using configured defaults:
 
@@ -177,8 +193,37 @@ Scanner + automatic backtest ranking with conduct exits:
 dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m sailor-conduct-v3 20 smallcaps
 ```
 
-The conduct settings are configurable in:
+## SAILOR-009 Harvester-inspired conduct profiles
 
-```text
-src/Sailor.App/appsettings.json
+SAILOR-009 keeps the Harvester legacy folder excluded from compilation, but ports the useful **conduct behavior** into Sailor-native profiles:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m harvester-conduct-v3
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m harvester-conduct-v9
+```
+
+The new conduct profiles add:
+
+- scanner-driven entry candidates
+- next-bar-open entry simulation
+- market-hours entry gating
+- forced intraday flat before close
+- minimum bars between entries
+- opposite momentum exit
+- breakeven protection
+- trailing giveback with notional cap
+- optional micro-trail behavior for the V9-style profile
+- multiple entries and exits over the same symbol/day when the setup reappears
+
+Small-cap ranking examples:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m harvester-conduct-v3 20 smallcaps
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m harvester-conduct-v9 20 smallcaps
 ```

@@ -5,6 +5,7 @@ using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Strategies;
 using Sailor.App.Configuration;
+using Sailor.App.Logging;
 
 namespace Sailor.App.Backtest;
 
@@ -20,9 +21,10 @@ public static class SimpleBacktestRunner
         settings ??= new SailorAppSettings();
         BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe, profileName, settings);
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName, settings);
-        var conductExitEngine = new SailorConductExitEngine(settings.Conduct);
+        ConductExitSettings conductSettings = ResolveConductSettings(settings, profile);
+        var conductExitEngine = new SailorConductExitEngine(conductSettings);
 
-        string logDirectory = GetBacktestLogDirectory();
+        string logDirectory = SailorLogPaths.Backtest;
         Directory.CreateDirectory(logDirectory);
 
         string logFilePath = Path.Combine(
@@ -63,10 +65,13 @@ public static class SimpleBacktestRunner
         bool hasOpenPosition = false;
         int quantity = 0;
         int entryBarIndex = -1;
+        int lastExitBarIndex = -10_000;
         decimal entryPrice = 0m;
         DateTimeOffset entryTime = default;
         string entryReason = string.Empty;
         SailorConductExitState? conductState = null;
+        BacktestSignal? pendingNextBarEntry = null;
+        DateTimeOffset pendingSignalTime = default;
 
         Log("sailor backtest started");
         Log($"Symbol: {options.Symbol}");
@@ -88,16 +93,26 @@ public static class SimpleBacktestRunner
         Log($"Minimum volume ratio: {profile.MinimumVolumeRatio:F2}");
         Log($"Profile filters: EMA9>SMA20={profile.RequireEma9AboveSma20}, Close>VWAP={profile.RequirePriceAboveVwap}, Close>SMA200 when available={profile.RequirePriceAboveSma200WhenAvailable}");
         Log($"Conduct exits enabled: {profile.UseConductExits}");
+        Log($"Market hours enabled: {profile.UseMarketHours}");
+
+        if (profile.UseMarketHours)
+        {
+            Log($"Market window ET minutes: open={profile.MarketOpenMinute}, skipFirst={profile.SkipFirstMinutes}, lastEntry={profile.LastEntryMinute}, forceFlat={profile.ForceFlatMinute}");
+            Log($"Next-bar-open entries: {profile.UseNextBarOpenEntry}");
+            Log($"Minimum bars between entries: {profile.MinimumBarsBetweenEntries}");
+        }
 
         if (profile.UseConductExits)
         {
-            Log($"Conduct hard stop: {settings.Conduct.HardStopPercent:F2}%");
-            Log($"Conduct breakeven after: {settings.Conduct.MoveStopToBreakevenAfterPercent:F2}% with buffer {settings.Conduct.BreakevenBufferPercent:F2}%");
-            Log($"Conduct trailing after: {settings.Conduct.StartTrailingAfterPercent:F2}% with giveback {settings.Conduct.GivebackPercent:F2}% and cap {settings.Conduct.GivebackNotionalCap:F2}");
-            Log($"Conduct indicator exits after bars: {settings.Conduct.MinimumBarsBeforeIndicatorExit}");
-            Log($"Conduct exit filters: EMA9={settings.Conduct.UseEma9Exit}, VWAP={settings.Conduct.UseVwapExit}, Trend={settings.Conduct.UseTrendExit}");
-            Log($"Conduct max hold bars: {settings.Conduct.MaxHoldBars}");
-            Log($"Conduct fixed take profit enabled: {settings.Conduct.UseTakeProfitExit}");
+            Log($"Conduct profile: {profile.ConductProfileName}");
+            Log($"Conduct hard stop: {conductSettings.HardStopPercent:F2}%");
+            Log($"Conduct breakeven after: {conductSettings.MoveStopToBreakevenAfterPercent:F2}% with buffer {conductSettings.BreakevenBufferPercent:F2}%");
+            Log($"Conduct trailing after: {conductSettings.StartTrailingAfterPercent:F2}% with giveback {conductSettings.GivebackPercent:F2}% and cap {conductSettings.GivebackNotionalCap:F2}");
+            Log($"Conduct micro trail: {conductSettings.UseMicroTrail}, activate {conductSettings.MicroTrailActivatePercent:F2}%, trail {conductSettings.MicroTrailPercent:F2}%");
+            Log($"Conduct indicator exits after bars: {conductSettings.MinimumBarsBeforeIndicatorExit}");
+            Log($"Conduct exit filters: EMA9={conductSettings.UseEma9Exit}, VWAP={conductSettings.UseVwapExit}, Trend={conductSettings.UseTrendExit}, OppositeMomentum={conductSettings.UseOppositeMomentumExit}");
+            Log($"Conduct max hold bars: {conductSettings.MaxHoldBars}");
+            Log($"Conduct fixed take profit enabled: {conductSettings.UseTakeProfitExit}");
         }
 
         Log($"Data source: {dataSet.SourcePath}");
@@ -114,14 +129,66 @@ public static class SimpleBacktestRunner
                 Log($"{bar.Time:yyyy-MM-dd HH:mm} | indicators ready check | {indicator.ToCompactString()}");
             }
 
+            if (hasOpenPosition && ShouldForceFlat(profile, bar))
+            {
+                ClosePosition(
+                    trades,
+                    Log,
+                    options.Symbol,
+                    bar.Time,
+                    bar.Close,
+                    quantity,
+                    entryTime,
+                    entryPrice,
+                    entryReason,
+                    $"conduct session flat: ET minute {MarketTime.GetEasternMinuteOfDay(bar.Time)} >= force flat {profile.ForceFlatMinute}.",
+                    ref cash,
+                    ref hasOpenPosition,
+                    ref quantity,
+                    ref entryPrice,
+                    ref entryReason,
+                    ref entryBarIndex);
+
+                conductState = null;
+                lastExitBarIndex = barIndex;
+            }
+
+            if (!hasOpenPosition && pendingNextBarEntry is not null)
+            {
+                TryOpenPosition(
+                    bar,
+                    bar.Open,
+                    barIndex,
+                    options,
+                    profile,
+                    pendingNextBarEntry with
+                    {
+                        Reason = $"next-bar-open entry from {pendingSignalTime:yyyy-MM-dd HH:mm}: {pendingNextBarEntry.Reason}"
+                    },
+                    Log,
+                    ref cash,
+                    ref hasOpenPosition,
+                    ref quantity,
+                    ref entryPrice,
+                    ref entryTime,
+                    ref entryReason,
+                    ref entryBarIndex,
+                    ref conductState,
+                    lastExitBarIndex);
+
+                pendingNextBarEntry = null;
+            }
+
             if (hasOpenPosition)
             {
                 bool closedByExitRule = profile.UseConductExits
                     ? TryCloseByConductExit(
                         bar,
+                        previousBar,
                         indicator,
                         barIndex,
                         options,
+                        profile,
                         conductExitEngine,
                         trades,
                         Log,
@@ -150,6 +217,7 @@ public static class SimpleBacktestRunner
                 if (closedByExitRule)
                 {
                     conductState = null;
+                    lastExitBarIndex = barIndex;
                     previousBar = bar;
                     continue;
                 }
@@ -163,30 +231,31 @@ public static class SimpleBacktestRunner
 
             if (signal.Type == BacktestSignalType.Buy && !hasOpenPosition)
             {
-                quantity = CalculateQuantity(options.MaxPositionNotional, bar.Close);
-                decimal cost = quantity * bar.Close;
-
-                if (quantity <= 0)
+                if (profile.UseNextBarOpenEntry)
                 {
-                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: invalid quantity at price {bar.Close:F2}");
-                }
-                else if (cash >= cost)
-                {
-                    cash -= cost;
-                    hasOpenPosition = true;
-                    entryPrice = bar.Close;
-                    entryTime = bar.Time;
-                    entryReason = signal.Reason;
-                    entryBarIndex = barIndex;
-                    conductState = profile.UseConductExits
-                        ? new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity)
-                        : null;
-
-                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY  {quantity} {options.Symbol} @ {bar.Close:F2} | Cash={cash:F2} | {signal.Reason}");
+                    pendingNextBarEntry = signal;
+                    pendingSignalTime = bar.Time;
+                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY signal scheduled for next bar open | {signal.Reason}");
                 }
                 else
                 {
-                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: cost {cost:F2} > cash {cash:F2}");
+                    TryOpenPosition(
+                        bar,
+                        bar.Close,
+                        barIndex,
+                        options,
+                        profile,
+                        signal,
+                        Log,
+                        ref cash,
+                        ref hasOpenPosition,
+                        ref quantity,
+                        ref entryPrice,
+                        ref entryTime,
+                        ref entryReason,
+                        ref entryBarIndex,
+                        ref conductState,
+                        lastExitBarIndex);
                 }
             }
             else if (signal.Type == BacktestSignalType.Sell && hasOpenPosition)
@@ -210,6 +279,7 @@ public static class SimpleBacktestRunner
                     ref entryBarIndex);
 
                 conductState = null;
+                lastExitBarIndex = barIndex;
             }
 
             previousBar = bar;
@@ -302,7 +372,7 @@ public static class SimpleBacktestRunner
 
     private static IBacktestStrategy CreateStrategy(SailorStrategyProfile profile)
     {
-        if (profile.UseConductExits || profile.Name.Equals("sailor-conduct-v3", StringComparison.OrdinalIgnoreCase))
+        if (profile.UseConductExits || profile.Name.Contains("conduct", StringComparison.OrdinalIgnoreCase))
         {
             return new SailorConductBacktestStrategy(profile);
         }
@@ -312,11 +382,84 @@ public static class SimpleBacktestRunner
             : new SailorTrendVolumeBacktestStrategy(profile);
     }
 
+    private static ConductExitSettings ResolveConductSettings(
+        SailorAppSettings settings,
+        SailorStrategyProfile profile)
+    {
+        if (!string.IsNullOrWhiteSpace(profile.ConductProfileName) &&
+            settings.ConductProfiles.TryGetValue(profile.ConductProfileName, out ConductExitSettings? conductProfile))
+        {
+            return conductProfile;
+        }
+
+        if (settings.ConductProfiles.TryGetValue(profile.Name, out ConductExitSettings? profileByName))
+        {
+            return profileByName;
+        }
+
+        return settings.Conduct;
+    }
+
+    private static bool TryOpenPosition(
+        BacktestBar bar,
+        decimal entryExecutionPrice,
+        int barIndex,
+        BacktestOptions options,
+        SailorStrategyProfile profile,
+        BacktestSignal signal,
+        Action<string> log,
+        ref decimal cash,
+        ref bool hasOpenPosition,
+        ref int quantity,
+        ref decimal entryPrice,
+        ref DateTimeOffset entryTime,
+        ref string entryReason,
+        ref int entryBarIndex,
+        ref SailorConductExitState? conductState,
+        int lastExitBarIndex)
+    {
+        if (!CanOpenNewPosition(profile, bar, barIndex, lastExitBarIndex, out string rejectReason))
+        {
+            log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: {rejectReason}");
+            return false;
+        }
+
+        quantity = CalculateQuantity(options.MaxPositionNotional, entryExecutionPrice);
+        decimal cost = quantity * entryExecutionPrice;
+
+        if (quantity <= 0)
+        {
+            log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: invalid quantity at price {entryExecutionPrice:F2}");
+            return false;
+        }
+
+        if (cash < cost)
+        {
+            log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: cost {cost:F2} > cash {cash:F2}");
+            return false;
+        }
+
+        cash -= cost;
+        hasOpenPosition = true;
+        entryPrice = entryExecutionPrice;
+        entryTime = bar.Time;
+        entryReason = signal.Reason;
+        entryBarIndex = barIndex;
+        conductState = profile.UseConductExits
+            ? new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity)
+            : null;
+
+        log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY  {quantity} {options.Symbol} @ {entryExecutionPrice:F2} | Cash={cash:F2} | {signal.Reason}");
+        return true;
+    }
+
     private static bool TryCloseByConductExit(
         BacktestBar bar,
+        BacktestBar? previousBar,
         BacktestIndicatorSnapshot indicator,
         int barIndex,
         BacktestOptions options,
+        SailorStrategyProfile profile,
         SailorConductExitEngine conductExitEngine,
         List<BacktestTrade> trades,
         Action<string> log,
@@ -336,8 +479,10 @@ public static class SimpleBacktestRunner
 
         SailorConductExitDecision decision = conductExitEngine.EvaluateLongExit(
             bar,
+            previousBar,
             indicator,
             options,
+            profile,
             conductState,
             barIndex);
 
@@ -500,6 +645,54 @@ public static class SimpleBacktestRunner
         entryBarIndex = -1;
     }
 
+    private static bool CanOpenNewPosition(
+        SailorStrategyProfile profile,
+        BacktestBar bar,
+        int barIndex,
+        int lastExitBarIndex,
+        out string rejectReason)
+    {
+        if (profile.MinimumBarsBetweenEntries > 0 &&
+            lastExitBarIndex > -10_000 &&
+            barIndex - lastExitBarIndex < profile.MinimumBarsBetweenEntries)
+        {
+            rejectReason = $"cooldown active, {barIndex - lastExitBarIndex} bars since last exit < required {profile.MinimumBarsBetweenEntries}.";
+            return false;
+        }
+
+        if (profile.UseMarketHours)
+        {
+            int minute = MarketTime.GetEasternMinuteOfDay(bar.Time);
+            int firstAllowedMinute = profile.MarketOpenMinute + profile.SkipFirstMinutes;
+
+            if (minute < firstAllowedMinute)
+            {
+                rejectReason = $"before entry window, ET minute {minute} < first allowed {firstAllowedMinute}.";
+                return false;
+            }
+
+            if (minute > profile.LastEntryMinute)
+            {
+                rejectReason = $"after last entry window, ET minute {minute} > last entry {profile.LastEntryMinute}.";
+                return false;
+            }
+
+            if (minute >= profile.ForceFlatMinute)
+            {
+                rejectReason = $"inside force-flat window, ET minute {minute} >= force flat {profile.ForceFlatMinute}.";
+                return false;
+            }
+        }
+
+        rejectReason = string.Empty;
+        return true;
+    }
+
+    private static bool ShouldForceFlat(SailorStrategyProfile profile, BacktestBar bar)
+    {
+        return profile.UseMarketHours && MarketTime.GetEasternMinuteOfDay(bar.Time) >= profile.ForceFlatMinute;
+    }
+
     private static string FormatIndicator(decimal? value)
     {
         return value.HasValue ? value.Value.ToString("F2") : "n/a";
@@ -513,16 +706,5 @@ public static class SimpleBacktestRunner
         }
 
         return Math.Max(1, (int)Math.Floor(maxPositionNotional / price));
-    }
-
-    private static string GetBacktestLogDirectory()
-    {
-        return Path.GetFullPath(Path.Combine(
-            AppContext.BaseDirectory,
-            "..",
-            "..",
-            "..",
-            "Logs",
-            "Backtest"));
     }
 }

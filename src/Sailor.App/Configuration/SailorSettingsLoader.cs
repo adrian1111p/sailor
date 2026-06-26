@@ -67,78 +67,16 @@ public static class SailorSettingsLoader
 
         settings.Risk ??= new BacktestRiskSettings();
         settings.Conduct ??= new ConductExitSettings();
+        settings.ConductProfiles ??= new Dictionary<string, ConductExitSettings>(StringComparer.OrdinalIgnoreCase);
         settings.Scanner ??= new ScannerSettings();
         settings.Profiles ??= new Dictionary<string, SailorProfileSettings>(StringComparer.OrdinalIgnoreCase);
 
-        if (settings.Risk.InitialCash <= 0m)
-        {
-            settings.Risk.InitialCash = 10_000.00m;
-        }
+        NormalizeRisk(settings.Risk);
+        NormalizeConduct(settings.Conduct, settings.Risk);
 
-        if (settings.Risk.MaxPositionNotional <= 0m)
+        foreach (ConductExitSettings conductProfile in settings.ConductProfiles.Values)
         {
-            settings.Risk.MaxPositionNotional = 1_000.00m;
-        }
-
-        if (settings.Risk.StopLossPercent <= 0m)
-        {
-            settings.Risk.StopLossPercent = 1.00m;
-        }
-
-        if (settings.Risk.TakeProfitPercent <= 0m)
-        {
-            settings.Risk.TakeProfitPercent = 2.00m;
-        }
-
-        if (settings.Risk.MaxHoldBars <= 0)
-        {
-            settings.Risk.MaxHoldBars = 30;
-        }
-
-
-        if (settings.Conduct.HardStopPercent <= 0m)
-        {
-            settings.Conduct.HardStopPercent = settings.Risk.StopLossPercent;
-        }
-
-        if (settings.Conduct.TakeProfitPercent <= 0m)
-        {
-            settings.Conduct.TakeProfitPercent = settings.Risk.TakeProfitPercent;
-        }
-
-        if (settings.Conduct.MoveStopToBreakevenAfterPercent < 0m)
-        {
-            settings.Conduct.MoveStopToBreakevenAfterPercent = 0m;
-        }
-
-        if (settings.Conduct.BreakevenBufferPercent < 0m)
-        {
-            settings.Conduct.BreakevenBufferPercent = 0m;
-        }
-
-        if (settings.Conduct.StartTrailingAfterPercent < 0m)
-        {
-            settings.Conduct.StartTrailingAfterPercent = 0m;
-        }
-
-        if (settings.Conduct.GivebackPercent <= 0m)
-        {
-            settings.Conduct.GivebackPercent = 0.35m;
-        }
-
-        if (settings.Conduct.GivebackNotionalCap < 0m)
-        {
-            settings.Conduct.GivebackNotionalCap = 0m;
-        }
-
-        if (settings.Conduct.MinimumBarsBeforeIndicatorExit < 0)
-        {
-            settings.Conduct.MinimumBarsBeforeIndicatorExit = 0;
-        }
-
-        if (settings.Conduct.MaxHoldBars <= 0)
-        {
-            settings.Conduct.MaxHoldBars = settings.Risk.MaxHoldBars;
+            NormalizeConduct(conductProfile, settings.Risk);
         }
 
         if (settings.Scanner.DefaultTopCount <= 0)
@@ -147,6 +85,92 @@ public static class SailorSettingsLoader
         }
 
         return settings;
+    }
+
+    private static void NormalizeRisk(BacktestRiskSettings risk)
+    {
+        if (risk.InitialCash <= 0m)
+        {
+            risk.InitialCash = 10_000.00m;
+        }
+
+        if (risk.MaxPositionNotional <= 0m)
+        {
+            risk.MaxPositionNotional = 1_000.00m;
+        }
+
+        if (risk.StopLossPercent <= 0m)
+        {
+            risk.StopLossPercent = 1.00m;
+        }
+
+        if (risk.TakeProfitPercent <= 0m)
+        {
+            risk.TakeProfitPercent = 2.00m;
+        }
+
+        if (risk.MaxHoldBars <= 0)
+        {
+            risk.MaxHoldBars = 30;
+        }
+    }
+
+    private static void NormalizeConduct(ConductExitSettings conduct, BacktestRiskSettings risk)
+    {
+        if (conduct.HardStopPercent <= 0m)
+        {
+            conduct.HardStopPercent = risk.StopLossPercent;
+        }
+
+        if (conduct.TakeProfitPercent <= 0m)
+        {
+            conduct.TakeProfitPercent = risk.TakeProfitPercent;
+        }
+
+        if (conduct.MoveStopToBreakevenAfterPercent < 0m)
+        {
+            conduct.MoveStopToBreakevenAfterPercent = 0m;
+        }
+
+        if (conduct.BreakevenBufferPercent < 0m)
+        {
+            conduct.BreakevenBufferPercent = 0m;
+        }
+
+        if (conduct.StartTrailingAfterPercent < 0m)
+        {
+            conduct.StartTrailingAfterPercent = 0m;
+        }
+
+        if (conduct.GivebackPercent <= 0m)
+        {
+            conduct.GivebackPercent = 0.35m;
+        }
+
+        if (conduct.GivebackNotionalCap < 0m)
+        {
+            conduct.GivebackNotionalCap = 0m;
+        }
+
+        if (conduct.MinimumBarsBeforeIndicatorExit < 0)
+        {
+            conduct.MinimumBarsBeforeIndicatorExit = 0;
+        }
+
+        if (conduct.MicroTrailActivatePercent < 0m)
+        {
+            conduct.MicroTrailActivatePercent = 0m;
+        }
+
+        if (conduct.MicroTrailPercent <= 0m)
+        {
+            conduct.MicroTrailPercent = 0.20m;
+        }
+
+        if (conduct.MaxHoldBars <= 0)
+        {
+            conduct.MaxHoldBars = risk.MaxHoldBars;
+        }
     }
 
     private sealed class SailorSettingsRoot
