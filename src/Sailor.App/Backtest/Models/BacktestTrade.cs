@@ -8,11 +8,18 @@ public sealed record BacktestTrade(
     decimal ExitPrice,
     int Quantity,
     string EntryReason,
-    string ExitReason)
+    string ExitReason,
+    int PositionSide = 1)
 {
-    public decimal Pnl => (ExitPrice - EntryPrice) * Quantity;
+    public string SideName => PositionSide < 0 ? "SHORT" : "LONG";
+
+    public decimal Pnl => PositionSide < 0
+        ? (EntryPrice - ExitPrice) * Quantity
+        : (ExitPrice - EntryPrice) * Quantity;
 
     public decimal PnlPercent => EntryPrice > 0
-        ? (ExitPrice - EntryPrice) / EntryPrice * 100m
+        ? (PositionSide < 0
+            ? (EntryPrice - ExitPrice) / EntryPrice * 100m
+            : (ExitPrice - EntryPrice) / EntryPrice * 100m)
         : 0m;
 }

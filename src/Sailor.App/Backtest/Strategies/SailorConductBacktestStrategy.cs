@@ -31,6 +31,17 @@ public sealed class SailorConductBacktestStrategy : IBacktestStrategy
             return BacktestSignal.Hold($"{_entryStrategy.StrategyName}: waiting for previous bar.");
         }
 
+        if (_entryStrategy is ISailorConductPositionStrategy positionStrategy)
+        {
+            return positionStrategy.Evaluate(
+                currentBar,
+                previousBar,
+                indicators,
+                _recentBars,
+                _profile,
+                hasOpenPosition);
+        }
+
         if (hasOpenPosition)
         {
             return BacktestSignal.Hold(

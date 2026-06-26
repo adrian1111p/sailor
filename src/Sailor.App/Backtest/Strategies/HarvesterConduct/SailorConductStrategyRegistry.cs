@@ -130,10 +130,10 @@ public static class SailorConductStrategyRegistry
     {
         return normalized switch
         {
-            "v21-15minutes" => CreateProfile(normalized, 0.10m, 0.12m, 50_000, 0.70m, true, true, false, 2, 945, 955, 20, 40, 20),
-            "v23-5minutes" => CreateProfile(normalized, 0.14m, 0.14m, 60_000, 0.80m, true, true, false, 2, 945, 955, 18, 35, 20),
-            "v24-5minutes" => CreateProfile(normalized, 0.16m, 0.14m, 65_000, 0.85m, true, true, false, 2, 945, 955, 18, 35, 20),
-            "v22-15minutes" => CreateProfile(normalized, 0.12m, 0.14m, 50_000, 0.75m, true, true, false, 2, 945, 955, 20, 40, 20),
+            "v21-15minutes" => CreateProfile(normalized, 0.10m, 0.12m, 50_000, 0.70m, false, false, false, 0, 955, 955, 20, 40, 20) with { UseConductExits = false },
+            "v23-5minutes" => CreateProfile(normalized, 0.14m, 0.14m, 60_000, 0.80m, false, false, false, 0, 955, 955, 18, 35, 20) with { UseConductExits = false },
+            "v24-5minutes" => CreateProfile(normalized, 0.16m, 0.14m, 65_000, 0.85m, false, false, false, 0, 955, 955, 18, 35, 20) with { UseConductExits = false },
+            "v22-15minutes" => CreateProfile(normalized, 0.12m, 0.14m, 50_000, 0.75m, false, false, false, 0, 955, 955, 20, 40, 20) with { UseConductExits = false },
             "v16-sqzbreakout" => CreateProfile(normalized, 0.18m, 0.18m, 75_000, 1.00m, true, true, false, 3, 940, 955, 20, 40, 20),
             "v13" => CreateProfile(normalized, 0.15m, 0.16m, 50_000, 0.80m, true, true, false, 2, 940, 955, 20, 40, 20),
             "v10-hybrid" => CreateProfile(normalized, 0.12m, 0.16m, 40_000, 0.70m, false, false, false, 3, 940, 955, 20, 40, 20),

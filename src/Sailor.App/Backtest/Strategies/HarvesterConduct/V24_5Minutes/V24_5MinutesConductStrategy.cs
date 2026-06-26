@@ -1,31 +1,24 @@
 namespace Sailor.App.Backtest.Strategies.HarvesterConduct.V24_5Minutes;
 
-using Sailor.App.Backtest.Strategies.HarvesterConduct;
+using Sailor.App.Backtest.Strategies.HarvesterConduct.AngleEma;
 
-public sealed class V24_5MinutesConductStrategy : SailorConductProfileStrategyBase
+public sealed class V24_5MinutesConductStrategy : AngleEmaConductStrategyBase
 {
     public V24_5MinutesConductStrategy()
-        : base(SailorConductEntryRules.CreateDefault(
-            profileName: "v24-5minutes",
-            strategyName: "V24-5Minutes",
-            variantName: "default") with
-        {
-            Patterns = SailorConductEntryPattern.Momentum | SailorConductEntryPattern.Pullback | SailorConductEntryPattern.Breakout,
-            EntryMomentumPercent = 0.16m,
-            MinimumVolume = 65000,
-            MinimumVolumeRatio = 0.85m,
-            RequireEma9AboveSma20 = true,
-            RequireCloseAboveVwap = true,
-            RequireCloseAboveSma200WhenAvailable = false,
-            RequireGreenBar = true,
-            MinimumEmaSpreadPercent = 0.03m,
-            MaximumVwapExtensionPercent = 2.0m,
-            PullbackMaximumDistanceFromEmaPercent = 0.55m,
-            BreakoutLookbackBars = 10,
-            BreakoutBufferPercent = 0.04m,
-            VwapReversionMaximumDistancePercent = 1.15m,
-            ChoppyMaximumMomentumPercent = 0.65m
-        })
+        : base(new AngleEmaConductSettings(
+            ProfileName: "v24-5minutes",
+            StrategyName: "V24-5Minutes",
+            VariantName: "default",
+            CandleMinutes: 5,
+            AngleThresholdDegrees: 12.00m,
+            NeutralAngleDegrees: 12.00m,
+            MinimumPrice: 0.50m,
+            MaximumPrice: 1_000.00m,
+            MinimumVolume: 65000,
+            MinimumVolumeRatio: 0.85m,
+            AllowShort: true,
+            EmaPeriod: 9,
+            MaxRecentRawBars: 600))
     {
     }
 }
