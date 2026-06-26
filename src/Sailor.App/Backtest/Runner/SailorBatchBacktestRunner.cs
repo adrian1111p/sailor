@@ -163,6 +163,7 @@ public static class SailorBatchBacktestRunner
         await writer.WriteLineAsync($"- Require EMA9 > SMA20: {profile.RequireEma9AboveSma20}");
         await writer.WriteLineAsync($"- Require close > VWAP: {profile.RequirePriceAboveVwap}");
         await writer.WriteLineAsync($"- Require close > SMA200 when available: {profile.RequirePriceAboveSma200WhenAvailable}");
+        await writer.WriteLineAsync($"- Use conduct exits: {profile.UseConductExits}");
         await writer.WriteLineAsync();
 
         await writer.WriteLineAsync("## Risk settings");
@@ -173,6 +174,26 @@ public static class SailorBatchBacktestRunner
         await writer.WriteLineAsync($"- Take profit: {settings.Risk.TakeProfitPercent:F2}%");
         await writer.WriteLineAsync($"- Max hold bars: {settings.Risk.MaxHoldBars}");
         await writer.WriteLineAsync();
+
+        if (profile.UseConductExits)
+        {
+            await writer.WriteLineAsync("## Conduct exit settings");
+            await writer.WriteLineAsync();
+            await writer.WriteLineAsync($"- Hard stop: {settings.Conduct.HardStopPercent:F2}%");
+            await writer.WriteLineAsync($"- Fixed take profit enabled: {settings.Conduct.UseTakeProfitExit}");
+            await writer.WriteLineAsync($"- Take profit: {settings.Conduct.TakeProfitPercent:F2}%");
+            await writer.WriteLineAsync($"- Move stop to breakeven after: {settings.Conduct.MoveStopToBreakevenAfterPercent:F2}%");
+            await writer.WriteLineAsync($"- Breakeven buffer: {settings.Conduct.BreakevenBufferPercent:F2}%");
+            await writer.WriteLineAsync($"- Start trailing after: {settings.Conduct.StartTrailingAfterPercent:F2}%");
+            await writer.WriteLineAsync($"- Giveback percent: {settings.Conduct.GivebackPercent:F2}%");
+            await writer.WriteLineAsync($"- Giveback notional cap: {settings.Conduct.GivebackNotionalCap:F2}");
+            await writer.WriteLineAsync($"- Indicator exits after bars: {settings.Conduct.MinimumBarsBeforeIndicatorExit}");
+            await writer.WriteLineAsync($"- EMA9 exit: {settings.Conduct.UseEma9Exit}");
+            await writer.WriteLineAsync($"- VWAP exit: {settings.Conduct.UseVwapExit}");
+            await writer.WriteLineAsync($"- Trend exit: {settings.Conduct.UseTrendExit}");
+            await writer.WriteLineAsync($"- Max hold bars: {settings.Conduct.MaxHoldBars}");
+            await writer.WriteLineAsync();
+        }
 
         if (missingSymbols.Count > 0)
         {

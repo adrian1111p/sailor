@@ -66,6 +66,7 @@ public static class SailorSettingsLoader
             : settings.DefaultUniverse.Trim();
 
         settings.Risk ??= new BacktestRiskSettings();
+        settings.Conduct ??= new ConductExitSettings();
         settings.Scanner ??= new ScannerSettings();
         settings.Profiles ??= new Dictionary<string, SailorProfileSettings>(StringComparer.OrdinalIgnoreCase);
 
@@ -92,6 +93,52 @@ public static class SailorSettingsLoader
         if (settings.Risk.MaxHoldBars <= 0)
         {
             settings.Risk.MaxHoldBars = 30;
+        }
+
+
+        if (settings.Conduct.HardStopPercent <= 0m)
+        {
+            settings.Conduct.HardStopPercent = settings.Risk.StopLossPercent;
+        }
+
+        if (settings.Conduct.TakeProfitPercent <= 0m)
+        {
+            settings.Conduct.TakeProfitPercent = settings.Risk.TakeProfitPercent;
+        }
+
+        if (settings.Conduct.MoveStopToBreakevenAfterPercent < 0m)
+        {
+            settings.Conduct.MoveStopToBreakevenAfterPercent = 0m;
+        }
+
+        if (settings.Conduct.BreakevenBufferPercent < 0m)
+        {
+            settings.Conduct.BreakevenBufferPercent = 0m;
+        }
+
+        if (settings.Conduct.StartTrailingAfterPercent < 0m)
+        {
+            settings.Conduct.StartTrailingAfterPercent = 0m;
+        }
+
+        if (settings.Conduct.GivebackPercent <= 0m)
+        {
+            settings.Conduct.GivebackPercent = 0.35m;
+        }
+
+        if (settings.Conduct.GivebackNotionalCap < 0m)
+        {
+            settings.Conduct.GivebackNotionalCap = 0m;
+        }
+
+        if (settings.Conduct.MinimumBarsBeforeIndicatorExit < 0)
+        {
+            settings.Conduct.MinimumBarsBeforeIndicatorExit = 0;
+        }
+
+        if (settings.Conduct.MaxHoldBars <= 0)
+        {
+            settings.Conduct.MaxHoldBars = settings.Risk.MaxHoldBars;
         }
 
         if (settings.Scanner.DefaultTopCount <= 0)

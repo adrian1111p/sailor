@@ -10,6 +10,8 @@ public sealed class SailorAppSettings
 
     public BacktestRiskSettings Risk { get; set; } = new();
 
+    public ConductExitSettings Conduct { get; set; } = new();
+
     public ScannerSettings Scanner { get; set; } = new();
 
     public Dictionary<string, SailorProfileSettings> Profiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -26,6 +28,35 @@ public sealed class BacktestRiskSettings
     public decimal TakeProfitPercent { get; set; } = 2.00m;
 
     public int MaxHoldBars { get; set; } = 30;
+}
+
+public sealed class ConductExitSettings
+{
+    public decimal HardStopPercent { get; set; } = 1.00m;
+
+    public bool UseTakeProfitExit { get; set; } = false;
+
+    public decimal TakeProfitPercent { get; set; } = 2.00m;
+
+    public decimal MoveStopToBreakevenAfterPercent { get; set; } = 0.60m;
+
+    public decimal BreakevenBufferPercent { get; set; } = 0.05m;
+
+    public decimal StartTrailingAfterPercent { get; set; } = 0.80m;
+
+    public decimal GivebackPercent { get; set; } = 0.35m;
+
+    public decimal GivebackNotionalCap { get; set; } = 30.00m;
+
+    public int MinimumBarsBeforeIndicatorExit { get; set; } = 3;
+
+    public bool UseEma9Exit { get; set; } = true;
+
+    public bool UseVwapExit { get; set; } = true;
+
+    public bool UseTrendExit { get; set; } = true;
+
+    public int MaxHoldBars { get; set; } = 45;
 }
 
 public sealed class ScannerSettings
@@ -52,6 +83,8 @@ public sealed class SailorProfileSettings
     public bool? RequireEma9AboveSma20 { get; set; }
 
     public bool? RequirePriceAboveSma200WhenAvailable { get; set; }
+
+    public bool? UseConductExits { get; set; }
 
     public int? ScannerLookbackBars { get; set; }
 

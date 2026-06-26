@@ -13,6 +13,7 @@ public sealed record SailorStrategyProfile(
     bool RequirePriceAboveVwap,
     bool RequireEma9AboveSma20,
     bool RequirePriceAboveSma200WhenAvailable,
+    bool UseConductExits,
     int ScannerLookbackBars,
     int ScannerMinimumBars,
     int ScannerTopCount)
@@ -30,6 +31,7 @@ public sealed record SailorStrategyProfile(
             RequirePriceAboveVwap: true,
             RequireEma9AboveSma20: true,
             RequirePriceAboveSma200WhenAvailable: true,
+            UseConductExits: false,
             ScannerLookbackBars: 20,
             ScannerMinimumBars: 20,
             ScannerTopCount: 20);
@@ -46,7 +48,29 @@ public sealed record SailorStrategyProfile(
             MinimumVolumeRatio = 0m,
             RequirePriceAboveVwap = false,
             RequireEma9AboveSma20 = false,
-            RequirePriceAboveSma200WhenAvailable = false
+            RequirePriceAboveSma200WhenAvailable = false,
+            UseConductExits = false
+        };
+    }
+
+    public static SailorStrategyProfile CreateConductV3()
+    {
+        SailorStrategyProfile defaultProfile = CreateDefault();
+
+        return defaultProfile with
+        {
+            Name = "sailor-conduct-v3",
+            EntryMomentumPercent = 0.15m,
+            ExitMomentumPercent = 0.15m,
+            MinimumVolume = 50_000,
+            MinimumVolumeRatio = 0.80m,
+            RequirePriceAboveVwap = true,
+            RequireEma9AboveSma20 = true,
+            RequirePriceAboveSma200WhenAvailable = false,
+            UseConductExits = true,
+            ScannerLookbackBars = 20,
+            ScannerMinimumBars = 20,
+            ScannerTopCount = 20
         };
     }
 
@@ -68,11 +92,15 @@ public sealed record SailorStrategyProfile(
             "sailor" => CreateDefault(),
             "sailor-trend" => CreateDefault(),
             "sailor-trend-volume" => CreateDefault(),
+            "conduct" => CreateConductV3(),
+            "conduct-v3" => CreateConductV3(),
+            "sailor-conduct" => CreateConductV3(),
+            "sailor-conduct-v3" => CreateConductV3(),
             "simple" => CreateSimpleMomentum(),
             "simple-momentum" => CreateSimpleMomentum(),
             _ when TryGetConfiguredProfile(normalized, settings, out SailorStrategyProfile configuredOnlyProfile) => configuredOnlyProfile,
             _ => throw new ArgumentException(
-                $"Unknown Sailor strategy profile '{profileName}'. Valid profiles: sailor-trend-volume, simple-momentum, or a profile configured in appsettings.json.")
+                $"Unknown Sailor strategy profile '{profileName}'. Valid profiles: sailor-trend-volume, sailor-conduct-v3, simple-momentum, or a profile configured in appsettings.json.")
         };
 
         return ApplyConfiguredOverrides(builtInProfile, settings);
@@ -142,6 +170,7 @@ public sealed record SailorStrategyProfile(
             RequirePriceAboveVwap = settings.RequirePriceAboveVwap ?? profile.RequirePriceAboveVwap,
             RequireEma9AboveSma20 = settings.RequireEma9AboveSma20 ?? profile.RequireEma9AboveSma20,
             RequirePriceAboveSma200WhenAvailable = settings.RequirePriceAboveSma200WhenAvailable ?? profile.RequirePriceAboveSma200WhenAvailable,
+            UseConductExits = settings.UseConductExits ?? profile.UseConductExits,
             ScannerLookbackBars = settings.ScannerLookbackBars ?? profile.ScannerLookbackBars,
             ScannerMinimumBars = settings.ScannerMinimumBars ?? profile.ScannerMinimumBars,
             ScannerTopCount = settings.ScannerTopCount ?? profile.ScannerTopCount

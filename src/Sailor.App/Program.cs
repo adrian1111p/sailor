@@ -211,15 +211,18 @@ static void PrintHelp(SailorAppSettings settings)
     Console.WriteLine("  sailor backtest AAPL");
     Console.WriteLine("  sailor backtest TSLA 1m");
     Console.WriteLine("  sailor backtest TSLA 1m sailor-trend-volume");
+    Console.WriteLine("  sailor backtest TSLA 1m sailor-conduct-v3");
     Console.WriteLine("  sailor backtest TSLA 1m simple-momentum");
     Console.WriteLine("  sailor backtest --list");
     Console.WriteLine("  sailor backtest --list AAPL");
     Console.WriteLine("  sailor scan");
     Console.WriteLine("  sailor scan 1m");
     Console.WriteLine("  sailor scan 1m sailor-trend-volume 20");
+    Console.WriteLine("  sailor scan 1m sailor-conduct-v3 20");
     Console.WriteLine("  sailor rank");
     Console.WriteLine("  sailor rank 1m sailor-trend-volume 20 all");
     Console.WriteLine("  sailor rank 1m sailor-trend-volume 20 smallcaps");
+    Console.WriteLine("  sailor rank 1m sailor-conduct-v3 20 smallcaps");
     Console.WriteLine("  sailor rank 1m simple-momentum 20 ALIT,BARK,SOFI,PLTR");
     Console.WriteLine();
     Console.WriteLine("Current appsettings defaults:");

@@ -1,3 +1,4 @@
+using Sailor.App.Backtest.Conduct;
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Indicators;
 using Sailor.App.Backtest.Models;
@@ -19,6 +20,7 @@ public static class SimpleBacktestRunner
         settings ??= new SailorAppSettings();
         BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe, profileName, settings);
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName, settings);
+        var conductExitEngine = new SailorConductExitEngine(settings.Conduct);
 
         string logDirectory = GetBacktestLogDirectory();
         Directory.CreateDirectory(logDirectory);
@@ -64,6 +66,7 @@ public static class SimpleBacktestRunner
         decimal entryPrice = 0m;
         DateTimeOffset entryTime = default;
         string entryReason = string.Empty;
+        SailorConductExitState? conductState = null;
 
         Log("sailor backtest started");
         Log($"Symbol: {options.Symbol}");
@@ -84,6 +87,19 @@ public static class SimpleBacktestRunner
         Log($"Minimum volume: {profile.MinimumVolume}");
         Log($"Minimum volume ratio: {profile.MinimumVolumeRatio:F2}");
         Log($"Profile filters: EMA9>SMA20={profile.RequireEma9AboveSma20}, Close>VWAP={profile.RequirePriceAboveVwap}, Close>SMA200 when available={profile.RequirePriceAboveSma200WhenAvailable}");
+        Log($"Conduct exits enabled: {profile.UseConductExits}");
+
+        if (profile.UseConductExits)
+        {
+            Log($"Conduct hard stop: {settings.Conduct.HardStopPercent:F2}%");
+            Log($"Conduct breakeven after: {settings.Conduct.MoveStopToBreakevenAfterPercent:F2}% with buffer {settings.Conduct.BreakevenBufferPercent:F2}%");
+            Log($"Conduct trailing after: {settings.Conduct.StartTrailingAfterPercent:F2}% with giveback {settings.Conduct.GivebackPercent:F2}% and cap {settings.Conduct.GivebackNotionalCap:F2}");
+            Log($"Conduct indicator exits after bars: {settings.Conduct.MinimumBarsBeforeIndicatorExit}");
+            Log($"Conduct exit filters: EMA9={settings.Conduct.UseEma9Exit}, VWAP={settings.Conduct.UseVwapExit}, Trend={settings.Conduct.UseTrendExit}");
+            Log($"Conduct max hold bars: {settings.Conduct.MaxHoldBars}");
+            Log($"Conduct fixed take profit enabled: {settings.Conduct.UseTakeProfitExit}");
+        }
+
         Log($"Data source: {dataSet.SourcePath}");
         Log($"Log file: {logFilePath}");
         Log("");
@@ -100,22 +116,40 @@ public static class SimpleBacktestRunner
 
             if (hasOpenPosition)
             {
-                bool closedByExitRule = TryCloseByExitRule(
-                    bar,
-                    barIndex,
-                    options,
-                    trades,
-                    Log,
-                    ref cash,
-                    ref hasOpenPosition,
-                    ref quantity,
-                    ref entryPrice,
-                    ref entryTime,
-                    ref entryReason,
-                    ref entryBarIndex);
+                bool closedByExitRule = profile.UseConductExits
+                    ? TryCloseByConductExit(
+                        bar,
+                        indicator,
+                        barIndex,
+                        options,
+                        conductExitEngine,
+                        trades,
+                        Log,
+                        ref cash,
+                        ref hasOpenPosition,
+                        ref quantity,
+                        ref entryPrice,
+                        ref entryTime,
+                        ref entryReason,
+                        ref entryBarIndex,
+                        ref conductState)
+                    : TryCloseByExitRule(
+                        bar,
+                        barIndex,
+                        options,
+                        trades,
+                        Log,
+                        ref cash,
+                        ref hasOpenPosition,
+                        ref quantity,
+                        ref entryPrice,
+                        ref entryTime,
+                        ref entryReason,
+                        ref entryBarIndex);
 
                 if (closedByExitRule)
                 {
+                    conductState = null;
                     previousBar = bar;
                     continue;
                 }
@@ -144,6 +178,9 @@ public static class SimpleBacktestRunner
                     entryTime = bar.Time;
                     entryReason = signal.Reason;
                     entryBarIndex = barIndex;
+                    conductState = profile.UseConductExits
+                        ? new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity)
+                        : null;
 
                     Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY  {quantity} {options.Symbol} @ {bar.Close:F2} | Cash={cash:F2} | {signal.Reason}");
                 }
@@ -171,6 +208,8 @@ public static class SimpleBacktestRunner
                     ref entryPrice,
                     ref entryReason,
                     ref entryBarIndex);
+
+                conductState = null;
             }
 
             previousBar = bar;
@@ -197,6 +236,8 @@ public static class SimpleBacktestRunner
                 ref entryPrice,
                 ref entryReason,
                 ref entryBarIndex);
+
+            conductState = null;
         }
 
         int winners = trades.Count(t => t.Pnl > 0);
@@ -261,9 +302,70 @@ public static class SimpleBacktestRunner
 
     private static IBacktestStrategy CreateStrategy(SailorStrategyProfile profile)
     {
+        if (profile.UseConductExits || profile.Name.Equals("sailor-conduct-v3", StringComparison.OrdinalIgnoreCase))
+        {
+            return new SailorConductBacktestStrategy(profile);
+        }
+
         return profile.Name.Equals("simple-momentum", StringComparison.OrdinalIgnoreCase)
             ? new SimpleMomentumBacktestStrategy()
             : new SailorTrendVolumeBacktestStrategy(profile);
+    }
+
+    private static bool TryCloseByConductExit(
+        BacktestBar bar,
+        BacktestIndicatorSnapshot indicator,
+        int barIndex,
+        BacktestOptions options,
+        SailorConductExitEngine conductExitEngine,
+        List<BacktestTrade> trades,
+        Action<string> log,
+        ref decimal cash,
+        ref bool hasOpenPosition,
+        ref int quantity,
+        ref decimal entryPrice,
+        ref DateTimeOffset entryTime,
+        ref string entryReason,
+        ref int entryBarIndex,
+        ref SailorConductExitState? conductState)
+    {
+        if (conductState is null)
+        {
+            conductState = new SailorConductExitState(entryTime, entryBarIndex, entryPrice, quantity);
+        }
+
+        SailorConductExitDecision decision = conductExitEngine.EvaluateLongExit(
+            bar,
+            indicator,
+            options,
+            conductState,
+            barIndex);
+
+        if (!decision.ShouldExit)
+        {
+            return false;
+        }
+
+        ClosePosition(
+            trades,
+            log,
+            options.Symbol,
+            bar.Time,
+            decision.ExitPrice,
+            quantity,
+            entryTime,
+            entryPrice,
+            entryReason,
+            decision.Reason,
+            ref cash,
+            ref hasOpenPosition,
+            ref quantity,
+            ref entryPrice,
+            ref entryReason,
+            ref entryBarIndex);
+
+        conductState = null;
+        return true;
     }
 
     private static bool TryCloseByExitRule(

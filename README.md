@@ -151,3 +151,34 @@ dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA
 ```
 
 Command-line values still override the configured defaults.
+
+## SAILOR-008 conduct-style exits
+
+SAILOR-008 adds a Sailor-native conduct profile without compiling the old Harvester legacy code:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m sailor-conduct-v3
+```
+
+The profile still uses the Sailor scanner and indicator entry filters, but once a position is open the exit is managed by the conduct engine:
+
+- hard stop
+- move stop to breakeven after a configured profit percent
+- trailing giveback after a configured profit percent
+- giveback notional cap
+- EMA9 reversal exit
+- VWAP reversal exit
+- EMA9/SMA20 trend reversal exit
+- max-hold exit
+
+Scanner + automatic backtest ranking with conduct exits:
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- rank 1m sailor-conduct-v3 20 smallcaps
+```
+
+The conduct settings are configurable in:
+
+```text
+src/Sailor.App/appsettings.json
+```
