@@ -6,14 +6,16 @@ namespace Sailor.App.Backtest;
 
 public static class SimpleBacktestRunner
 {
-    public static async Task RunAsync(string symbol)
+    public static async Task RunAsync(string symbol, string timeframe = "1m")
     {
+        BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe);
+
         string logDirectory = GetBacktestLogDirectory();
         Directory.CreateDirectory(logDirectory);
 
         string logFilePath = Path.Combine(
             logDirectory,
-            $"backtest_{symbol}_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+            $"backtest_{options.Symbol}_{options.Timeframe}_{DateTime.Now:yyyyMMdd_HHmmss}.log");
 
         await using var fileStream = new FileStream(
             logFilePath,
@@ -30,81 +32,114 @@ public static class SimpleBacktestRunner
             writer.Flush();
         }
 
-        var dataProvider = new SampleBacktestDataProvider();
+        var dataProvider = new CsvBacktestDataProvider();
         var strategy = new SimpleMomentumBacktestStrategy();
 
-        IReadOnlyList<BacktestBar> bars = dataProvider.LoadBars(symbol);
+        BacktestDataSet dataSet = dataProvider.LoadBars(options.Symbol, options.Timeframe);
+        IReadOnlyList<BacktestBar> bars = dataSet.Bars;
 
-        decimal cash = 10_000.00m;
-        int quantity = 10;
+        decimal cash = options.InitialCash;
 
         BacktestBar? previousBar = null;
-        BacktestTrade? lastTrade = null;
         List<BacktestTrade> trades = [];
 
         bool hasOpenPosition = false;
+        int quantity = 0;
+        int entryBarIndex = -1;
         decimal entryPrice = 0m;
         DateTimeOffset entryTime = default;
         string entryReason = string.Empty;
 
         Log("sailor backtest started");
-        Log($"Symbol: {symbol}");
+        Log($"Symbol: {options.Symbol}");
+        Log($"Timeframe: {options.Timeframe}");
         Log($"Strategy: {strategy.Name}");
         Log($"Bars: {bars.Count}");
         Log($"Initial cash: {cash:F2}");
+        Log($"Max position notional: {options.MaxPositionNotional:F2}");
+        Log($"Stop loss: {options.StopLossPercent:F2}%");
+        Log($"Take profit: {options.TakeProfitPercent:F2}%");
+        Log($"Max hold bars: {options.MaxHoldBars}");
+        Log($"Data source: {dataSet.SourcePath}");
         Log($"Log file: {logFilePath}");
         Log("");
 
-        foreach (BacktestBar bar in bars)
+        for (int barIndex = 0; barIndex < bars.Count; barIndex++)
         {
+            BacktestBar bar = bars[barIndex];
+
+            if (hasOpenPosition)
+            {
+                bool closedByExitRule = TryCloseByExitRule(
+                    bar,
+                    barIndex,
+                    options,
+                    trades,
+                    Log,
+                    ref cash,
+                    ref hasOpenPosition,
+                    ref quantity,
+                    ref entryPrice,
+                    ref entryTime,
+                    ref entryReason,
+                    ref entryBarIndex);
+
+                if (closedByExitRule)
+                {
+                    previousBar = bar;
+                    continue;
+                }
+            }
+
             BacktestSignal signal = strategy.Evaluate(
                 bar,
                 previousBar,
                 hasOpenPosition);
 
-            Log($"{bar.Time:HH:mm} | {bar.Symbol} | Close={bar.Close,8:F2} | Volume={bar.Volume,8} | Signal={signal.Type}");
-
             if (signal.Type == BacktestSignalType.Buy && !hasOpenPosition)
             {
+                quantity = CalculateQuantity(options.MaxPositionNotional, bar.Close);
                 decimal cost = quantity * bar.Close;
 
-                if (cash >= cost)
+                if (quantity <= 0)
+                {
+                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: invalid quantity at price {bar.Close:F2}");
+                }
+                else if (cash >= cost)
                 {
                     cash -= cost;
                     hasOpenPosition = true;
                     entryPrice = bar.Close;
                     entryTime = bar.Time;
                     entryReason = signal.Reason;
+                    entryBarIndex = barIndex;
 
-                    Log($"  BUY  {quantity} @ {bar.Close:F2} | Cash={cash:F2} | {signal.Reason}");
+                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY  {quantity} {options.Symbol} @ {bar.Close:F2} | Cash={cash:F2} | {signal.Reason}");
                 }
                 else
                 {
-                    Log("  BUY skipped: not enough cash.");
+                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | BUY skipped: cost {cost:F2} > cash {cash:F2}");
                 }
             }
             else if (signal.Type == BacktestSignalType.Sell && hasOpenPosition)
             {
-                decimal proceeds = quantity * bar.Close;
-                cash += proceeds;
-
-                lastTrade = new BacktestTrade(
-                    Symbol: symbol,
-                    EntryTime: entryTime,
-                    ExitTime: bar.Time,
-                    EntryPrice: entryPrice,
-                    ExitPrice: bar.Close,
-                    Quantity: quantity,
-                    EntryReason: entryReason,
-                    ExitReason: signal.Reason);
-
-                trades.Add(lastTrade);
-
-                Log($"  SELL {quantity} @ {bar.Close:F2} | PnL={lastTrade.Pnl:F2} | Cash={cash:F2} | {signal.Reason}");
-
-                hasOpenPosition = false;
-                entryPrice = 0m;
-                entryReason = string.Empty;
+                ClosePosition(
+                    trades,
+                    Log,
+                    options.Symbol,
+                    bar.Time,
+                    bar.Close,
+                    quantity,
+                    entryTime,
+                    entryPrice,
+                    entryReason,
+                    signal.Reason,
+                    ref cash,
+                    ref hasOpenPosition,
+                    ref quantity,
+                    ref entryPrice,
+                    ref entryReason,
+                    ref entryBarIndex);
             }
 
             previousBar = bar;
@@ -113,25 +148,24 @@ public static class SimpleBacktestRunner
         if (hasOpenPosition && bars.Count > 0)
         {
             BacktestBar finalBar = bars[^1];
-            decimal proceeds = quantity * finalBar.Close;
-            cash += proceeds;
 
-            lastTrade = new BacktestTrade(
-                Symbol: symbol,
-                EntryTime: entryTime,
-                ExitTime: finalBar.Time,
-                EntryPrice: entryPrice,
-                ExitPrice: finalBar.Close,
-                Quantity: quantity,
-                EntryReason: entryReason,
-                ExitReason: "Forced close at end of backtest.");
-
-            trades.Add(lastTrade);
-
-            Log("");
-            Log($"  FORCE SELL {quantity} @ {finalBar.Close:F2} | PnL={lastTrade.Pnl:F2} | Cash={cash:F2}");
-
-            hasOpenPosition = false;
+            ClosePosition(
+                trades,
+                Log,
+                options.Symbol,
+                finalBar.Time,
+                finalBar.Close,
+                quantity,
+                entryTime,
+                entryPrice,
+                entryReason,
+                "Forced close at end of backtest.",
+                ref cash,
+                ref hasOpenPosition,
+                ref quantity,
+                ref entryPrice,
+                ref entryReason,
+                ref entryBarIndex);
         }
 
         int winners = trades.Count(t => t.Pnl > 0);
@@ -139,7 +173,7 @@ public static class SimpleBacktestRunner
         decimal totalPnl = trades.Sum(t => t.Pnl);
 
         var summary = new BacktestSummary(
-            Symbol: symbol,
+            Symbol: options.Symbol,
             TotalTrades: trades.Count,
             Winners: winners,
             Losers: losers,
@@ -150,6 +184,8 @@ public static class SimpleBacktestRunner
         Log("Backtest summary");
         Log("----------------");
         Log($"Symbol:       {summary.Symbol}");
+        Log($"Timeframe:    {options.Timeframe}");
+        Log($"Bars:         {bars.Count}");
         Log($"Trades:       {summary.TotalTrades}");
         Log($"Winners:      {summary.Winners}");
         Log($"Losers:       {summary.Losers}");
@@ -160,8 +196,150 @@ public static class SimpleBacktestRunner
         Log("sailor backtest finished");
 
         Console.WriteLine();
-        Console.WriteLine($"Backtest log created:");
+        Console.WriteLine("Backtest log created:");
         Console.WriteLine(logFilePath);
+    }
+
+    private static bool TryCloseByExitRule(
+        BacktestBar bar,
+        int barIndex,
+        BacktestOptions options,
+        List<BacktestTrade> trades,
+        Action<string> log,
+        ref decimal cash,
+        ref bool hasOpenPosition,
+        ref int quantity,
+        ref decimal entryPrice,
+        ref DateTimeOffset entryTime,
+        ref string entryReason,
+        ref int entryBarIndex)
+    {
+        decimal stopPrice = entryPrice * (1m - options.StopLossPercent / 100m);
+        decimal takeProfitPrice = entryPrice * (1m + options.TakeProfitPercent / 100m);
+        int barsHeld = barIndex - entryBarIndex;
+
+        if (bar.Low <= stopPrice)
+        {
+            ClosePosition(
+                trades,
+                log,
+                options.Symbol,
+                bar.Time,
+                stopPrice,
+                quantity,
+                entryTime,
+                entryPrice,
+                entryReason,
+                $"Stop loss hit at {stopPrice:F2}.",
+                ref cash,
+                ref hasOpenPosition,
+                ref quantity,
+                ref entryPrice,
+                ref entryReason,
+                ref entryBarIndex);
+
+            return true;
+        }
+
+        if (bar.High >= takeProfitPrice)
+        {
+            ClosePosition(
+                trades,
+                log,
+                options.Symbol,
+                bar.Time,
+                takeProfitPrice,
+                quantity,
+                entryTime,
+                entryPrice,
+                entryReason,
+                $"Take profit hit at {takeProfitPrice:F2}.",
+                ref cash,
+                ref hasOpenPosition,
+                ref quantity,
+                ref entryPrice,
+                ref entryReason,
+                ref entryBarIndex);
+
+            return true;
+        }
+
+        if (barsHeld >= options.MaxHoldBars)
+        {
+            ClosePosition(
+                trades,
+                log,
+                options.Symbol,
+                bar.Time,
+                bar.Close,
+                quantity,
+                entryTime,
+                entryPrice,
+                entryReason,
+                $"Max hold reached after {barsHeld} bars.",
+                ref cash,
+                ref hasOpenPosition,
+                ref quantity,
+                ref entryPrice,
+                ref entryReason,
+                ref entryBarIndex);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static void ClosePosition(
+        List<BacktestTrade> trades,
+        Action<string> log,
+        string symbol,
+        DateTimeOffset exitTime,
+        decimal exitPrice,
+        int quantity,
+        DateTimeOffset entryTime,
+        decimal entryPrice,
+        string entryReason,
+        string exitReason,
+        ref decimal cash,
+        ref bool hasOpenPosition,
+        ref int openQuantity,
+        ref decimal openEntryPrice,
+        ref string openEntryReason,
+        ref int entryBarIndex)
+    {
+        decimal proceeds = quantity * exitPrice;
+        cash += proceeds;
+
+        var trade = new BacktestTrade(
+            Symbol: symbol,
+            EntryTime: entryTime,
+            ExitTime: exitTime,
+            EntryPrice: entryPrice,
+            ExitPrice: exitPrice,
+            Quantity: quantity,
+            EntryReason: entryReason,
+            ExitReason: exitReason);
+
+        trades.Add(trade);
+
+        log($"{exitTime:yyyy-MM-dd HH:mm} | SELL {quantity} {symbol} @ {exitPrice:F2} | PnL={trade.Pnl:F2} ({trade.PnlPercent:F2}%) | Cash={cash:F2} | {exitReason}");
+
+        hasOpenPosition = false;
+        openQuantity = 0;
+        openEntryPrice = 0m;
+        openEntryReason = string.Empty;
+        entryBarIndex = -1;
+    }
+
+    private static int CalculateQuantity(decimal maxPositionNotional, decimal price)
+    {
+        if (price <= 0m)
+        {
+            return 0;
+        }
+
+        return Math.Max(1, (int)Math.Floor(maxPositionNotional / price));
     }
 
     private static string GetBacktestLogDirectory()
