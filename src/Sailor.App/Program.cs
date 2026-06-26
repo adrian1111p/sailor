@@ -2,6 +2,7 @@ using Sailor.App.Backtest;
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Runner;
+using Sailor.App.Backtest.Reports;
 using Sailor.App.Backtest.Scanner;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
@@ -65,6 +66,38 @@ switch (command)
         }
 
         await RunScannerAsync(timeframe, profileName, topCount, settings);
+        break;
+    }
+
+    case "html-report":
+    case "report-html":
+    case "strategy-report":
+    {
+        string timeframe = args.Length >= 2
+            ? args[1].Trim()
+            : settings.DefaultTimeframe;
+
+        string universeNameOrCsv = args.Length >= 3
+            ? args[2].Trim()
+            : settings.DefaultUniverse;
+
+        int? symbolLimit = null;
+        if (args.Length >= 4 && int.TryParse(args[3], out int parsedSymbolLimit) && parsedSymbolLimit > 0)
+        {
+            symbolLimit = parsedSymbolLimit;
+        }
+
+        string? profilesCsv = args.Length >= 5
+            ? args[4].Trim()
+            : null;
+
+        await SailorHtmlReportGenerator.RunAsync(
+            timeframe,
+            universeNameOrCsv,
+            settings,
+            symbolLimit,
+            profilesCsv);
+
         break;
     }
 
@@ -237,6 +270,9 @@ static void PrintHelp(SailorAppSettings settings)
     Console.WriteLine("  sailor rank 1m v21-15minutes 20 smallcaps");
     Console.WriteLine("  sailor rank 1m v24-5minutes 20 smallcaps");
     Console.WriteLine("  sailor rank 1m simple-momentum 20 ALIT,BARK,SOFI,PLTR");
+    Console.WriteLine("  sailor html-report 1m smallcaps");
+    Console.WriteLine("  sailor html-report 1m smallcaps 20");
+    Console.WriteLine("  sailor html-report 1m smallcaps 0 v21-15minutes,v23-5minutes,v24-5minutes,v22-15minutes");
     Console.WriteLine();
     Console.WriteLine("Harvester-inspired Sailor-native conduct profiles available now:");
     Console.WriteLine("  v21-15minutes, v23-5minutes, v24-5minutes, v22-15minutes, v16-sqzbreakout, v13,");

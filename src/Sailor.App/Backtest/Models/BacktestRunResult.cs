@@ -17,7 +17,8 @@ public sealed record BacktestRunResult(
     decimal? LastVwap,
     decimal? LastVolumeAverage20,
     string DataSourcePath,
-    string LogFilePath)
+    string LogFilePath,
+    IReadOnlyList<BacktestTrade> Trades)
 {
     public decimal WinRatePercent => TotalTrades > 0
         ? (decimal)Winners / TotalTrades * 100m

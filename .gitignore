@@ -10,4 +10,5 @@ obj/
 logs/**/*.log
 logs/**/*.txt
 logs/**/*.md
+logs/**/*.html
 !logs/**/.gitkeep

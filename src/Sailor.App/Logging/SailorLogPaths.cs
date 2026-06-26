@@ -6,6 +6,8 @@ public static class SailorLogPaths
 
     public static string Backtest => EnsureDirectory(Path.Combine(LogsRoot, "Backtest"));
 
+    public static string BacktestHtml => EnsureDirectory(Path.Combine(Backtest, "Html"));
+
     public static string Live => EnsureDirectory(Path.Combine(LogsRoot, "Live"));
 
     public static string Paper => EnsureDirectory(Path.Combine(LogsRoot, "Paper"));
