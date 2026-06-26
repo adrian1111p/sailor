@@ -1,23 +1,84 @@
-# 001_sailor
+# sailor
 
-Very simple C# day trading application skeleton.
+Simple C# day trading research application.
 
-## Current version
+## Current scope
 
-Version 0.1 is a paper simulation only.
+The application is still development / backtest only.
 
-It does not connect to IBKR, TWS, DAS Trader, or any real broker.
+It does **not** connect to IBKR, TWS, DAS Trader, or any real broker.
 
 ## Features
 
 - C# / .NET 8
 - Console application
-- Generated sample market bars
-- Simple momentum strategy
-- Paper buy/sell simulation
+- CSV-based backtest data
+- Technical indicators: EMA9, SMA20, SMA200, VWAP, VolumeAverage20
+- First Sailor scanner/strategy profile: `sailor-trend-volume`
+- Optional simple profile: `simple-momentum`
+- Logs under `src/Sailor.App/Logs`
 - No Python
 
 ## Build
 
 ```bash
 dotnet build
+```
+
+## List available data
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest --list
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest --list AAPL
+```
+
+## Run scanner
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- scan 1m
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- scan 1m sailor-trend-volume 20
+```
+
+## Run backtest
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest AAPL 1m sailor-trend-volume
+```
+
+```bash
+dotnet run --project src/Sailor.App/Sailor.App.csproj -- backtest TSLA 1m simple-momentum
+```
+
+## SAILOR-005 profile
+
+`sailor-trend-volume` uses these filters:
+
+- close price between 0.50 and 300.00
+- latest volume at least 100,000
+- EMA9 above SMA20
+- close above VWAP
+- close above SMA200 when SMA200 is available
+- latest volume at least 1.00x the 20-bar volume average
+- entry requires short-term positive momentum
+- exit can happen on momentum loss, close below EMA9, close below VWAP, EMA9 below SMA20, stop loss, take profit, or max hold
+
+## Logs
+
+Backtest and scanner logs are written to:
+
+```text
+src/Sailor.App/Logs/Backtest
+```
+
+Later live and paper logs will stay under:
+
+```text
+src/Sailor.App/Logs/Live
+src/Sailor.App/Logs/Paper
+```

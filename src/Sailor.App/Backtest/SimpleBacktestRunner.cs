@@ -1,22 +1,24 @@
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Indicators;
 using Sailor.App.Backtest.Models;
+using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Strategies;
 
 namespace Sailor.App.Backtest;
 
 public static class SimpleBacktestRunner
 {
-    public static async Task RunAsync(string symbol, string timeframe = "1m")
+    public static async Task RunAsync(string symbol, string timeframe = "1m", string profileName = "sailor-trend-volume")
     {
-        BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe);
+        BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe, profileName);
+        SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName);
 
         string logDirectory = GetBacktestLogDirectory();
         Directory.CreateDirectory(logDirectory);
 
         string logFilePath = Path.Combine(
             logDirectory,
-            $"backtest_{options.Symbol}_{options.Timeframe}_{DateTime.Now:yyyyMMdd_HHmmss}.log");
+            $"backtest_{options.Symbol}_{options.Timeframe}_{options.ProfileName}_{DateTime.Now:yyyyMMdd_HHmmss}.log");
 
         await using var fileStream = new FileStream(
             logFilePath,
@@ -34,7 +36,7 @@ public static class SimpleBacktestRunner
         }
 
         var dataProvider = new CsvBacktestDataProvider();
-        var strategy = new SimpleMomentumBacktestStrategy();
+        IBacktestStrategy strategy = CreateStrategy(profile);
 
         BacktestDataSet dataSet = dataProvider.LoadBars(options.Symbol, options.Timeframe);
         IReadOnlyList<BacktestBar> bars = dataSet.Bars;
@@ -55,6 +57,7 @@ public static class SimpleBacktestRunner
         Log("sailor backtest started");
         Log($"Symbol: {options.Symbol}");
         Log($"Timeframe: {options.Timeframe}");
+        Log($"Strategy profile: {profile.Name}");
         Log($"Strategy: {strategy.Name}");
         Log($"Bars: {bars.Count}");
         Log("Indicators: EMA9, SMA20, SMA200, VWAP, VolumeAverage20");
@@ -63,6 +66,12 @@ public static class SimpleBacktestRunner
         Log($"Stop loss: {options.StopLossPercent:F2}%");
         Log($"Take profit: {options.TakeProfitPercent:F2}%");
         Log($"Max hold bars: {options.MaxHoldBars}");
+        Log($"Entry momentum: {profile.EntryMomentumPercent:F2}%");
+        Log($"Exit momentum: {profile.ExitMomentumPercent:F2}%");
+        Log($"Price filter: {profile.MinimumPrice:F2}-{profile.MaximumPrice:F2}");
+        Log($"Minimum volume: {profile.MinimumVolume}");
+        Log($"Minimum volume ratio: {profile.MinimumVolumeRatio:F2}");
+        Log($"Profile filters: EMA9>SMA20={profile.RequireEma9AboveSma20}, Close>VWAP={profile.RequirePriceAboveVwap}, Close>SMA200 when available={profile.RequirePriceAboveSma200WhenAvailable}");
         Log($"Data source: {dataSet.SourcePath}");
         Log($"Log file: {logFilePath}");
         Log("");
@@ -195,6 +204,7 @@ public static class SimpleBacktestRunner
         Log("----------------");
         Log($"Symbol:       {summary.Symbol}");
         Log($"Timeframe:    {options.Timeframe}");
+        Log($"Profile:      {profile.Name}");
         Log($"Bars:         {bars.Count}");
         Log($"Last EMA9:    {FormatIndicator(indicators[^1].Ema9)}");
         Log($"Last SMA20:   {FormatIndicator(indicators[^1].Sma20)}");
@@ -213,6 +223,13 @@ public static class SimpleBacktestRunner
         Console.WriteLine();
         Console.WriteLine("Backtest log created:");
         Console.WriteLine(logFilePath);
+    }
+
+    private static IBacktestStrategy CreateStrategy(SailorStrategyProfile profile)
+    {
+        return profile.Name.Equals("simple-momentum", StringComparison.OrdinalIgnoreCase)
+            ? new SimpleMomentumBacktestStrategy()
+            : new SailorTrendVolumeBacktestStrategy(profile);
     }
 
     private static bool TryCloseByExitRule(
