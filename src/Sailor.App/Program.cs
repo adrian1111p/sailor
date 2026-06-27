@@ -4,6 +4,7 @@ using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Runner;
 using Sailor.App.Backtest.Reports;
 using Sailor.App.Backtest.Scanner;
+using Sailor.App.Backtest.SelfTest;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
 
@@ -98,6 +99,20 @@ switch (command)
             symbolLimit,
             profilesCsv);
 
+        break;
+    }
+
+
+    case "test-backtest":
+    case "backtest-test":
+    case "self-test":
+    {
+        string testMode = args.Length >= 2
+            ? args[1].Trim()
+            : "quick";
+
+        int exitCode = await BacktestSelfTestRunner.RunAsync(testMode, settings);
+        Environment.ExitCode = exitCode;
         break;
     }
 
@@ -273,6 +288,9 @@ static void PrintHelp(SailorAppSettings settings)
     Console.WriteLine("  sailor html-report 1m smallcaps");
     Console.WriteLine("  sailor html-report 1m smallcaps 20");
     Console.WriteLine("  sailor html-report 1m smallcaps 0 v21-15minutes,v23-5minutes,v24-5minutes,v22-15minutes");
+    Console.WriteLine("  sailor test-backtest");
+    Console.WriteLine("  sailor test-backtest quick");
+    Console.WriteLine("  sailor test-backtest full");
     Console.WriteLine();
     Console.WriteLine("Harvester-inspired Sailor-native conduct profiles available now:");
     Console.WriteLine("  v21-15minutes, v23-5minutes, v24-5minutes, v22-15minutes, v16-sqzbreakout, v13,");
