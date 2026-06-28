@@ -171,6 +171,12 @@ public sealed class SailorRuntimeModeSettings
 
     public bool SendOrders { get; set; }
 
+    public bool AllowLiveTrading { get; set; } = false;
+
+    public decimal MaxOrderNotional { get; set; } = 100.00m;
+
+    public int CertificationMaxAgeHours { get; set; } = 24;
+
     public bool UseL1 { get; set; } = true;
 
     public bool UseL2 { get; set; } = true;

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Scanner;
@@ -11,6 +12,7 @@ using Sailor.App.MarketData.History;
 using Sailor.App.MarketData.Live;
 using Sailor.App.Reporting;
 using Sailor.App.Runtime.Common;
+using Sailor.App.Runtime.Live;
 using Sailor.App.Runtime.Paper;
 using Sailor.App.Scanner.Runtime;
 
@@ -30,7 +32,7 @@ public static class SailorRuntimeCommandRunner
         switch (subcommand)
         {
             case "connect":
-                await RunConnectSkeletonAsync(mode, settings);
+                await RunConnectSkeletonAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
             case "scan":
@@ -76,6 +78,11 @@ public static class SailorRuntimeCommandRunner
                 await RunPaperReportAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
+            case "readiness":
+            case "gate":
+                await RunLiveReadinessAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
             case "flatten":
                 await RunFlattenSkeletonAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
@@ -95,6 +102,7 @@ public static class SailorRuntimeCommandRunner
 
     private static async Task RunConnectSkeletonAsync(
         SailorRuntimeMode mode,
+        string[] args,
         SailorAppSettings settings)
     {
         SailorRuntimeOptions options = CreateOptions(mode, Array.Empty<string>(), settings);
@@ -111,6 +119,28 @@ public static class SailorRuntimeCommandRunner
         Log(writer, options.ToCompactString());
         Log(writer, connectionOptions.ToDisplayString());
         Log(writer, "");
+
+        if (mode == SailorRuntimeMode.Live)
+        {
+            bool readOnly = args.Any(arg => arg.Equals("--read-only", StringComparison.OrdinalIgnoreCase));
+            LiveReadinessGateResult gate = EvaluateLiveReadiness(
+                settings,
+                "live connect",
+                args,
+                requiresTrading: false,
+                readOnly: readOnly,
+                account: modeSettings.Account ?? string.Empty);
+            LogLiveReadinessGate(writer, gate);
+            Log(writer, "");
+
+            if (!readOnly)
+            {
+                Log(writer, "SAILOR-033 requires live connect to be started explicitly as read-only: live connect --read-only");
+                Log(writer, "No live connection opened. No orders sent.");
+                Log(writer, $"Runtime log: {logFilePath}");
+                return;
+            }
+        }
 
         foreach (string line in IbkrConnectionChecklist.BuildPreflightLines(connectionOptions))
         {
@@ -472,6 +502,20 @@ public static class SailorRuntimeCommandRunner
         Log(writer, "No strategy loop is started and no orders are sent.");
         Log(writer, "");
 
+        if (mode == SailorRuntimeMode.Live)
+        {
+            LiveReadinessGateResult gate = EvaluateLiveReadiness(
+                settings,
+                "live scan",
+                args,
+                requiresTrading: false,
+                readOnly: true,
+                account: modeSettings.Account ?? string.Empty);
+            LogLiveReadinessGate(writer, gate);
+            Log(writer, "SAILOR-033 live scan is read-only. No live order router is created.");
+            Log(writer, "");
+        }
+
         using var runner = new PaperScannerRunner(settings, connectionOptions, scannerOptions);
         Log(writer, $"History provider: {runner.HistoryProviderName}");
         Log(writer, $"Market data provider: {runner.MarketDataProviderName}");
@@ -554,8 +598,21 @@ public static class SailorRuntimeCommandRunner
 
         if (mode == SailorRuntimeMode.Live)
         {
-            Log(writer, "LIVE runtime remains blocked. SAILOR-030 implements paper conduct only.");
-            Log(writer, "No broker connection opened. No orders sent.");
+            SailorRuntimeModeSettings liveSettings = GetModeSettings(mode, settings);
+            string liveAccount = ReadStringOption(args, "--account", liveSettings.Account ?? string.Empty);
+            LiveReadinessGateResult gate = EvaluateLiveReadiness(
+                settings,
+                "live run",
+                args,
+                requiresTrading: true,
+                readOnly: false,
+                account: liveAccount);
+            LogLiveReadinessGate(writer, gate);
+            Log(writer, "");
+            Log(writer, gate.LiveTradingAllowed
+                ? "SAILOR-033 live-readiness gate passed, but live conduct routing is still disabled until SAILOR-034 live pilot."
+                : "SAILOR-033 blocked live conduct before any broker order route could be created.");
+            Log(writer, "No broker order was sent.");
             Log(writer, $"Runtime log: {logFilePath}");
             return;
         }
@@ -803,12 +860,6 @@ public static class SailorRuntimeCommandRunner
             limitPrice = parsedLimit;
         }
 
-        if (mode == SailorRuntimeMode.Live && args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase)))
-        {
-            Console.WriteLine("SAILOR-028 blocks live order submission. Use paper mode only.");
-            return;
-        }
-
         SailorRuntimeOptions runtimeOptions = CreateOptions(mode, ["1m", ReadStringOption(args, "--strategy", "manual-paper-order"), "1", symbol], settings);
         SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
         string account = ReadStringOption(args, "--account", modeSettings.Account ?? string.Empty);
@@ -864,6 +915,31 @@ public static class SailorRuntimeCommandRunner
         if (sendOrdersRequested && !sendOrders)
         {
             Log(writer, "WARN: --send-orders was requested but the command is still dry-run. Check mode and --dry-run flag.");
+        }
+
+        if (mode == SailorRuntimeMode.Live)
+        {
+            decimal fallbackNotional = limitPrice is not null ? limitPrice.Value * quantity : 0m;
+            LiveReadinessGateResult gate = EvaluateLiveReadiness(
+                settings,
+                "live order",
+                args,
+                requiresTrading: sendOrdersRequested,
+                readOnly: !sendOrdersRequested,
+                account: account,
+                defaultMaxNotional: fallbackNotional);
+            LogLiveReadinessGate(writer, gate);
+            Log(writer, "");
+
+            if (sendOrdersRequested)
+            {
+                Log(writer, gate.LiveTradingAllowed
+                    ? "SAILOR-033 live-readiness gate passed, but live order routing remains disabled until SAILOR-034 live pilot."
+                    : "SAILOR-033 blocked live order submission before any broker order route could be created.");
+                Log(writer, "No broker order was sent.");
+                Log(writer, $"Runtime log: {logFilePath}");
+                return;
+            }
         }
 
         await using IOrderRouter router = IbkrOrderRouterFactory.Create(sendOrders, connectionOptions, primaryExchange, waitSeconds);
@@ -1105,6 +1181,53 @@ public static class SailorRuntimeCommandRunner
         }
     }
 
+    private static async Task RunLiveReadinessAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        SailorRuntimeOptions options = CreateOptions(mode, Array.Empty<string>(), settings);
+        string logFilePath = CreateRuntimeLogFilePath(mode, "readiness");
+
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {options.ModeName} live-readiness gate");
+        Log(writer, options.ToCompactString());
+        Log(writer, "");
+
+        if (mode != SailorRuntimeMode.Live)
+        {
+            Log(writer, "SAILOR-033 live-readiness gate is a live-mode command.");
+            Log(writer, "Usage: sailor live readiness --account DU123456 --max-notional 100 --confirm-live");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        bool readOnly = args.Any(arg => arg.Equals("--read-only", StringComparison.OrdinalIgnoreCase));
+        SailorRuntimeModeSettings liveSettings = GetModeSettings(mode, settings);
+        string account = ReadStringOption(args, "--account", liveSettings.Account ?? string.Empty);
+        LiveReadinessGateResult gate = EvaluateLiveReadiness(
+            settings,
+            readOnly ? "live readiness read-only" : "live readiness trading",
+            args,
+            requiresTrading: !readOnly,
+            readOnly: readOnly,
+            account: account);
+        LiveReadinessGateOutput output = new LiveReadinessGate(settings).WriteResult(gate);
+
+        Log(writer, "SAILOR-033 implementation: live-readiness gate.");
+        Log(writer, "Live mode can connect and scan read-only, but live trading remains blocked unless the explicit gate passes.");
+        Log(writer, "The gate requires Runtime.Live.AllowLiveTrading=true, --confirm-live, a recent promotable paper certification report, matching account, and small max notional.");
+        Log(writer, "");
+        LogLiveReadinessGate(writer, gate);
+        Log(writer, $"Readiness JSON: {output.JsonPath}");
+        Log(writer, $"Readiness CSV:  {output.CsvPath}");
+        Log(writer, "");
+        Log(writer, gate.LiveTradingAllowed
+            ? "Live-readiness gate PASSED. SAILOR-033 still does not send live orders; SAILOR-034 will consume this evidence for the pilot."
+            : "Live-readiness gate BLOCKED. No live order can be routed.");
+        Log(writer, $"Runtime log: {logFilePath}");
+    }
+
     private static async Task RunFlattenSkeletonAsync(
         SailorRuntimeMode mode,
         string[] args,
@@ -1137,6 +1260,50 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
+
+    private static LiveReadinessGateResult EvaluateLiveReadiness(
+        SailorAppSettings settings,
+        string commandName,
+        string[] args,
+        bool requiresTrading,
+        bool readOnly,
+        string account,
+        decimal? defaultMaxNotional = null)
+    {
+        decimal fallback = defaultMaxNotional ?? settings.Runtime.Live.MaxOrderNotional;
+        decimal requestedMaxNotional = ReadDecimalOption(args, "--max-notional", fallback);
+        bool confirmLive = args.Any(arg => arg.Equals("--confirm-live", StringComparison.OrdinalIgnoreCase));
+        var request = new LiveReadinessGateRequest(
+            commandName,
+            requiresTrading,
+            readOnly,
+            confirmLive,
+            account,
+            requestedMaxNotional);
+
+        return new LiveReadinessGate(settings).Evaluate(request);
+    }
+
+    private static void LogLiveReadinessGate(StreamWriter writer, LiveReadinessGateResult gate)
+    {
+        Log(writer, "SAILOR-033 live-readiness gate");
+        Log(writer, gate.ToSummaryString());
+        Log(writer, gate.ManualConfirmationRequiredText);
+        Log(writer, $"paperCertification={gate.PaperCertificationPath}");
+        if (gate.PaperReport is not null)
+        {
+            Log(writer, $"paperReport={gate.PaperReport.ReportId} status={gate.PaperReport.CertificationStatus} canPromote={gate.PaperReport.CanPromoteToLiveReadiness} account={(string.IsNullOrWhiteSpace(gate.PaperReport.Account) ? "not-configured" : gate.PaperReport.Account)} generatedUtc={gate.PaperReport.GeneratedUtc:O}");
+        }
+
+        Log(writer, "Live-readiness checks");
+        Log(writer, "---------------------");
+        foreach (LiveReadinessCheck check in gate.Checks)
+        {
+            Log(writer, check.ToDisplayLine());
+        }
+
+        Log(writer, $"Result: {gate.Status} - {gate.Reason}");
+    }
 
     private static IPositionProvider CreatePositionProvider(bool localOnly, IbkrConnectionOptions connectionOptions)
     {
@@ -1319,6 +1486,24 @@ public static class SailorRuntimeCommandRunner
         return allowZero ? Math.Max(0, defaultValue) : Math.Max(1, defaultValue);
     }
 
+    private static decimal ReadDecimalOption(string[] args, string optionName, decimal defaultValue)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals(optionName, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(args[i + 1]) &&
+                !args[i + 1].StartsWith("--", StringComparison.Ordinal) &&
+                (decimal.TryParse(args[i + 1], NumberStyles.Number, CultureInfo.InvariantCulture, out decimal invariantValue) ||
+                 decimal.TryParse(args[i + 1], NumberStyles.Number, CultureInfo.CurrentCulture, out invariantValue)) &&
+                invariantValue > 0m)
+            {
+                return invariantValue;
+            }
+        }
+
+        return defaultValue > 0m ? defaultValue : 0m;
+    }
+
     private static string ReadStringOption(string[] args, string optionName, string defaultValue)
     {
         for (int i = 0; i < args.Length - 1; i++)
@@ -1428,6 +1613,11 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine($"  sailor {name} connect");
+        if (mode == SailorRuntimeMode.Live)
+        {
+            Console.WriteLine($"  sailor {name} connect --read-only");
+            Console.WriteLine($"  sailor {name} readiness --account DU123456 --max-notional 100 --confirm-live");
+        }
         Console.WriteLine($"  sailor {name} scan");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --local-cache");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --days 5 --market-data-type 2");
@@ -1442,6 +1632,10 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} run --dry-run");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --iterations 10");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
+        if (mode == SailorRuntimeMode.Live)
+        {
+            Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --max-notional 100 --confirm-live");
+        }
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --simulate-disconnect-at 2");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --dry-run");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 MKT --dry-run");
@@ -1453,7 +1647,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} report latest");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-032 status:");
+        Console.WriteLine("SAILOR-033 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
@@ -1470,6 +1664,10 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - paper send-orders mode can attempt reconnect + reconciliation before resuming entries");
         Console.WriteLine("  - runtime incident reports are persisted under logs/Paper/Incidents");
         Console.WriteLine("  - paper report latest generates a JSON/Markdown/CSV paper certification report for the live-readiness gate");
+        Console.WriteLine("  - live connect requires --read-only before opening the TCP probe");
+        Console.WriteLine("  - live scan remains read-only and never creates an order router");
+        Console.WriteLine("  - live readiness/gate evaluates config, --confirm-live, paper certification age/status, account match, and max notional");
+        Console.WriteLine("  - live order/run paths remain blocked even when the SAILOR-033 gate passes; SAILOR-034 will consume the evidence");
         Console.WriteLine("  - live order sending is blocked");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
@@ -1477,6 +1675,12 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  port:       {modeSettings.Port}");
         Console.WriteLine($"  client id:  {modeSettings.ClientId}");
         Console.WriteLine($"  sendOrders: {modeSettings.SendOrders}");
+        if (mode == SailorRuntimeMode.Live)
+        {
+            Console.WriteLine($"  allow live trading: {modeSettings.AllowLiveTrading}");
+            Console.WriteLine($"  max order notional: {modeSettings.MaxOrderNotional:F2}");
+            Console.WriteLine($"  paper cert max age: {modeSettings.CertificationMaxAgeHours}h");
+        }
         Console.WriteLine($"  timeout:    {modeSettings.ConnectTimeoutSeconds}s");
         Console.WriteLine($"  L1/L2:      {modeSettings.UseL1}/{modeSettings.UseL2}");
         Console.WriteLine($"  last entry: {settings.Runtime.Safety.LastEntryMinute} ET minute");
