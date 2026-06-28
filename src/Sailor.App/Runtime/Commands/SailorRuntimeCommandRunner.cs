@@ -568,6 +568,9 @@ public static class SailorRuntimeCommandRunner
         int seconds = ReadIntOption(args, "--seconds", 10);
         int iterations = ReadIntOption(args, "--iterations", Math.Max(1, seconds / Math.Max(1, cadenceSeconds)));
         int executionRequestId = ReadIntOption(args, "--execution-request-id", 30_000);
+        int reconnectAttempts = ReadIntOption(args, "--reconnect-attempts", 3);
+        int reconnectBackoffSeconds = ReadIntOption(args, "--reconnect-backoff-seconds", 2);
+        int simulateDisconnectAtIteration = ReadIntOption(args, "--simulate-disconnect-at", 0, allowZero: true);
 
         bool localCache = args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
         bool requestIbkrHistory = !localCache && !args.Any(arg => arg.Equals("--no-history-refresh", StringComparison.OrdinalIgnoreCase));
@@ -635,6 +638,7 @@ public static class SailorRuntimeCommandRunner
         Log(writer, connectionOptions.ToDisplayString());
         Log(writer, scannerOptions.ToDisplayString());
         Log(writer, $"quantity={quantity} cadenceSeconds={cadenceSeconds} iterations={iterations} waitSeconds={waitSeconds} sendOrdersRequested={sendOrdersRequested} sendOrders={sendOrders} dryRun={dryRun} account={(string.IsNullOrWhiteSpace(account) ? "not-configured" : account)}");
+        Log(writer, $"reconnectAttempts={reconnectAttempts} reconnectBackoffSeconds={reconnectBackoffSeconds} simulateDisconnectAtIteration={simulateDisconnectAtIteration}");
         Log(writer, "");
 
         ReconciliationResult reconciliation;
@@ -668,11 +672,28 @@ public static class SailorRuntimeCommandRunner
             }
         }
 
+        RuntimeReconciliationDelegate? brokerReconcileAsync = null;
+        int nextRecoveryExecutionRequestId = executionRequestId + 1000;
+        if (sendOrders)
+        {
+            brokerReconcileAsync = async cancellationToken =>
+            {
+                await using IPositionProvider recoveryProvider = CreatePositionProvider(localOnly: false, connectionOptions);
+                var recoveryRequest = new PositionRequest(
+                    mode,
+                    account,
+                    TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
+                    nextRecoveryExecutionRequestId++);
+
+                return await reconciliationService.ReconcileAsync(recoveryProvider, recoveryRequest, cancellationToken).ConfigureAwait(false);
+            };
+        }
+
         bool canOpenEntries = dryRun || reconciliation.CanOpenNewEntries;
         if (sendOrders && !reconciliation.CanOpenNewEntries)
         {
             Log(writer, "");
-            Log(writer, "SAILOR-030 blocked before conduct loop because broker reconciliation did not match. No orders sent.");
+            Log(writer, "SAILOR-031 blocked before conduct loop because broker reconciliation did not match. No orders sent. Runtime remains close-only until reconcile is clean.");
             Log(writer, $"Runtime log: {logFilePath}");
             return;
         }
@@ -693,7 +714,11 @@ public static class SailorRuntimeCommandRunner
             iterations,
             waitSeconds,
             primaryExchange,
-            forceFlatNow);
+            forceFlatNow,
+            reconnectAttempts,
+            reconnectBackoffSeconds,
+            simulateDisconnectAtIteration,
+            brokerReconcileAsync);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult result = await host.RunAsync(request, CancellationToken.None);
@@ -713,6 +738,7 @@ public static class SailorRuntimeCommandRunner
 
         Log(writer, "");
         Log(writer, result.OrderIntentCount > 0 ? "SAILOR-030 conduct loop produced order intents." : "SAILOR-030 conduct loop produced no order intents.");
+        Log(writer, "SAILOR-031 degraded-state handling was active for this paper run.");
         Log(writer, sendOrders ? "Paper send-orders mode was active." : "Dry-run mode: no broker orders were sent.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
@@ -885,14 +911,16 @@ public static class SailorRuntimeCommandRunner
         var service = new ReconciliationService(mode);
         ReconciliationResult localStatus = service.BuildLocalStatus();
         ReconciliationResult? lastReconciliation = service.LoadLastReconciliation();
+        var incidentReporter = new RuntimeIncidentReporter(mode);
+        RuntimeIncident? latestIncident = incidentReporter.LoadLatestIncident();
 
         string logFilePath = CreateRuntimeLogFilePath(mode, "status");
         await using var writer = CreateWriter(logFilePath);
         Log(writer, $"sailor {options.ModeName} status");
         Log(writer, state.ToDisplayString());
         Log(writer, "");
-        Log(writer, "SAILOR-029 implementation: positions and reconciliation status.");
-        Log(writer, "This command reads the Sailor order ledger and position store. It does not request broker state; use reconcile for TWS verification.");
+        Log(writer, "SAILOR-031 status: positions, reconciliation, and latest runtime incident.");
+        Log(writer, "This command reads the Sailor order ledger, position store, last reconciliation, and latest degraded-state incident. It does not request broker state; use reconcile for TWS verification.");
         Log(writer, "");
         LogReconciliationResult(writer, localStatus, includeEvents: false);
 
@@ -909,6 +937,20 @@ public static class SailorRuntimeCommandRunner
         {
             Log(writer, "");
             Log(writer, "No broker reconciliation JSON found yet. Run paper reconcile with the optional IBApi build before allowing strategy entries.");
+        }
+
+        Log(writer, "");
+        Log(writer, "Runtime incidents");
+        Log(writer, "-----------------");
+        if (latestIncident is null)
+        {
+            Log(writer, $"No runtime incident JSON found. Incident directory: {incidentReporter.IncidentDirectory}");
+        }
+        else
+        {
+            Log(writer, latestIncident.ToDisplayString());
+            Log(writer, latestIncident.SafetyState.ToDisplayString());
+            Log(writer, $"Latest incident JSON: {incidentReporter.LatestIncidentPath}");
         }
 
         Log(writer, "");
@@ -1171,19 +1213,19 @@ public static class SailorRuntimeCommandRunner
         return normalized is "MKT" or "MARKET" or "LMT" or "LIMIT" or "STP" or "STOP" or "STPLMT" or "STP_LMT" or "STOP_LIMIT";
     }
 
-    private static int ReadIntOption(string[] args, string optionName, int defaultValue)
+    private static int ReadIntOption(string[] args, string optionName, int defaultValue, bool allowZero = false)
     {
         for (int i = 0; i < args.Length - 1; i++)
         {
             if (args[i].Equals(optionName, StringComparison.OrdinalIgnoreCase) &&
                 int.TryParse(args[i + 1], out int value) &&
-                value > 0)
+                (value > 0 || (allowZero && value == 0)))
             {
                 return value;
             }
         }
 
-        return Math.Max(1, defaultValue);
+        return allowZero ? Math.Max(0, defaultValue) : Math.Max(1, defaultValue);
     }
 
     private static string ReadStringOption(string[] args, string optionName, string defaultValue)
@@ -1309,6 +1351,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} run --dry-run");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --iterations 10");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
+        Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --simulate-disconnect-at 2");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --dry-run");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 MKT --dry-run");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --send-orders");
@@ -1318,7 +1361,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} reconcile --local-only");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-030 status:");
+        Console.WriteLine("SAILOR-031 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
@@ -1331,6 +1374,9 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - entries are blocked unless broker reconciliation succeeds without critical mismatch");
         Console.WriteLine("  - paper run now starts the scanner-backed conduct loop, builds strategy frames, creates order intents, writes the ledger, and can route through IBKR paper");
         Console.WriteLine("  - dry-run conduct assumes local fills so entry/exit logic can be smoke-tested without broker orders");
+        Console.WriteLine("  - disconnect/degraded broker signals move runtime to CloseOnly and block new entries");
+        Console.WriteLine("  - paper send-orders mode can attempt reconnect + reconciliation before resuming entries");
+        Console.WriteLine("  - runtime incident reports are persisted under logs/Paper/Incidents");
         Console.WriteLine("  - live order sending is blocked");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");

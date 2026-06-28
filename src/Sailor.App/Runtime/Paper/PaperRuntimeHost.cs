@@ -25,11 +25,21 @@ public sealed class PaperRuntimeHost
     {
         var warnings = new List<string>();
         SailorRuntimeState runtimeState = new(request.RuntimeOptions.Mode);
-        runtimeState.SetStatus(SailorRuntimeStatus.Scanning, "SAILOR-030 scanner/activation phase.");
+        runtimeState.SetStatus(SailorRuntimeStatus.Scanning, "SAILOR-031 scanner/activation phase.");
+
+        var incidentReporter = new RuntimeIncidentReporter(request.RuntimeOptions.Mode);
+        var healthMonitor = new RuntimeHealthMonitor(request.RuntimeOptions.Mode, incidentReporter, request.CanOpenEntries);
+        var recoveryService = new ConnectionRecoveryService(healthMonitor, _log);
 
         _log("SAILOR-030 implementation: paper conduct loop.");
         _log("This first paper runtime slice runs the scanner, activates selected symbols, builds strategy frames on a cadence, converts strategy decisions to order intents, and routes them through the paper order router.");
         _log("Dry-run mode assumes fills locally so the conduct/exit path can be exercised without broker orders. Send-orders mode requires broker reconciliation and only updates local session position after actual filled quantity is reported.");
+        _log("");
+        _log("SAILOR-031 implementation: disconnection and degraded-state handling.");
+        _log("Runtime health starts in Normal only when the pre-run broker/reconciliation gate is clean. Any disconnect, degraded broker signal, or routing failure moves the runtime to CloseOnly and blocks new entries.");
+        _log($"Incident JSONL: {incidentReporter.DailyJsonlPath}");
+        _log($"Latest incident JSON: {incidentReporter.LatestIncidentPath}");
+        _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
 
         using var scannerRunner = new PaperScannerRunner(_settings, request.ConnectionOptions, request.ScannerOptions);
@@ -37,7 +47,36 @@ public sealed class PaperRuntimeHost
         _log($"Market data provider: {scannerRunner.MarketDataProviderName}");
         _log("");
 
-        PaperScannerRunResult scannerResult = await scannerRunner.RunAsync(request.ScannerOptions, cancellationToken).ConfigureAwait(false);
+        PaperScannerRunResult scannerResult;
+        try
+        {
+            scannerResult = await scannerRunner.RunAsync(request.ScannerOptions, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            string scannerFailure = $"Scanner/activation failed without crashing runtime: {ex.GetType().Name}: {ex.Message}";
+            warnings.Add(scannerFailure);
+            RuntimeIncident? scannerFailureIncident = healthMonitor.MarkCloseOnly(
+                "scanner-failed",
+                scannerFailure,
+                new[] { scannerFailure });
+
+            if (scannerFailureIncident is not null)
+            {
+                _log(scannerFailureIncident.ToDisplayString());
+            }
+
+            _log($"WARN: {scannerFailure}");
+            scannerResult = new PaperScannerRunResult(
+                request.ScannerOptions,
+                string.IsNullOrWhiteSpace(request.RuntimeOptions.Universe) ? Array.Empty<string>() : new[] { request.RuntimeOptions.Universe.Trim().ToUpperInvariant() },
+                Array.Empty<string>(),
+                Array.Empty<PaperScannerSymbolPreparation>(),
+                Array.Empty<PaperScannerCandidate>(),
+                CandidateReportPath: null,
+                Warnings: new[] { scannerFailure });
+        }
+
         _log("Scanner/activation summary");
         _log("--------------------------");
         _log(scannerResult.ToSummaryString());
@@ -53,6 +92,14 @@ public sealed class PaperRuntimeHost
         {
             warnings.Add(warning);
             _log($"WARN: {warning}");
+        }
+
+        RuntimeIncident? scannerIncident = healthMonitor.ObserveMessages(scannerResult.Warnings, "scanner/activation");
+        if (scannerIncident is not null)
+        {
+            warnings.Add(scannerIncident.Message);
+            _log(scannerIncident.ToDisplayString());
+            _log(healthMonitor.SafetyState.ToDisplayString());
         }
 
         _log("");
@@ -88,6 +135,8 @@ public sealed class PaperRuntimeHost
             router,
             request,
             runtimeState,
+            healthMonitor,
+            recoveryService,
             cancellationToken).ConfigureAwait(false);
 
         runtimeState.SetStatus(SailorRuntimeStatus.Stopped, "SAILOR-030 conduct loop finished.");
@@ -99,6 +148,12 @@ public sealed class PaperRuntimeHost
         }
 
         _log(runtimeState.ToDisplayString());
+        _log(healthMonitor.SafetyState.ToDisplayString());
+        if (healthMonitor.LastIncident is not null)
+        {
+            _log($"Latest incident: {healthMonitor.LastIncident.ToDisplayString()}");
+            _log($"Latest incident JSON: {incidentReporter.LatestIncidentPath}");
+        }
 
         return loopResult with
         {

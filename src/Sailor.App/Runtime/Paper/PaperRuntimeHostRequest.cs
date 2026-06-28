@@ -19,7 +19,11 @@ public sealed record PaperRuntimeHostRequest(
     int MaxIterations,
     int WaitSeconds,
     string PrimaryExchange,
-    bool ForceFlatNow);
+    bool ForceFlatNow,
+    int ReconnectAttempts,
+    int ReconnectBackoffSeconds,
+    int SimulateDisconnectAtIteration,
+    RuntimeReconciliationDelegate? ReconcileBrokerStateAsync);
 
 public sealed record PaperRuntimeHostResult(
     IReadOnlyList<string> ActiveSymbols,

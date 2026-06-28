@@ -22,6 +22,8 @@ public sealed class PaperConductLoop
         IOrderRouter router,
         PaperRuntimeHostRequest request,
         SailorRuntimeState runtimeState,
+        RuntimeHealthMonitor healthMonitor,
+        ConnectionRecoveryService recoveryService,
         CancellationToken cancellationToken)
     {
         var warnings = new List<string>();
@@ -29,6 +31,7 @@ public sealed class PaperConductLoop
         int intentCount = 0;
         int routedCount = 0;
         int filledOrAssumedFillCount = 0;
+        bool recoveryAttempted = false;
 
         if (sessions.Count == 0)
         {
@@ -39,15 +42,34 @@ public sealed class PaperConductLoop
         _log("Paper conduct loop");
         _log("------------------");
         _log($"cadence={request.CadenceSeconds}s iterations={request.MaxIterations} sendOrders={request.SendOrders} dryRun={request.DryRun} canOpenEntries={request.CanOpenEntries} forceFlatNow={request.ForceFlatNow}");
+        _log($"reconnectAttempts={request.ReconnectAttempts} reconnectBackoffSeconds={request.ReconnectBackoffSeconds} simulateDisconnectAtIteration={request.SimulateDisconnectAtIteration}");
         _log($"router={router.RouterName}");
+        _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
 
         for (int iteration = 1; iteration <= request.MaxIterations; iteration++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            runtimeState.SetStatus(SailorRuntimeStatus.Running, $"SAILOR-030 conduct iteration {iteration}.");
+            runtimeState.SetStatus(SailorRuntimeStatus.Running, $"SAILOR-031 conduct iteration {iteration}.");
 
-            _log($"Iteration {iteration}/{request.MaxIterations} heartbeatUtc={DateTimeOffset.UtcNow:O}");
+            if (request.SimulateDisconnectAtIteration == iteration)
+            {
+                RuntimeIncident? simulatedIncident = healthMonitor.MarkCloseOnly(
+                    "simulated-disconnect",
+                    $"Simulated broker disconnect requested at conduct iteration {iteration}.",
+                    new[] { $"iteration={iteration}", "operator-test=--simulate-disconnect-at" });
+
+                if (simulatedIncident is not null)
+                {
+                    warnings.Add(simulatedIncident.Message);
+                    _log(simulatedIncident.ToDisplayString());
+                    _log(healthMonitor.SafetyState.ToDisplayString());
+                }
+
+                await TryRecoverIfNeededAsync($"simulated disconnect at iteration {iteration}").ConfigureAwait(false);
+            }
+
+            _log($"Iteration {iteration}/{request.MaxIterations} heartbeatUtc={DateTimeOffset.UtcNow:O} safety={healthMonitor.SafetyState.Mode}");
 
             foreach (PaperSymbolSession session in sessions)
             {
@@ -74,6 +96,10 @@ public sealed class PaperConductLoop
                 {
                     decision = SailorStrategyDecision.Hold(session.Symbol, $"Force-flat window reached at {frame.Time:O}; no open position.");
                 }
+                else if (!healthMonitor.CanOpenEntries(request.CanOpenEntries) && !positionBefore.HasOpenPosition)
+                {
+                    decision = SailorStrategyDecision.Hold(session.Symbol, $"Runtime safety is {healthMonitor.SafetyState.Mode}; new entries are blocked: {healthMonitor.SafetyState.Reason}");
+                }
                 else
                 {
                     decision = await session.Strategy.EvaluateAsync(frame, positionBefore, cancellationToken).ConfigureAwait(false);
@@ -88,9 +114,18 @@ public sealed class PaperConductLoop
                 }
 
                 bool isEntry = decision.Type is SailorStrategyDecisionType.EnterLong or SailorStrategyDecisionType.EnterShort;
-                if (isEntry && !request.CanOpenEntries)
+                bool isExitOrFlatten = decision.Type is SailorStrategyDecisionType.ExitLong or SailorStrategyDecisionType.ExitShort or SailorStrategyDecisionType.Flatten;
+                if (isEntry && !healthMonitor.CanOpenEntries(request.CanOpenEntries))
                 {
-                    string warning = $"{session.Symbol}: entry blocked because reconciliation/runtime gate does not allow new entries.";
+                    string warning = $"{session.Symbol}: entry blocked because runtime safety is {healthMonitor.SafetyState.Mode}. {healthMonitor.SafetyState.Reason}";
+                    warnings.Add(warning);
+                    _log($"WARN: {warning}");
+                    continue;
+                }
+
+                if (isExitOrFlatten && !healthMonitor.SafetyState.CanRouteExits)
+                {
+                    string warning = $"{session.Symbol}: exit/flatten order blocked because runtime safety is {healthMonitor.SafetyState.Mode}. {healthMonitor.SafetyState.Reason}";
                     warnings.Add(warning);
                     _log($"WARN: {warning}");
                     continue;
@@ -124,7 +159,30 @@ public sealed class PaperConductLoop
                 intentCount++;
                 _log(intent.ToDisplayString());
 
-                SailorOrderReceipt receipt = await router.SubmitAsync(intent, cancellationToken).ConfigureAwait(false);
+                SailorOrderReceipt receipt;
+                try
+                {
+                    receipt = await router.SubmitAsync(intent, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    string message = $"Order router threw {ex.GetType().Name}: {ex.Message}";
+                    receipt = new SailorOrderReceipt(
+                        intent.NormalizedIntentId,
+                        intent.NormalizedSymbol,
+                        BrokerOrderId: string.Empty,
+                        SailorOrderStatus.Failed,
+                        intent.Quantity,
+                        FilledQuantity: 0,
+                        AverageFillPrice: 0m,
+                        message,
+                        SentToBroker: false,
+                        intent.CreatedAt,
+                        DateTimeOffset.Now,
+                        Events: Array.Empty<string>(),
+                        Warnings: new[] { message });
+                }
+
                 routedCount++;
                 string ledgerPath = _ledger.Append(intent, receipt);
                 _log(receipt.ToDisplayString());
@@ -139,6 +197,15 @@ public sealed class PaperConductLoop
                 {
                     warnings.Add(receiptWarning);
                     _log($"WARN: {receiptWarning}");
+                }
+
+                RuntimeIncident? receiptIncident = healthMonitor.ObserveOrderReceipt(receipt);
+                if (receiptIncident is not null)
+                {
+                    warnings.Add(receiptIncident.Message);
+                    _log(receiptIncident.ToDisplayString());
+                    _log(healthMonitor.SafetyState.ToDisplayString());
+                    await TryRecoverIfNeededAsync($"order receipt for {intent.NormalizedSymbol}").ConfigureAwait(false);
                 }
 
                 if (session.ApplyReceipt(intent, receipt, bar.Close, request.DryRun, indicators.BarIndex, out string updateMessage))
@@ -158,6 +225,54 @@ public sealed class PaperConductLoop
             {
                 await Task.Delay(TimeSpan.FromSeconds(request.CadenceSeconds), cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        async Task TryRecoverIfNeededAsync(string reason)
+        {
+            if (!healthMonitor.SafetyState.IsDegraded)
+            {
+                return;
+            }
+
+            if (!request.SendOrders)
+            {
+                _log($"SAILOR-031 degraded state observed in dry-run/local mode after {reason}. New entries are blocked, but no broker reconnect is attempted.");
+                return;
+            }
+
+            if (recoveryAttempted)
+            {
+                _log($"SAILOR-031 reconnect was already attempted in this run. Runtime remains {healthMonitor.SafetyState.Mode} after {reason}.");
+                return;
+            }
+
+            recoveryAttempted = true;
+            runtimeState.SetStatus(SailorRuntimeStatus.Reconnecting, $"SAILOR-031 reconnect/reconcile after {reason}.");
+
+            ConnectionRecoveryResult recoveryResult = await recoveryService.TryRecoverAsync(
+                request.ReconcileBrokerStateAsync,
+                sessions.Select(session => session.Symbol).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                request.ReconnectAttempts,
+                TimeSpan.FromSeconds(Math.Max(1, request.ReconnectBackoffSeconds)),
+                cancellationToken).ConfigureAwait(false);
+
+            _log(recoveryResult.ToDisplayString());
+            foreach (string recoveryEvent in recoveryResult.Events)
+            {
+                _log($"recovery-event: {recoveryEvent}");
+            }
+
+            foreach (string recoveryWarning in recoveryResult.Warnings)
+            {
+                warnings.Add(recoveryWarning);
+                _log($"WARN: {recoveryWarning}");
+            }
+
+            runtimeState.SetStatus(
+                SailorRuntimeStatus.Running,
+                recoveryResult.Recovered
+                    ? "SAILOR-031 recovery succeeded; normal runtime safety resumed."
+                    : "SAILOR-031 recovery did not produce clean reconciliation; runtime remains close-only.");
         }
 
         IReadOnlyList<string> activeSymbols = sessions.Select(session => session.Symbol).ToArray();
