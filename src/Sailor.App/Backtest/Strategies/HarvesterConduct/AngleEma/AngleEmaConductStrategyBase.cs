@@ -10,6 +10,7 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
     private AngleConductSide _side = AngleConductSide.Flat;
     private DateTimeOffset? _lastEntrySignalCandleStart;
     private DateTimeOffset? _lastExitSignalCandleStart;
+    private bool _hasOpenedAtLeastOnePosition;
 
     protected AngleEmaConductStrategyBase(AngleEmaConductSettings settings)
     {
@@ -83,21 +84,33 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
                 return BacktestSignal.Hold(filterRejectReason);
             }
 
-            if (profile.SideMode.AllowsLong() && angle >= _settings.AngleThresholdDegrees && PassesLongReEntry(candle, state, ema9))
+            bool isInitialEntry = !_hasOpenedAtLeastOnePosition;
+            bool longSetupAllowed = isInitialEntry && _settings.DirectInitialEntryFromAngle
+                ? angle >= _settings.AngleThresholdDegrees
+                : angle >= _settings.AngleThresholdDegrees && PassesLongReEntry(candle, state, ema9);
+            bool shortSetupAllowed = isInitialEntry && _settings.DirectInitialEntryFromAngle
+                ? angle <= -_settings.AngleThresholdDegrees
+                : angle <= -_settings.AngleThresholdDegrees && PassesShortReEntry(candle, state, ema9);
+
+            if (profile.SideMode.AllowsLong() && longSetupAllowed)
             {
                 _side = AngleConductSide.Long;
                 _lastEntrySignalCandleStart = candle.StartTime;
+                _hasOpenedAtLeastOnePosition = true;
+                string entryKind = isInitialEntry && _settings.DirectInitialEntryFromAngle ? "initial direct angle" : "re-entry confirmation";
                 return BacktestSignal.Buy(
-                    $"{prefix}: LONG completed {_settings.CandleMinutes}m EMA9 angle setup, angle {angle:F2}° >= {_settings.AngleThresholdDegrees:F2}°, " +
+                    $"{prefix}: LONG {entryKind} on completed {_settings.CandleMinutes}m EMA9 angle setup, angle {angle:F2}° >= {_settings.AngleThresholdDegrees:F2}°, " +
                     $"EMA9={ema9:F2}, ATR={atr:F2}, candle O/H/L/C={candle.Open:F2}/{candle.High:F2}/{candle.Low:F2}/{candle.Close:F2}, VolRatio={volumeRatio:F2}.");
             }
 
-            if (_settings.AllowShort && profile.SideMode.AllowsShort() && angle <= -_settings.AngleThresholdDegrees && PassesShortReEntry(candle, state, ema9))
+            if (_settings.AllowShort && profile.SideMode.AllowsShort() && shortSetupAllowed)
             {
                 _side = AngleConductSide.Short;
                 _lastEntrySignalCandleStart = candle.StartTime;
+                _hasOpenedAtLeastOnePosition = true;
+                string entryKind = isInitialEntry && _settings.DirectInitialEntryFromAngle ? "initial direct angle" : "re-entry confirmation";
                 return BacktestSignal.Sell(
-                    $"{prefix}: SHORT completed {_settings.CandleMinutes}m EMA9 angle setup, angle {angle:F2}° <= -{_settings.AngleThresholdDegrees:F2}°, " +
+                    $"{prefix}: SHORT {entryKind} on completed {_settings.CandleMinutes}m EMA9 angle setup, angle {angle:F2}° <= -{_settings.AngleThresholdDegrees:F2}°, " +
                     $"EMA9={ema9:F2}, ATR={atr:F2}, candle O/H/L/C={candle.Open:F2}/{candle.High:F2}/{candle.Low:F2}/{candle.Close:F2}, VolRatio={volumeRatio:F2}.");
             }
 

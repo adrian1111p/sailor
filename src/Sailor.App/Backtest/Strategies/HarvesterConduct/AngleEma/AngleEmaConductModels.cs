@@ -22,7 +22,8 @@ public sealed record AngleEmaConductSettings(
     decimal MinimumVolumeRatio,
     bool AllowShort,
     int EmaPeriod,
-    int MaxRecentRawBars);
+    int MaxRecentRawBars,
+    bool DirectInitialEntryFromAngle = false);
 
 internal sealed record AngleEmaState(
     decimal? Ema9,

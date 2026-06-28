@@ -1,15 +1,21 @@
-SAILOR-013 modified files
+SAILOR-018 minimal V21 angle conduct update
 
-Focus:
-- Bring Sailor V21/V22/V23/V24 closer to Harvester backtest mechanics.
-- Keep Sailor scanner universe/reporting intact.
-- No Harvester live/risk/self-learning dependencies added.
+Apply over D:\Site\sailor.
 
-Main corrections:
-1. V21/V23/V22/V24 angle engine now uses completed 5m/15m candles for backtest decisions.
-2. EMA9 angle is normalized by higher-timeframe ATR, like Harvester StrategyV21/V23, not by percent price slope.
-3. The same completed 5m/15m candle no longer emits repeated entry/exit signals each 1m bar.
-4. V21/V23/V22/V24 can open SHORT positions when the angle is <= -threshold.
-5. Runner can now reserve notional for long or short positions and calculates short PnL correctly.
-6. HTML trade table now displays LONG/SHORT side correctly.
-7. V21/V23/V24/V22 last entry is aligned to Harvester default 945 ET, with force-flat at 955 ET.
+Changes:
+- V21 direct initial entry from completed 15m EMA9 angle rule.
+- Re-entry after the first completed trade still uses the existing confirmation rules.
+- Uses existing completed 15m signal candle logic.
+- Keeps existing profile market window: last entry 15:45 ET and force-flat 15:55 ET.
+
+Commands:
+cd D:\Site\sailor
+dotnet clean
+dotnet build
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- backtest TSLA 1m v21-15minutes
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- html-report 1m smallcaps 0 v21-15minutes
+
+git status
+git add .
+git commit -m "SAILOR-018 Apply minimal V21 completed candle angle entry"
+git push origin main

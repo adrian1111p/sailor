@@ -18,7 +18,8 @@ public sealed class V21_15MinutesConductStrategy : AngleEmaConductStrategyBase
             MinimumVolumeRatio: 0.70m,
             AllowShort: true,
             EmaPeriod: 9,
-            MaxRecentRawBars: 1800))
+            MaxRecentRawBars: 1800,
+            DirectInitialEntryFromAngle: true))
     {
     }
 }
