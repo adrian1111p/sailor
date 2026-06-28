@@ -67,6 +67,8 @@ public static class SailorSettingsLoader
 
         settings.Risk ??= new BacktestRiskSettings();
         settings.Conduct ??= new ConductExitSettings();
+        settings.L1L2 ??= new L1L2SnapshotSettings();
+        settings.Runtime ??= new SailorRuntimeSettings();
         settings.ConductProfiles ??= new Dictionary<string, ConductExitSettings>(StringComparer.OrdinalIgnoreCase);
         settings.Scanner ??= new ScannerSettings();
         settings.Profiles ??= new Dictionary<string, SailorProfileSettings>(StringComparer.OrdinalIgnoreCase);
@@ -82,6 +84,31 @@ public static class SailorSettingsLoader
         if (settings.Scanner.DefaultTopCount <= 0)
         {
             settings.Scanner.DefaultTopCount = 20;
+        }
+
+        if (settings.L1L2.DepthLevels <= 0)
+        {
+            settings.L1L2.DepthLevels = 5;
+        }
+
+        if (settings.Runtime.Paper.Port <= 0)
+        {
+            settings.Runtime.Paper.Port = 7497;
+        }
+
+        if (settings.Runtime.Live.Port <= 0)
+        {
+            settings.Runtime.Live.Port = 7496;
+        }
+
+        if (settings.Runtime.Paper.ConnectTimeoutSeconds <= 0)
+        {
+            settings.Runtime.Paper.ConnectTimeoutSeconds = 10;
+        }
+
+        if (settings.Runtime.Live.ConnectTimeoutSeconds <= 0)
+        {
+            settings.Runtime.Live.ConnectTimeoutSeconds = 10;
         }
 
         return settings;

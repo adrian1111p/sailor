@@ -6,6 +6,7 @@ using Sailor.App.Broker.Orders;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
 using Sailor.App.MarketData.History;
+using Sailor.App.MarketData.Live;
 using Sailor.App.Runtime.Common;
 
 namespace Sailor.App.Runtime.Commands;
@@ -33,6 +34,20 @@ public static class SailorRuntimeCommandRunner
 
             case "history":
                 await RunHistoryAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
+            case "quotes":
+            case "quote":
+                await RunMarketSnapshotAsync(mode, args.Skip(1).ToArray(), settings, forceDepth: false);
+                break;
+
+            case "depth":
+            case "book":
+                await RunMarketSnapshotAsync(mode, args.Skip(1).ToArray(), settings, forceDepth: true);
+                break;
+
+            case "snapshot":
+                await RunMarketSnapshotAsync(mode, args.Skip(1).ToArray(), settings, forceDepth: null);
                 break;
 
             case "run":
@@ -243,6 +258,131 @@ public static class SailorRuntimeCommandRunner
         Log(writer, "");
         Log(writer, "Next command after successful cache write:");
         Log(writer, "dotnet run --project src\\Sailor.App\\Sailor.App.csproj -- backtest TSLA 1m v21-15minutes");
+    }
+
+
+    private static async Task RunMarketSnapshotAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings,
+        bool? forceDepth)
+    {
+        string symbol = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.Ordinal))?.Trim().ToUpperInvariant() ?? "TSLA";
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} quotes TSLA");
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} depth TSLA");
+            return;
+        }
+
+        SailorRuntimeOptions options = CreateOptions(mode, ["1m", settings.DefaultProfile, "1", symbol], settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        var connectionOptions = IbkrConnectionOptions.FromRuntimeOptions(
+            options,
+            modeSettings.Account,
+            modeSettings.ConnectTimeoutSeconds);
+
+        bool localCache = args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
+        bool useDepth = forceDepth ?? options.UseL2;
+        if (args.Any(arg => arg.Equals("--with-depth", StringComparison.OrdinalIgnoreCase)))
+        {
+            useDepth = true;
+        }
+
+        if (args.Any(arg => arg.Equals("--no-depth", StringComparison.OrdinalIgnoreCase)))
+        {
+            useDepth = false;
+        }
+
+        int seconds = ReadIntOption(args, "--seconds", 10);
+        int depthLevels = ReadIntOption(args, "--levels", settings.L1L2.DepthLevels <= 0 ? 5 : settings.L1L2.DepthLevels);
+        int marketDataType = ReadIntOption(args, "--market-data-type", 1);
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+        bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+        bool requestIbkr = !localCache;
+
+        var request = LiveMarketDataRequest.Create(
+            mode,
+            symbol,
+            requestId: 26_000,
+            useL1: true,
+            useL2: useDepth,
+            depthLevels: depthLevels,
+            duration: TimeSpan.FromSeconds(seconds),
+            primaryExchange: primaryExchange,
+            marketDataType: marketDataType,
+            useSmartDepth: smartDepth,
+            useLocalCacheFallback: localCache);
+
+        string action = useDepth ? $"depth_{request.NormalizedSymbol}" : $"quotes_{request.NormalizedSymbol}";
+        string logFilePath = CreateRuntimeLogFilePath(mode, action);
+        await using var writer = CreateWriter(logFilePath);
+
+        Log(writer, $"sailor {options.ModeName} live L1/L2 snapshot stream started");
+        Log(writer, options.ToCompactString());
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, request.ToDisplayString());
+        Log(writer, $"requestIbkr={requestIbkr} command={(useDepth ? "depth" : "quotes")}");
+        Log(writer, "");
+        Log(writer, "SAILOR-026 implementation: market-data snapshot capture only.");
+        Log(writer, "It subscribes to L1 and optionally L2 when the optional IBApi build is enabled.");
+        Log(writer, "No scanner is run and no orders are sent.");
+        Log(writer, "");
+
+        ILiveMarketDataSnapshotProvider provider = LiveMarketDataSnapshotProviderFactory.Create(requestIbkr, connectionOptions);
+        try
+        {
+            Log(writer, $"Market data provider: {provider.ProviderName}");
+            Log(writer, "");
+
+            LiveMarketDataSnapshotResult result = await provider.CaptureSnapshotAsync(request, CancellationToken.None);
+            Log(writer, result.ToDisplayString());
+            Log(writer, result.Message);
+
+            if (result.Snapshot is not null)
+            {
+                Log(writer, result.Snapshot.ToCompactString());
+                Log(writer, $"HasL1={result.Snapshot.HasL1} HasL2={result.Snapshot.HasL2} Source={result.Snapshot.Source} Time={result.Snapshot.Time:O}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.SnapshotLogPath))
+            {
+                Log(writer, $"Snapshot log: {result.SnapshotLogPath}");
+            }
+
+            if (result.Events.Count > 0)
+            {
+                Log(writer, "");
+                Log(writer, "IBKR/market data events");
+                Log(writer, "-----------------------");
+                foreach (string row in result.Events)
+                {
+                    Log(writer, row);
+                }
+            }
+
+            if (result.Warnings.Count > 0)
+            {
+                Log(writer, "");
+                Log(writer, "Warnings");
+                Log(writer, "--------");
+                foreach (string warning in result.Warnings)
+                {
+                    Log(writer, $"WARN: {warning}");
+                }
+            }
+        }
+        finally
+        {
+            if (provider is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
+
+        Log(writer, "");
+        Log(writer, $"Runtime log: {logFilePath}");
+        Log(writer, "No orders sent.");
     }
 
     private static async Task RunScanSkeletonAsync(
@@ -526,17 +666,22 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} history 1m TSLA");
         Console.WriteLine($"  sailor {name} history 1m smallcaps --top 10 --days 5");
         Console.WriteLine($"  sailor {name} history 1m TSLA --local-cache");
+        Console.WriteLine($"  sailor {name} quotes TSLA");
+        Console.WriteLine($"  sailor {name} quotes TSLA --seconds 15 --market-data-type 2");
+        Console.WriteLine($"  sailor {name} depth TSLA --levels 5");
+        Console.WriteLine($"  sailor {name} quotes TSLA --local-cache");
         Console.WriteLine($"  sailor {name} run --dry-run");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run");
         Console.WriteLine($"  sailor {name} status");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-025 status:");
+        Console.WriteLine("SAILOR-026 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
+        Console.WriteLine("  - quotes/depth commands capture L1/L2 snapshots");
         Console.WriteLine("  - optional IBApi adapter can be enabled with -p:EnableIbkrApi=true");
-        Console.WriteLine("  - no market data subscriptions yet");
+        Console.WriteLine("  - default build uses local synthetic snapshot fallback");
         Console.WriteLine("  - no orders sent");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");

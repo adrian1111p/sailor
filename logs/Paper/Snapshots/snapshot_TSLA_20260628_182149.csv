@@ -1,0 +1,2 @@
+TimestampUtc,Symbol,Source,Quality,Bid,Ask,Last,BidSize,AskSize,Spread,SpreadBps,L1Imbalance,L2Levels,L2TotalBidSize,L2TotalAskSize,L2Imbalance,LiquidityScore
+2026-06-28T16:21:49.7971708Z,TSLA,local-csv-snapshot,SyntheticBacktest,379.0762,379.3038,379.19,44,44,0.2275,6,0,0,0,0,0,50
