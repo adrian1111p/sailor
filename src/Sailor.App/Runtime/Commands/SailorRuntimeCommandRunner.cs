@@ -10,6 +10,7 @@ using Sailor.App.Logging;
 using Sailor.App.MarketData.History;
 using Sailor.App.MarketData.Live;
 using Sailor.App.Runtime.Common;
+using Sailor.App.Runtime.Paper;
 using Sailor.App.Scanner.Runtime;
 
 namespace Sailor.App.Runtime.Commands;
@@ -538,31 +539,181 @@ public static class SailorRuntimeCommandRunner
         string[] args,
         SailorAppSettings settings)
     {
-        SailorRuntimeOptions options = CreateOptions(mode, args, settings);
+        SailorRuntimeOptions runtimeOptions = CreateOptions(mode, args, settings);
         string logFilePath = CreateRuntimeLogFilePath(mode, "run");
 
         await using var writer = CreateWriter(logFilePath);
-        Log(writer, $"sailor {options.ModeName} strategy runtime skeleton started");
-        Log(writer, options.ToCompactString());
+        Log(writer, $"sailor {runtimeOptions.ModeName} paper conduct runtime started");
+        Log(writer, runtimeOptions.ToCompactString());
         Log(writer, "");
 
-        if (mode == SailorRuntimeMode.Live && options.SendOrders)
+        if (mode == SailorRuntimeMode.Live)
         {
-            Log(writer, "LIVE send-orders is intentionally blocked in SAILOR-022.");
-            Log(writer, "The first live command skeleton is dry-run only until broker/session/order safety exists.");
+            Log(writer, "LIVE runtime remains blocked. SAILOR-030 implements paper conduct only.");
+            Log(writer, "No broker connection opened. No orders sent.");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
         }
 
-        Log(writer, "Planned runtime loop for later milestones:");
-        Log(writer, "1. Connect to broker session.");
-        Log(writer, "2. Ensure historical bars exist for selected symbols.");
-        Log(writer, "3. Subscribe L1/L2 snapshots.");
-        Log(writer, "4. Run Sailor scanner on refresh cadence.");
-        Log(writer, "5. Feed SailorStrategyFrame into selected runtime strategy.");
-        Log(writer, "6. Convert SailorStrategyDecision into SailorOrderIntent.");
-        Log(writer, "7. Route order intent only if send-orders is explicitly enabled and safety checks pass.");
-        Log(writer, "8. Force-flat open positions at 15:55 ET.");
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        string account = ReadStringOption(args, "--account", modeSettings.Account ?? string.Empty);
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+        int waitSeconds = ReadIntOption(args, "--wait-seconds", modeSettings.ConnectTimeoutSeconds);
+        int cadenceSeconds = ReadIntOption(args, "--cadence-seconds", 1);
+        int quantity = ReadIntOption(args, "--quantity", 1);
+        int marketDataType = ReadIntOption(args, "--market-data-type", 1);
+        int days = ReadIntOption(args, "--days", 5);
+        int snapshotSeconds = ReadIntOption(args, "--snapshot-seconds", 2);
+        int depthLevels = ReadIntOption(args, "--levels", settings.L1L2.DepthLevels <= 0 ? 5 : settings.L1L2.DepthLevels);
+        int seconds = ReadIntOption(args, "--seconds", 10);
+        int iterations = ReadIntOption(args, "--iterations", Math.Max(1, seconds / Math.Max(1, cadenceSeconds)));
+        int executionRequestId = ReadIntOption(args, "--execution-request-id", 30_000);
+
+        bool localCache = args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
+        bool requestIbkrHistory = !localCache && !args.Any(arg => arg.Equals("--no-history-refresh", StringComparison.OrdinalIgnoreCase));
+        bool mirrorHistoryToBacktest = !args.Any(arg => arg.Equals("--no-backtest-copy", StringComparison.OrdinalIgnoreCase));
+        bool useRth = !args.Any(arg => arg.Equals("--all-hours", StringComparison.OrdinalIgnoreCase));
+        bool captureSnapshots = !args.Any(arg => arg.Equals("--no-quotes", StringComparison.OrdinalIgnoreCase));
+        bool useL2 = runtimeOptions.UseL2 || args.Any(arg => arg.Equals("--with-depth", StringComparison.OrdinalIgnoreCase));
+        if (args.Any(arg => arg.Equals("--no-depth", StringComparison.OrdinalIgnoreCase)))
+        {
+            useL2 = false;
+        }
+
+        bool requestIbkrMarketData = captureSnapshots && !localCache;
+        bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+        bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
+
+        bool sendOrdersRequested = args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase));
+        bool dryRunRequested = args.Any(arg => arg.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
+        bool sendOrders = mode == SailorRuntimeMode.Paper && sendOrdersRequested && !dryRunRequested;
+        bool dryRun = !sendOrders;
+
+        if (sendOrdersRequested && !sendOrders)
+        {
+            Log(writer, "WARN: --send-orders was requested but the command is still dry-run. Check mode and --dry-run flag.");
+        }
+
+        var connectionOptions = new IbkrConnectionOptions(
+            mode,
+            runtimeOptions.Host,
+            runtimeOptions.Port,
+            runtimeOptions.ClientId,
+            account,
+            modeSettings.ConnectTimeoutSeconds,
+            runtimeOptions.UseL1,
+            runtimeOptions.UseL2,
+            sendOrders,
+            runtimeOptions.AllowShort);
+
+        int defaultMaxSymbols = localCache
+            ? int.MaxValue
+            : Math.Max(runtimeOptions.TopCount, runtimeOptions.TopCount * 3);
+        int maxSymbols = ReadIntOption(args, "--max-symbols", defaultMaxSymbols);
+
+        var scannerOptions = new PaperScannerOptions(
+            mode,
+            runtimeOptions.Timeframe,
+            runtimeOptions.ProfileName,
+            runtimeOptions.Universe,
+            runtimeOptions.TopCount,
+            maxSymbols,
+            days,
+            requestIbkrHistory,
+            mirrorHistoryToBacktest,
+            useRth,
+            captureSnapshots,
+            requestIbkrMarketData,
+            runtimeOptions.UseL1,
+            useL2,
+            snapshotSeconds,
+            depthLevels,
+            marketDataType,
+            primaryExchange,
+            smartDepth);
+
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, scannerOptions.ToDisplayString());
+        Log(writer, $"quantity={quantity} cadenceSeconds={cadenceSeconds} iterations={iterations} waitSeconds={waitSeconds} sendOrdersRequested={sendOrdersRequested} sendOrders={sendOrders} dryRun={dryRun} account={(string.IsNullOrWhiteSpace(account) ? "not-configured" : account)}");
         Log(writer, "");
-        Log(writer, "No broker connection opened. No orders sent.");
+
+        ReconciliationResult reconciliation;
+        var reconciliationService = new ReconciliationService(mode);
+        if (sendOrders)
+        {
+            var positionRequest = new PositionRequest(
+                mode,
+                account,
+                TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
+                executionRequestId);
+
+            await using IPositionProvider positionProvider = CreatePositionProvider(localOnly: false, connectionOptions);
+            Log(writer, $"Pre-run reconciliation provider: {positionProvider.ProviderName}");
+            reconciliation = await reconciliationService.ReconcileAsync(positionProvider, positionRequest, CancellationToken.None);
+            Log(writer, reconciliation.ToSummaryString());
+            Log(writer, reconciliation.Message);
+            foreach (string warning in reconciliation.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+        else
+        {
+            reconciliation = reconciliationService.BuildLocalStatus();
+            Log(writer, reconciliation.ToSummaryString());
+            Log(writer, "Dry-run conduct uses local-only status and assumes fills locally. Broker state is not requested.");
+            foreach (string warning in reconciliation.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+
+        bool canOpenEntries = dryRun || reconciliation.CanOpenNewEntries;
+        if (sendOrders && !reconciliation.CanOpenNewEntries)
+        {
+            Log(writer, "");
+            Log(writer, "SAILOR-030 blocked before conduct loop because broker reconciliation did not match. No orders sent.");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        Log(writer, "");
+
+        var request = new PaperRuntimeHostRequest(
+            runtimeOptions,
+            connectionOptions,
+            scannerOptions,
+            reconciliation,
+            sendOrders,
+            dryRun,
+            canOpenEntries,
+            account,
+            quantity,
+            cadenceSeconds,
+            iterations,
+            waitSeconds,
+            primaryExchange,
+            forceFlatNow);
+
+        var host = new PaperRuntimeHost(settings, message => Log(writer, message));
+        PaperRuntimeHostResult result = await host.RunAsync(request, CancellationToken.None);
+
+        Log(writer, "");
+        Log(writer, result.ToDisplayString());
+        if (result.Warnings.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Warnings");
+            Log(writer, "--------");
+            foreach (string warning in result.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+
+        Log(writer, "");
+        Log(writer, result.OrderIntentCount > 0 ? "SAILOR-030 conduct loop produced order intents." : "SAILOR-030 conduct loop produced no order intents.");
+        Log(writer, sendOrders ? "Paper send-orders mode was active." : "Dry-run mode: no broker orders were sent.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -1156,7 +1307,8 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} depth TSLA --levels 5");
         Console.WriteLine($"  sailor {name} quotes TSLA --local-cache");
         Console.WriteLine($"  sailor {name} run --dry-run");
-        Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run");
+        Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --iterations 10");
+        Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --dry-run");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 MKT --dry-run");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --send-orders");
@@ -1166,7 +1318,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} reconcile --local-only");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-029 status:");
+        Console.WriteLine("SAILOR-030 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
@@ -1177,6 +1329,8 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - status reads the local order ledger and position store");
         Console.WriteLine("  - reconcile requests broker positions, open orders, and executions when built with -p:EnableIbkrApi=true");
         Console.WriteLine("  - entries are blocked unless broker reconciliation succeeds without critical mismatch");
+        Console.WriteLine("  - paper run now starts the scanner-backed conduct loop, builds strategy frames, creates order intents, writes the ledger, and can route through IBKR paper");
+        Console.WriteLine("  - dry-run conduct assumes local fills so entry/exit logic can be smoke-tested without broker orders");
         Console.WriteLine("  - live order sending is blocked");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
