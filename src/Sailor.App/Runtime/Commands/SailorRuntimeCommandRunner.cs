@@ -5,6 +5,7 @@ using Sailor.App.Broker.Ibkr;
 using Sailor.App.Broker.Orders;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
+using Sailor.App.MarketData.History;
 using Sailor.App.Runtime.Common;
 
 namespace Sailor.App.Runtime.Commands;
@@ -28,6 +29,10 @@ public static class SailorRuntimeCommandRunner
 
             case "scan":
                 await RunScanSkeletonAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
+            case "history":
+                await RunHistoryAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
             case "run":
@@ -111,6 +116,133 @@ public static class SailorRuntimeCommandRunner
 
         Log(writer, "");
         Log(writer, $"Runtime log: {logFilePath}");
+    }
+
+
+    private static async Task RunHistoryAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        string timeframe = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.Ordinal))?.Trim() ?? "1m";
+        string target = args
+            .Where(arg => !arg.StartsWith("--", StringComparison.Ordinal))
+            .Skip(1)
+            .FirstOrDefault()?.Trim() ?? settings.DefaultUniverse;
+
+        if (!string.Equals(timeframe, "1m", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine("SAILOR-025 supports only 1m historical data.");
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} history 1m TSLA");
+            return;
+        }
+
+        int top = ReadIntOption(args, "--top", GetModeSettings(mode, settings).DefaultTopCount);
+        int days = ReadIntOption(args, "--days", 5);
+        bool requestIbkr = !args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
+        bool mirrorToBacktest = !args.Any(arg => arg.Equals("--no-backtest-copy", StringComparison.OrdinalIgnoreCase));
+        bool useRth = !args.Any(arg => arg.Equals("--all-hours", StringComparison.OrdinalIgnoreCase));
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+
+        SailorRuntimeOptions options = CreateOptions(mode, [timeframe, settings.DefaultProfile, top.ToString(), target], settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        var connectionOptions = IbkrConnectionOptions.FromRuntimeOptions(
+            options,
+            modeSettings.Account,
+            modeSettings.ConnectTimeoutSeconds);
+
+        string logFilePath = CreateRuntimeLogFilePath(mode, "history");
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {options.ModeName} historical 1m data loader started");
+        Log(writer, options.ToCompactString());
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, $"target={target} top={top} days={days} requestIbkr={requestIbkr} useRth={useRth} mirrorToBacktest={mirrorToBacktest} primaryExchange={primaryExchange}");
+        Log(writer, "");
+
+        IReadOnlyList<string> symbols = ResolveHistorySymbols(target, top);
+        if (symbols.Count == 0)
+        {
+            Log(writer, "No symbols resolved for history request.");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        Log(writer, $"Symbols: {string.Join(", ", symbols)}");
+        Log(writer, "");
+
+        if (requestIbkr)
+        {
+            await using var probeSession = new IbkrConnectionProbeSession();
+            Log(writer, "Preflight TCP probe before historical request.");
+            IbkrConnectionResult probeResult = await probeSession.ConnectAsync(connectionOptions, CancellationToken.None);
+            foreach (string message in probeResult.Messages)
+            {
+                Log(writer, message);
+            }
+
+            Log(writer, probeResult.ToDisplayString());
+            if (probeResult.Success)
+            {
+                _ = await probeSession.DisconnectAsync("SAILOR-025 history preflight complete", CancellationToken.None);
+            }
+            else
+            {
+                Log(writer, "TCP preflight failed. SAILOR-025 will continue only if local-cache fallback can provide bars.");
+            }
+
+            Log(writer, "");
+        }
+
+        IHistoricalBarProvider provider = HistoricalBarProviderFactory.Create(requestIbkr, connectionOptions);
+        Log(writer, $"Historical provider: {provider.ProviderName}");
+        Log(writer, "");
+
+        int successCount = 0;
+        int totalBars = 0;
+        int requestId = 25_000;
+        TimeSpan lookback = TimeSpan.FromDays(Math.Max(1, days));
+
+        foreach (string symbol in symbols)
+        {
+            HistoricalBarRequest request = HistoricalBarRequest.CreateOneMinute(
+                mode,
+                symbol,
+                lookback,
+                requestId++,
+                useRth,
+                primaryExchange,
+                mirrorToBacktest);
+
+            Log(writer, $"Request: {request.ToDisplayString()}");
+            HistoricalBarLoadResult result = await provider.GetOneMinuteHistoryAsync(request, CancellationToken.None);
+            Log(writer, result.ToDisplayString());
+            Log(writer, result.Message);
+
+            if (!string.IsNullOrWhiteSpace(result.BacktestMirrorPath))
+            {
+                Log(writer, $"Backtest mirror: {result.BacktestMirrorPath}");
+            }
+
+            foreach (string warning in result.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+
+            if (result.Success)
+            {
+                successCount++;
+                totalBars += result.BarCount;
+            }
+
+            Log(writer, "");
+        }
+
+        Log(writer, $"sailor {options.ModeName} historical 1m data loader finished: symbolsOk={successCount}/{symbols.Count} bars={totalBars}");
+        Log(writer, $"Cache root: {HistoricalCachePaths.CacheRoot}");
+        Log(writer, $"Runtime log: {logFilePath}");
+        Log(writer, "");
+        Log(writer, "Next command after successful cache write:");
+        Log(writer, "dotnet run --project src\\Sailor.App\\Sailor.App.csproj -- backtest TSLA 1m v21-15minutes");
     }
 
     private static async Task RunScanSkeletonAsync(
@@ -249,6 +381,52 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
+
+    private static IReadOnlyList<string> ResolveHistorySymbols(string target, int top)
+    {
+        var provider = new CsvBacktestDataProvider();
+        IReadOnlyList<string> availableSymbols = provider.ListSymbols();
+        IReadOnlyList<string> resolved = SailorSymbolUniverses.Resolve(target, availableSymbols);
+
+        int take = Math.Max(1, top);
+        return resolved
+            .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
+            .Select(symbol => symbol.Trim().ToUpperInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(take)
+            .ToArray();
+    }
+
+    private static int ReadIntOption(string[] args, string optionName, int defaultValue)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals(optionName, StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(args[i + 1], out int value) &&
+                value > 0)
+            {
+                return value;
+            }
+        }
+
+        return Math.Max(1, defaultValue);
+    }
+
+    private static string ReadStringOption(string[] args, string optionName, string defaultValue)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals(optionName, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(args[i + 1]) &&
+                !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                return args[i + 1].Trim();
+            }
+        }
+
+        return defaultValue;
+    }
+
     private static SailorRuntimeModeSettings GetModeSettings(
         SailorRuntimeMode mode,
         SailorAppSettings settings)
@@ -345,17 +523,21 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} connect");
         Console.WriteLine($"  sailor {name} scan");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps");
+        Console.WriteLine($"  sailor {name} history 1m TSLA");
+        Console.WriteLine($"  sailor {name} history 1m smallcaps --top 10 --days 5");
+        Console.WriteLine($"  sailor {name} history 1m TSLA --local-cache");
         Console.WriteLine($"  sailor {name} run --dry-run");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run");
         Console.WriteLine($"  sailor {name} status");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-024 status:");
+        Console.WriteLine("SAILOR-025 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
-        Console.WriteLine("  - paper/live connect now performs an IBKR/TWS TCP session probe");
+        Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
+        Console.WriteLine("  - history command can build 1m cache files under cache/history");
+        Console.WriteLine("  - optional IBApi adapter can be enabled with -p:EnableIbkrApi=true");
         Console.WriteLine("  - no market data subscriptions yet");
         Console.WriteLine("  - no orders sent");
-        Console.WriteLine("  - full IBApi nextValidId/account handshake is prepared as the next adapter layer");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
         Console.WriteLine($"  host:       {modeSettings.Host}");
