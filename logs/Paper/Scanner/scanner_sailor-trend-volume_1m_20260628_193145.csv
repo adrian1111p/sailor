@@ -1,0 +1,4 @@
+Rank,Symbol,Side,Close,Score,MomentumPercent,Volume,VolumeRatio,Ema9,Sma20,Sma200,Vwap,HasL1,HasL2,SpreadBps,BookImbalance,LiquidityScore,SnapshotSource,Reason
+1,EONR,LONG,1.53,90.03,4.79,324241,2.05,1.5083,1.4915,1.4609,1.118,True,False,65.3595,0,50,local-csv-snapshot,"LONG, EMA9>SMA20, Close>VWAP, Close>SMA200, VolRatio=2.05"
+2,SERV,SHORT,9.11,67.03,-0.55,122464,4.74,9.1163,9.1305,9.2769,10.2968,True,False,10.9769,0,50,local-csv-snapshot,"SHORT, EMA9<SMA20, Close<VWAP, Close<SMA200, VolRatio=4.74"
+3,MVST,LONG,2.24,49.36,2.99,150657,3.43,2.2338,2.2133,2.182,2.155,True,False,44.6429,0,50,local-csv-snapshot,"LONG, EMA9>SMA20, Close>VWAP, Close>SMA200, VolRatio=3.43"

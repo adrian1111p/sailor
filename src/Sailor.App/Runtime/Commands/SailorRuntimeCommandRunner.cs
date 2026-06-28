@@ -8,6 +8,7 @@ using Sailor.App.Logging;
 using Sailor.App.MarketData.History;
 using Sailor.App.MarketData.Live;
 using Sailor.App.Runtime.Common;
+using Sailor.App.Scanner.Runtime;
 
 namespace Sailor.App.Runtime.Commands;
 
@@ -390,54 +391,135 @@ public static class SailorRuntimeCommandRunner
         string[] args,
         SailorAppSettings settings)
     {
-        SailorRuntimeOptions options = CreateOptions(mode, args, settings);
-        string logFilePath = CreateRuntimeLogFilePath(mode, "scan");
+        SailorRuntimeOptions runtimeOptions = CreateOptions(mode, args, settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        var connectionOptions = IbkrConnectionOptions.FromRuntimeOptions(
+            runtimeOptions,
+            modeSettings.Account,
+            modeSettings.ConnectTimeoutSeconds);
 
+        bool localCache = args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
+        bool requestIbkrHistory = !localCache && !args.Any(arg => arg.Equals("--no-history-refresh", StringComparison.OrdinalIgnoreCase));
+        bool mirrorHistoryToBacktest = !args.Any(arg => arg.Equals("--no-backtest-copy", StringComparison.OrdinalIgnoreCase));
+        bool useRth = !args.Any(arg => arg.Equals("--all-hours", StringComparison.OrdinalIgnoreCase));
+        bool captureSnapshots = !args.Any(arg => arg.Equals("--no-quotes", StringComparison.OrdinalIgnoreCase));
+        bool useL2 = runtimeOptions.UseL2 || args.Any(arg => arg.Equals("--with-depth", StringComparison.OrdinalIgnoreCase));
+        if (args.Any(arg => arg.Equals("--no-depth", StringComparison.OrdinalIgnoreCase)))
+        {
+            useL2 = false;
+        }
+
+        bool requestIbkrMarketData = captureSnapshots && !localCache;
+        int days = ReadIntOption(args, "--days", 5);
+        int marketDataType = ReadIntOption(args, "--market-data-type", 1);
+        int snapshotSeconds = ReadIntOption(args, "--seconds", 3);
+        int depthLevels = ReadIntOption(args, "--levels", settings.L1L2.DepthLevels <= 0 ? 5 : settings.L1L2.DepthLevels);
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+        bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+
+        int defaultMaxSymbols = localCache
+            ? int.MaxValue
+            : Math.Max(runtimeOptions.TopCount, runtimeOptions.TopCount * 3);
+        int maxSymbols = ReadIntOption(args, "--max-symbols", defaultMaxSymbols);
+
+        var scannerOptions = new PaperScannerOptions(
+            mode,
+            runtimeOptions.Timeframe,
+            runtimeOptions.ProfileName,
+            runtimeOptions.Universe,
+            runtimeOptions.TopCount,
+            maxSymbols,
+            days,
+            requestIbkrHistory,
+            mirrorHistoryToBacktest,
+            useRth,
+            captureSnapshots,
+            requestIbkrMarketData,
+            runtimeOptions.UseL1,
+            useL2,
+            snapshotSeconds,
+            depthLevels,
+            marketDataType,
+            primaryExchange,
+            smartDepth);
+
+        string logFilePath = CreateRuntimeLogFilePath(mode, "scan");
         await using var writer = CreateWriter(logFilePath);
-        Log(writer, $"sailor {options.ModeName} scanner skeleton started");
-        Log(writer, options.ToCompactString());
-        Log(writer, "Data source: current Sailor CSV backtest cache until SAILOR-024/025 add live history and snapshots.");
-        Log(writer, "No market data subscription opened. No orders sent.");
+        Log(writer, $"sailor {runtimeOptions.ModeName} scanner from live/history snapshots started");
+        Log(writer, runtimeOptions.ToCompactString());
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, scannerOptions.ToDisplayString());
+        Log(writer, "");
+        Log(writer, "SAILOR-027 implementation: paper/live scanner adapter.");
+        Log(writer, "It prepares 1m history, runs the existing Sailor scanner engine, then enriches selected candidates with L1/L2 snapshots.");
+        Log(writer, "No strategy loop is started and no orders are sent.");
         Log(writer, "");
 
-        SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName, settings);
-        var provider = new CsvBacktestDataProvider();
-        IReadOnlyList<string> availableSymbols = provider.ListSymbols();
-        IReadOnlyList<string> universeSymbols = SailorSymbolUniverses.Resolve(options.Universe, availableSymbols);
-        IReadOnlyList<string> symbolsWithData = universeSymbols
-            .Where(symbol => availableSymbols.Contains(symbol, StringComparer.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(symbol => symbol, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        using var runner = new PaperScannerRunner(settings, connectionOptions, scannerOptions);
+        Log(writer, $"History provider: {runner.HistoryProviderName}");
+        Log(writer, $"Market data provider: {runner.MarketDataProviderName}");
+        Log(writer, "");
 
-        Log(writer, $"Universe requested: {options.Universe}");
-        Log(writer, $"Symbols with CSV data: {symbolsWithData.Count}");
+        PaperScannerRunResult result = await runner.RunAsync(scannerOptions, CancellationToken.None);
 
-        var scanner = new SailorScanner(provider);
-        IReadOnlyList<ScannerCandidate> candidates = scanner.Scan(
-            options.Timeframe,
-            profile,
-            options.TopCount,
-            symbolsWithData);
+        Log(writer, "Universe and preparation summary");
+        Log(writer, "--------------------------------");
+        Log(writer, result.ToSummaryString());
+        Log(writer, $"Resolved symbols: {result.ResolvedSymbols.Count}");
+        Log(writer, $"Prepared symbols: {string.Join(", ", result.PreparedSymbols.Take(80))}{(result.PreparedSymbols.Count > 80 ? ", ..." : string.Empty)}");
+        Log(writer, "");
 
-        if (candidates.Count == 0)
+        if (result.Preparations.Count > 0)
         {
-            Log(writer, "No candidates found.");
+            Log(writer, "History preparation");
+            Log(writer, "-------------------");
+            foreach (PaperScannerSymbolPreparation row in result.Preparations)
+            {
+                Log(writer, row.ToDisplayString());
+            }
+
+            Log(writer, "");
+        }
+
+        if (result.Candidates.Count == 0)
+        {
+            Log(writer, "No scanner candidates found for the selected profile/timeframe/universe.");
         }
         else
         {
-            Log(writer, "");
-            Log(writer, "Scanner candidates");
-            Log(writer, "------------------");
-            for (int i = 0; i < candidates.Count; i++)
+            Log(writer, "Paper scanner candidates");
+            Log(writer, "------------------------");
+            foreach (PaperScannerCandidate candidate in result.Candidates)
             {
-                Log(writer, candidates[i].ToDisplayLine(i + 1));
+                Log(writer, candidate.ToDisplayLine());
+                if (!string.IsNullOrWhiteSpace(candidate.SnapshotMessage))
+                {
+                    Log(writer, $"    snapshot: {candidate.SnapshotMessage}");
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.CandidateReportPath))
+        {
+            Log(writer, "");
+            Log(writer, $"Scanner CSV report: {result.CandidateReportPath}");
+        }
+
+        if (result.Warnings.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Warnings");
+            Log(writer, "--------");
+            foreach (string warning in result.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
             }
         }
 
         Log(writer, "");
-        Log(writer, $"sailor {options.ModeName} scanner skeleton finished");
+        Log(writer, $"sailor {runtimeOptions.ModeName} scanner finished");
         Log(writer, $"Runtime log: {logFilePath}");
+        Log(writer, "No orders sent.");
     }
 
     private static async Task RunStrategySkeletonAsync(
@@ -662,7 +744,9 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("Usage:");
         Console.WriteLine($"  sailor {name} connect");
         Console.WriteLine($"  sailor {name} scan");
-        Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps");
+        Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --local-cache");
+        Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --days 5 --market-data-type 2");
+        Console.WriteLine($"  sailor {name} scan 1m v21-15minutes 1 TSLA --local-cache --no-depth");
         Console.WriteLine($"  sailor {name} history 1m TSLA");
         Console.WriteLine($"  sailor {name} history 1m smallcaps --top 10 --days 5");
         Console.WriteLine($"  sailor {name} history 1m TSLA --local-cache");
@@ -675,11 +759,12 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} status");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-026 status:");
+        Console.WriteLine("SAILOR-027 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
         Console.WriteLine("  - quotes/depth commands capture L1/L2 snapshots");
+        Console.WriteLine("  - paper/live scan now prepares history, uses the shared Sailor scanner, and enriches candidates with snapshots");
         Console.WriteLine("  - optional IBApi adapter can be enabled with -p:EnableIbkrApi=true");
         Console.WriteLine("  - default build uses local synthetic snapshot fallback");
         Console.WriteLine("  - no orders sent");
