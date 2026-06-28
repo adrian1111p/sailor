@@ -12,3 +12,6 @@ logs/**/*.txt
 logs/**/*.md
 logs/**/*.html
 !logs/**/.gitkeep
+logs/**/*.csv
+state/
+cache/

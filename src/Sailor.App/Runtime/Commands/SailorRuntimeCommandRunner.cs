@@ -2,7 +2,9 @@ using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Scanner;
 using Sailor.App.Broker.Ibkr;
+using Sailor.App.Broker.Ibkr.Orders;
 using Sailor.App.Broker.Orders;
+using Sailor.App.Broker.State;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
 using Sailor.App.MarketData.History;
@@ -53,6 +55,10 @@ public static class SailorRuntimeCommandRunner
 
             case "run":
                 await RunStrategySkeletonAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
+            case "order":
+                await RunManualOrderAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
             case "status":
@@ -555,6 +561,163 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
+
+    private static async Task RunManualOrderAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        if (args.Length < 4)
+        {
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} order TSLA BUY 1 LMT 400.00 --dry-run");
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} order TSLA BUY 1 MKT --dry-run");
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} order TSLA BUY 1 LMT 400.00 --send-orders");
+            return;
+        }
+
+        string[] positional = args
+            .Where(arg => !arg.StartsWith("--", StringComparison.Ordinal))
+            .ToArray();
+
+        if (positional.Length < 4)
+        {
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} order SYMBOL BUY|SELL|SELL_SHORT|BUY_TO_COVER QTY MKT|LMT [LIMIT_PRICE]");
+            return;
+        }
+
+        string symbol = positional[0].Trim().ToUpperInvariant();
+        if (!TryParseOrderSide(positional[1], out SailorOrderSide side))
+        {
+            Console.WriteLine($"Unsupported side '{positional[1]}'. Use BUY, SELL, SELL_SHORT, or BUY_TO_COVER.");
+            return;
+        }
+
+        if (!int.TryParse(positional[2], out int quantity) || quantity <= 0)
+        {
+            Console.WriteLine($"Invalid quantity '{positional[2]}'. Quantity must be a positive whole number.");
+            return;
+        }
+
+        if (!TryParseOrderType(positional[3], out SailorOrderType orderType))
+        {
+            Console.WriteLine($"Unsupported order type '{positional[3]}'. Use MKT or LMT for SAILOR-028.");
+            return;
+        }
+
+        decimal? limitPrice = null;
+        if (orderType == SailorOrderType.Limit)
+        {
+            if (positional.Length < 5 || !decimal.TryParse(positional[4], out decimal parsedLimit) || parsedLimit <= 0m)
+            {
+                Console.WriteLine("Limit price is required for LMT orders and must be > 0.");
+                return;
+            }
+
+            limitPrice = parsedLimit;
+        }
+
+        if (mode == SailorRuntimeMode.Live && args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine("SAILOR-028 blocks live order submission. Use paper mode only.");
+            return;
+        }
+
+        SailorRuntimeOptions runtimeOptions = CreateOptions(mode, ["1m", ReadStringOption(args, "--strategy", "manual-paper-order"), "1", symbol], settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        string account = ReadStringOption(args, "--account", modeSettings.Account ?? string.Empty);
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+        string timeInForce = ReadStringOption(args, "--tif", "DAY");
+        string strategyName = ReadStringOption(args, "--strategy", "manual-paper-order");
+        string reason = ReadStringOption(args, "--reason", "SAILOR-028 manual paper order command.");
+        int waitSeconds = ReadIntOption(args, "--wait-seconds", 10);
+
+        bool sendOrdersRequested = args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase));
+        bool dryRunRequested = args.Any(arg => arg.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
+        bool sendOrders = mode == SailorRuntimeMode.Paper && sendOrdersRequested && !dryRunRequested;
+        bool dryRun = !sendOrders;
+
+        var connectionOptions = new IbkrConnectionOptions(
+            mode,
+            runtimeOptions.Host,
+            runtimeOptions.Port,
+            runtimeOptions.ClientId,
+            account,
+            modeSettings.ConnectTimeoutSeconds,
+            runtimeOptions.UseL1,
+            runtimeOptions.UseL2,
+            sendOrders,
+            runtimeOptions.AllowShort);
+
+        SailorOrderIntent intent = SailorOrderIntent.CreateManual(
+            mode,
+            symbol,
+            side,
+            orderType,
+            quantity,
+            limitPrice,
+            strategyName,
+            reason,
+            dryRun,
+            account,
+            timeInForce);
+
+        string logFilePath = CreateRuntimeLogFilePath(mode, $"order_{symbol}");
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {runtimeOptions.ModeName} order router started");
+        Log(writer, runtimeOptions.ToCompactString());
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, intent.ToDisplayString());
+        Log(writer, $"primaryExchange={primaryExchange} waitSeconds={waitSeconds} sendOrdersRequested={sendOrdersRequested} dryRun={dryRun}");
+        Log(writer, "");
+        Log(writer, "SAILOR-028 implementation: manual order intent and paper order router.");
+        Log(writer, "This command creates a normalized SailorOrderIntent, writes the order ledger, and optionally submits to IBKR paper.");
+        Log(writer, "Live order submission is blocked. Strategy conduct loop is still deferred.");
+        Log(writer, "");
+
+        if (sendOrdersRequested && !sendOrders)
+        {
+            Log(writer, "WARN: --send-orders was requested but the command is still dry-run. Check mode and --dry-run flag.");
+        }
+
+        await using IOrderRouter router = IbkrOrderRouterFactory.Create(sendOrders, connectionOptions, primaryExchange, waitSeconds);
+        Log(writer, $"Order router: {router.RouterName}");
+        Log(writer, "");
+
+        SailorOrderReceipt receipt = await router.SubmitAsync(intent, CancellationToken.None);
+        var ledger = new OrderLedgerStore(mode);
+        string ledgerPath = ledger.Append(intent, receipt);
+
+        Log(writer, receipt.ToDisplayString());
+        Log(writer, $"Ledger JSONL: {ledgerPath}");
+        Log(writer, $"Ledger CSV:   {ledger.DailyCsvPath}");
+
+        if (receipt.Events.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Order events");
+            Log(writer, "------------");
+            foreach (string row in receipt.Events)
+            {
+                Log(writer, row);
+            }
+        }
+
+        if (receipt.Warnings.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Warnings");
+            Log(writer, "--------");
+            foreach (string warning in receipt.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+
+        Log(writer, "");
+        Log(writer, receipt.SentToBroker ? "Order was sent to IBKR paper." : "No order was sent to broker.");
+        Log(writer, $"Runtime log: {logFilePath}");
+    }
+
     private static async Task RunStatusSkeletonAsync(
         SailorRuntimeMode mode,
         SailorAppSettings settings)
@@ -567,7 +730,7 @@ public static class SailorRuntimeCommandRunner
         await using var writer = CreateWriter(logFilePath);
         Log(writer, $"sailor {options.ModeName} status");
         Log(writer, state.ToDisplayString());
-        Log(writer, "No persistent broker connection. No active subscriptions. No open Sailor-tracked positions in SAILOR-024.");
+        Log(writer, "No persistent broker connection. No active subscriptions. No open Sailor-tracked positions in SAILOR-028. Order ledger is available under state/{mode}/order-ledger.jsonl.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -591,7 +754,7 @@ public static class SailorRuntimeCommandRunner
             mode,
             symbol,
             "manual-runtime-command",
-            "Manual flatten command skeleton. SAILOR-024 logs intent only.",
+            "Manual flatten command skeleton. SAILOR-028 logs intent only; real flatten waits for position reconciliation.",
             dryRun: true);
 
         string logFilePath = CreateRuntimeLogFilePath(mode, $"flatten_{symbol}");
@@ -599,7 +762,7 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"sailor {options.ModeName} flatten skeleton");
         Log(writer, options.ToCompactString());
         Log(writer, intent.ToDisplayString());
-        Log(writer, "No persistent broker session. No order sent. Flatten routing starts after the order-router milestone.");
+        Log(writer, "No persistent broker session. No order sent. Real flatten routing starts after the position/reconciliation milestone.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -617,6 +780,37 @@ public static class SailorRuntimeCommandRunner
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(take)
             .ToArray();
+    }
+
+
+    private static bool TryParseOrderSide(string value, out SailorOrderSide side)
+    {
+        string normalized = value.Trim().Replace("-", "_", StringComparison.Ordinal).ToUpperInvariant();
+        side = normalized switch
+        {
+            "BUY" or "B" => SailorOrderSide.Buy,
+            "SELL" or "S" => SailorOrderSide.Sell,
+            "SELLSHORT" or "SELL_SHORT" or "SHORT" or "SS" => SailorOrderSide.SellShort,
+            "BUYTOCOVER" or "BUY_TO_COVER" or "COVER" or "BTC" => SailorOrderSide.BuyToCover,
+            _ => SailorOrderSide.Flatten
+        };
+
+        return side != SailorOrderSide.Flatten;
+    }
+
+    private static bool TryParseOrderType(string value, out SailorOrderType orderType)
+    {
+        string normalized = value.Trim().Replace("-", "_", StringComparison.Ordinal).ToUpperInvariant();
+        orderType = normalized switch
+        {
+            "MKT" or "MARKET" => SailorOrderType.Market,
+            "LMT" or "LIMIT" => SailorOrderType.Limit,
+            "STP" or "STOP" => SailorOrderType.Stop,
+            "STPLMT" or "STP_LMT" or "STOP_LIMIT" => SailorOrderType.StopLimit,
+            _ => SailorOrderType.Market
+        };
+
+        return normalized is "MKT" or "MARKET" or "LMT" or "LIMIT" or "STP" or "STOP" or "STPLMT" or "STP_LMT" or "STOP_LIMIT";
     }
 
     private static int ReadIntOption(string[] args, string optionName, int defaultValue)
@@ -756,18 +950,22 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} quotes TSLA --local-cache");
         Console.WriteLine($"  sailor {name} run --dry-run");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run");
+        Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --dry-run");
+        Console.WriteLine($"  sailor {name} order TSLA BUY 1 MKT --dry-run");
+        Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --send-orders");
         Console.WriteLine($"  sailor {name} status");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-027 status:");
+        Console.WriteLine("SAILOR-028 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
         Console.WriteLine("  - quotes/depth commands capture L1/L2 snapshots");
         Console.WriteLine("  - paper/live scan now prepares history, uses the shared Sailor scanner, and enriches candidates with snapshots");
-        Console.WriteLine("  - optional IBApi adapter can be enabled with -p:EnableIbkrApi=true");
-        Console.WriteLine("  - default build uses local synthetic snapshot fallback");
-        Console.WriteLine("  - no orders sent");
+        Console.WriteLine("  - manual paper order command creates a normalized SailorOrderIntent and writes a ledger");
+        Console.WriteLine("  - optional IBApi paper order router can be enabled with -p:EnableIbkrApi=true and --send-orders");
+        Console.WriteLine("  - default build uses dry-run order routing only");
+        Console.WriteLine("  - live order sending is blocked");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
         Console.WriteLine($"  host:       {modeSettings.Host}");

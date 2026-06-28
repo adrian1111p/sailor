@@ -315,6 +315,8 @@ static void PrintHelp(SailorAppSettings settings)
     Console.WriteLine("  sailor paper connect");
     Console.WriteLine("  sailor paper scan 1m sailor-trend-volume 3 smallcaps");
     Console.WriteLine("  sailor paper run 1m v21-15minutes 1 TSLA --dry-run");
+    Console.WriteLine("  sailor paper order TSLA BUY 1 LMT 350.00 --dry-run");
+    Console.WriteLine("  sailor paper order TSLA BUY 1 LMT 350.00 --send-orders");
     Console.WriteLine("  sailor paper status");
     Console.WriteLine("  sailor paper flatten TSLA");
     Console.WriteLine("  sailor live connect");
