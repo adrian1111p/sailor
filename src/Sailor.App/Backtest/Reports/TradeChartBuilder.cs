@@ -326,9 +326,16 @@ public sealed class TradeChartBuilder
         for (int i = 0; i < candles.Count; i++)
         {
             decimal? angle = null;
-            if (i > 0 && ema9[i].HasValue && ema9[i - 1].HasValue && atr14[i].HasValue && atr14[i].Value > 0m)
+            decimal? currentEma9 = ema9[i];
+            decimal? previousEma9 = i > 0 ? ema9[i - 1] : null;
+            decimal? currentAtr14 = atr14[i];
+
+            if (currentEma9 is decimal currentEma9Value &&
+                previousEma9 is decimal previousEma9Value &&
+                currentAtr14 is decimal currentAtr14Value &&
+                currentAtr14Value > 0m)
             {
-                double normalizedSlope = (double)((ema9[i].Value - ema9[i - 1].Value) / atr14[i].Value);
+                double normalizedSlope = (double)((currentEma9Value - previousEma9Value) / currentAtr14Value);
                 angle = (decimal)(Math.Atan(normalizedSlope) * 180.0 / Math.PI);
             }
 
