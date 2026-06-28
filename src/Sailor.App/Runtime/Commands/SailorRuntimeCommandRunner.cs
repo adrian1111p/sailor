@@ -9,6 +9,7 @@ using Sailor.App.Configuration;
 using Sailor.App.Logging;
 using Sailor.App.MarketData.History;
 using Sailor.App.MarketData.Live;
+using Sailor.App.Reporting;
 using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.Paper;
 using Sailor.App.Scanner.Runtime;
@@ -69,6 +70,10 @@ public static class SailorRuntimeCommandRunner
 
             case "reconcile":
                 await RunReconcileAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
+            case "report":
+                await RunPaperReportAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
             case "flatten":
@@ -1014,6 +1019,92 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
+    private static async Task RunPaperReportAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        SailorRuntimeOptions options = CreateOptions(mode, Array.Empty<string>(), settings);
+        string target = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.Ordinal))?.Trim().ToLowerInvariant() ?? "latest";
+        string logFilePath = CreateRuntimeLogFilePath(mode, "report_latest");
+
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {options.ModeName} paper certification report");
+        Log(writer, options.ToCompactString());
+        Log(writer, "");
+
+        if (mode != SailorRuntimeMode.Paper)
+        {
+            Log(writer, "SAILOR-032 supports paper certification only. Live-readiness gates will consume a paper report in a later milestone.");
+            Log(writer, "Usage: sailor paper report latest");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        if (!target.Equals("latest", StringComparison.OrdinalIgnoreCase))
+        {
+            Log(writer, $"Unsupported report target '{target}'.");
+            Log(writer, "Usage: sailor paper report latest");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        var reportWriter = new PaperSessionReportWriter(mode);
+        PaperCertificationReport report = reportWriter.BuildLatestReport();
+        PaperCertificationReportOutput output = reportWriter.WriteLatestReport(report);
+
+        Log(writer, "SAILOR-032 implementation: paper certification report.");
+        Log(writer, "This report combines the latest paper runtime log, Sailor order ledger, local position store, broker reconciliation JSON, and degraded-state incident files.");
+        Log(writer, "A session cannot be promoted when end exposure is non-zero. Reconciliation must also be clean before the later live-readiness gate can consume the report.");
+        Log(writer, "");
+        Log(writer, report.ToSummaryString());
+        Log(writer, $"JSON report:     {output.JsonPath}");
+        Log(writer, $"Markdown report: {output.MarkdownPath}");
+        Log(writer, $"CSV report:      {output.CsvPath}");
+        Log(writer, $"Runtime log:     {logFilePath}");
+        Log(writer, "");
+        Log(writer, "Certification evidence");
+        Log(writer, "----------------------");
+        Log(writer, $"session mode: {report.Mode}");
+        Log(writer, $"account: {(string.IsNullOrWhiteSpace(report.Account) ? "not-configured" : report.Account)}");
+        Log(writer, $"profile: {report.Profile}");
+        Log(writer, $"symbols: {(report.Symbols.Count == 0 ? "none" : string.Join(", ", report.Symbols))}");
+        Log(writer, $"orders submitted: {report.OrdersSubmitted}");
+        Log(writer, $"orders filled: {report.OrdersFilled}");
+        Log(writer, $"orders rejected: {report.OrdersRejected}");
+        Log(writer, $"positions opened/closed: {report.PositionsOpened}/{report.PositionsClosed}");
+        Log(writer, $"force-flat result: {report.ForceFlatResult}");
+        Log(writer, $"disconnect incidents: {report.DisconnectIncidentCount}");
+        Log(writer, $"reconciliation status: {report.ReconciliationStatus}");
+        Log(writer, $"L1/L2 health: {report.L1L2Health}");
+        Log(writer, $"P&L: {report.RealizedPnl:F2}");
+        Log(writer, $"strategy decisions: {report.StrategyDecisions}");
+        Log(writer, $"all open exposure at end = zero: {report.EndExposureIsZero}");
+        Log(writer, $"promotion result: {report.CertificationStatus} - {report.PromotionBlockReason}");
+
+        if (report.EndOpenPositions.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "End open positions");
+            Log(writer, "------------------");
+            foreach (SailorPosition position in report.EndOpenPositions)
+            {
+                Log(writer, position.ToDisplayLine());
+            }
+        }
+
+        if (report.Warnings.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Warnings");
+            Log(writer, "--------");
+            foreach (string warning in report.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+    }
+
     private static async Task RunFlattenSkeletonAsync(
         SailorRuntimeMode mode,
         string[] args,
@@ -1359,9 +1450,10 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} positions");
         Console.WriteLine($"  sailor {name} reconcile --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} reconcile --local-only");
+        Console.WriteLine($"  sailor {name} report latest");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-031 status:");
+        Console.WriteLine("SAILOR-032 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
@@ -1377,6 +1469,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - disconnect/degraded broker signals move runtime to CloseOnly and block new entries");
         Console.WriteLine("  - paper send-orders mode can attempt reconnect + reconciliation before resuming entries");
         Console.WriteLine("  - runtime incident reports are persisted under logs/Paper/Incidents");
+        Console.WriteLine("  - paper report latest generates a JSON/Markdown/CSV paper certification report for the live-readiness gate");
         Console.WriteLine("  - live order sending is blocked");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
