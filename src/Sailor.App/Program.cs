@@ -7,11 +7,13 @@ using Sailor.App.Backtest.Scanner;
 using Sailor.App.Backtest.SelfTest;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
+using Sailor.App.Runtime.Commands;
+using Sailor.App.Runtime.Common;
 
 SailorAppSettings settings = SailorSettingsLoader.Load();
 
 Console.WriteLine("sailor - C# day trading application");
-Console.WriteLine("Mode: development / paper / backtest only");
+Console.WriteLine("Mode: development / backtest / paper-live skeleton");
 Console.WriteLine($"Default timeframe: {settings.DefaultTimeframe}");
 Console.WriteLine($"Default profile: {settings.DefaultProfile}");
 Console.WriteLine();
@@ -26,6 +28,25 @@ string command = args[0].Trim().ToLowerInvariant();
 
 switch (command)
 {
+
+    case "paper":
+    {
+        await SailorRuntimeCommandRunner.RunAsync(
+            SailorRuntimeMode.Paper,
+            args.Skip(1).ToArray(),
+            settings);
+        break;
+    }
+
+    case "live":
+    {
+        await SailorRuntimeCommandRunner.RunAsync(
+            SailorRuntimeMode.Live,
+            args.Skip(1).ToArray(),
+            settings);
+        break;
+    }
+
     case "backtest":
     {
         if (args.Length >= 2 && args[1].Equals("--list", StringComparison.OrdinalIgnoreCase))
@@ -291,6 +312,13 @@ static void PrintHelp(SailorAppSettings settings)
     Console.WriteLine("  sailor test-backtest");
     Console.WriteLine("  sailor test-backtest quick");
     Console.WriteLine("  sailor test-backtest full");
+    Console.WriteLine("  sailor paper connect");
+    Console.WriteLine("  sailor paper scan 1m sailor-trend-volume 3 smallcaps");
+    Console.WriteLine("  sailor paper run 1m v21-15minutes 1 TSLA --dry-run");
+    Console.WriteLine("  sailor paper status");
+    Console.WriteLine("  sailor paper flatten TSLA");
+    Console.WriteLine("  sailor live connect");
+    Console.WriteLine("  sailor live status");
     Console.WriteLine();
     Console.WriteLine("Harvester-inspired Sailor-native conduct profiles available now:");
     Console.WriteLine("  v21-15minutes, v23-5minutes, v24-5minutes, v22-15minutes, v16-sqzbreakout, v13,");

@@ -14,6 +14,8 @@ public sealed class SailorAppSettings
 
     public L1L2SnapshotSettings L1L2 { get; set; } = new();
 
+    public SailorRuntimeSettings Runtime { get; set; } = new();
+
     public Dictionary<string, ConductExitSettings> ConductProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public ScannerSettings Scanner { get; set; } = new();
@@ -129,6 +131,72 @@ public sealed class L1L2SnapshotSettings
         return SuitableProfiles.Any(profile =>
             profileName.Equals(profile, StringComparison.OrdinalIgnoreCase));
     }
+}
+
+
+public sealed class SailorRuntimeSettings
+{
+    public SailorRuntimeModeSettings Paper { get; set; } = new()
+    {
+        Port = 7497,
+        ClientId = 22,
+        SendOrders = false,
+        UseL1 = true,
+        UseL2 = true,
+        AllowShort = true
+    };
+
+    public SailorRuntimeModeSettings Live { get; set; } = new()
+    {
+        Port = 7496,
+        ClientId = 21,
+        SendOrders = false,
+        UseL1 = true,
+        UseL2 = true,
+        AllowShort = false
+    };
+
+    public SailorRuntimeSafetySettings Safety { get; set; } = new();
+}
+
+public sealed class SailorRuntimeModeSettings
+{
+    public string Host { get; set; } = "127.0.0.1";
+
+    public int Port { get; set; }
+
+    public int ClientId { get; set; }
+
+    public string? Account { get; set; }
+
+    public bool SendOrders { get; set; }
+
+    public bool UseL1 { get; set; } = true;
+
+    public bool UseL2 { get; set; } = true;
+
+    public bool AllowShort { get; set; }
+
+    public int DefaultTopCount { get; set; } = 3;
+
+    public int ScannerRefreshSeconds { get; set; } = 60;
+}
+
+public sealed class SailorRuntimeSafetySettings
+{
+    public int LastEntryMinute { get; set; } = 945;
+
+    public int ForceFlatMinute { get; set; } = 955;
+
+    public int MaxActiveSymbols { get; set; } = 3;
+
+    public int MaxReconnectAttempts { get; set; } = 3;
+
+    public int ReconnectDelaySeconds { get; set; } = 5;
+
+    public int HeartbeatSeconds { get; set; } = 10;
+
+    public bool EmergencyFlattenOnDisconnect { get; set; } = true;
 }
 
 public sealed class ScannerSettings
