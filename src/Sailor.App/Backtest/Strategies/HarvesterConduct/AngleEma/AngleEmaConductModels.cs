@@ -23,7 +23,8 @@ public sealed record AngleEmaConductSettings(
     bool AllowShort,
     int EmaPeriod,
     int MaxRecentRawBars,
-    bool DirectInitialEntryFromAngle = false);
+    bool DirectInitialEntryFromAngle = false,
+    int MinimumCompletedCandlesForSignal = 0);
 
 internal sealed record AngleEmaState(
     decimal? Ema9,

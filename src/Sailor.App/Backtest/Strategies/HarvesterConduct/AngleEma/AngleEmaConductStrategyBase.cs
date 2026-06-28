@@ -221,10 +221,10 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
 
         if (candle.IsRed && state.LastGreenCandle is not null)
         {
-            decimal support = state.LastGreenCandle.LongSupport;
-            if (candle.Low <= support || candle.Close <= support)
+            AngleConductCandle reference = state.LastGreenCandle;
+            if (candle.Low <= reference.Low || candle.Close <= reference.Open)
             {
-                reason = $"red candle broke last green support {support:F2}; low={candle.Low:F2}, close={candle.Close:F2}.";
+                reason = $"red candle broke last green support/open: low {candle.Low:F2} <= {reference.Low:F2} or close {candle.Close:F2} <= open {reference.Open:F2}.";
                 return true;
             }
         }
@@ -254,10 +254,10 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
 
         if (candle.IsGreen && state.LastRedCandle is not null)
         {
-            decimal resistance = state.LastRedCandle.ShortResistance;
-            if (candle.High >= resistance || candle.Close >= resistance)
+            AngleConductCandle reference = state.LastRedCandle;
+            if (candle.High >= reference.High || candle.Close >= reference.Open)
             {
-                reason = $"green candle broke last red resistance {resistance:F2}; high={candle.High:F2}, close={candle.Close:F2}.";
+                reason = $"green candle broke last red resistance/open: high {candle.High:F2} >= {reference.High:F2} or close {candle.Close:F2} >= open {reference.Open:F2}.";
                 return true;
             }
         }
@@ -283,7 +283,9 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
             return true;
         }
 
-        return candle.Close > state.LastRedCandle.BodyHigh || candle.High > state.LastRedCandle.High;
+        // Harvester V21/V23 re-entry compares against the reversal/last opposite candle.
+        // For long re-entry, a green candle must recover above the previous red high or open.
+        return candle.High > state.LastRedCandle.High || candle.Close > state.LastRedCandle.Open;
     }
 
     private bool PassesShortReEntry(
@@ -303,7 +305,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
             return true;
         }
 
-        return candle.Close < state.LastGreenCandle.BodyLow || candle.Low < state.LastGreenCandle.Low;
+        // Harvester V21/V23 re-entry mirror: a red candle must break below the previous green low or open.
+        return candle.Low < state.LastGreenCandle.Low || candle.Close < state.LastGreenCandle.Open;
     }
 
     private AngleEmaState CalculateState(
@@ -323,7 +326,9 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
             ? candles.Take(candles.Count - 1).ToList()
             : [];
 
-        if (closedCandles.Count < _settings.EmaPeriod + 1)
+        int requiredCompletedCandles = Math.Max(_settings.EmaPeriod + 1, _settings.MinimumCompletedCandlesForSignal);
+
+        if (closedCandles.Count < requiredCompletedCandles)
         {
             return new AngleEmaState(
                 null,
@@ -332,8 +337,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
                 0m,
                 closedCandles.LastOrDefault(),
                 closedCandles.Count > 1 ? closedCandles[^2] : null,
-                LastGreen(closedCandles),
-                LastRed(closedCandles));
+                LastGreenSameEasternDate(closedCandles, closedCandles.LastOrDefault()),
+                LastRedSameEasternDate(closedCandles, closedCandles.LastOrDefault()));
         }
 
         IReadOnlyList<decimal> closes = closedCandles.Select(candle => candle.Close).ToArray();
@@ -348,8 +353,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
                 0m,
                 closedCandles.LastOrDefault(),
                 closedCandles.Count > 1 ? closedCandles[^2] : null,
-                LastGreen(closedCandles),
-                LastRed(closedCandles));
+                LastGreenSameEasternDate(closedCandles, closedCandles.LastOrDefault()),
+                LastRedSameEasternDate(closedCandles, closedCandles.LastOrDefault()));
         }
 
         List<AngleConductCandle> candlesWithAtr = ApplyAtr(closedCandles);
@@ -368,8 +373,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
                 0m,
                 signalCandle,
                 previousSignalCandle,
-                LastGreen(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1))),
-                LastRed(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1))));
+                LastGreenSameEasternDate(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1)), signalCandle),
+                LastRedSameEasternDate(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1)), signalCandle));
         }
 
         decimal angle = CalculateAngleDegrees(previousEma9, ema9, atr.Value);
@@ -381,8 +386,8 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
             AngleDegrees: decimal.Round(angle, 4),
             SignalCandle: signalCandle,
             PreviousSignalCandle: previousSignalCandle,
-            LastGreenCandle: LastGreen(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1))),
-            LastRedCandle: LastRed(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1))));
+            LastGreenCandle: LastGreenSameEasternDate(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1)), signalCandle),
+            LastRedCandle: LastRedSameEasternDate(candlesWithAtr.Take(Math.Max(0, candlesWithAtr.Count - 1)), signalCandle));
     }
 
     private List<AngleConductCandle> BuildCandles(
@@ -526,13 +531,29 @@ public abstract class AngleEmaConductStrategyBase : ISailorConductPositionStrate
         return currentBar.Volume / indicators.VolumeAverage20.Value;
     }
 
-    private static AngleConductCandle? LastGreen(IEnumerable<AngleConductCandle> candles)
+    private static AngleConductCandle? LastGreenSameEasternDate(
+        IEnumerable<AngleConductCandle> candles,
+        AngleConductCandle? referenceCandle)
     {
-        return candles.LastOrDefault(candle => candle.IsGreen);
+        if (referenceCandle is null)
+        {
+            return null;
+        }
+
+        DateOnly referenceDate = MarketTime.GetEasternDate(referenceCandle.StartTime);
+        return candles.LastOrDefault(candle => candle.IsGreen && MarketTime.GetEasternDate(candle.StartTime) == referenceDate);
     }
 
-    private static AngleConductCandle? LastRed(IEnumerable<AngleConductCandle> candles)
+    private static AngleConductCandle? LastRedSameEasternDate(
+        IEnumerable<AngleConductCandle> candles,
+        AngleConductCandle? referenceCandle)
     {
-        return candles.LastOrDefault(candle => candle.IsRed);
+        if (referenceCandle is null)
+        {
+            return null;
+        }
+
+        DateOnly referenceDate = MarketTime.GetEasternDate(referenceCandle.StartTime);
+        return candles.LastOrDefault(candle => candle.IsRed && MarketTime.GetEasternDate(candle.StartTime) == referenceDate);
     }
 }

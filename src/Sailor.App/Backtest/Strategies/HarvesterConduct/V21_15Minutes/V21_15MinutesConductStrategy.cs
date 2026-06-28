@@ -19,7 +19,8 @@ public sealed class V21_15MinutesConductStrategy : AngleEmaConductStrategyBase
             AllowShort: true,
             EmaPeriod: 9,
             MaxRecentRawBars: 1800,
-            DirectInitialEntryFromAngle: true))
+            DirectInitialEntryFromAngle: true,
+            MinimumCompletedCandlesForSignal: 9))
     {
     }
 }

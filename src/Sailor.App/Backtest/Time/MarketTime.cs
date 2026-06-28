@@ -6,11 +6,23 @@ public static class MarketTime
 
     public static int GetEasternMinuteOfDay(DateTimeOffset timestamp)
     {
-        DateTimeOffset eastern = EasternTimeZone.Value is null
-            ? timestamp
-            : TimeZoneInfo.ConvertTime(timestamp, EasternTimeZone.Value);
+        DateTimeOffset eastern = ToEastern(timestamp);
 
         return eastern.Hour * 60 + eastern.Minute;
+    }
+
+    public static DateOnly GetEasternDate(DateTimeOffset timestamp)
+    {
+        DateTimeOffset eastern = ToEastern(timestamp);
+
+        return DateOnly.FromDateTime(eastern.Date);
+    }
+
+    private static DateTimeOffset ToEastern(DateTimeOffset timestamp)
+    {
+        return EasternTimeZone.Value is null
+            ? timestamp
+            : TimeZoneInfo.ConvertTime(timestamp, EasternTimeZone.Value);
     }
 
     private static TimeZoneInfo? ResolveEasternTimeZone()

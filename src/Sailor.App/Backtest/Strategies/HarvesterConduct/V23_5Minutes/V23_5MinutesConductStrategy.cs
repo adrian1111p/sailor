@@ -18,7 +18,8 @@ public sealed class V23_5MinutesConductStrategy : AngleEmaConductStrategyBase
             MinimumVolumeRatio: 0.80m,
             AllowShort: true,
             EmaPeriod: 9,
-            MaxRecentRawBars: 600))
+            MaxRecentRawBars: 600,
+            MinimumCompletedCandlesForSignal: 9))
     {
     }
 }
