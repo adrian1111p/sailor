@@ -3,10 +3,12 @@ using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Indicators;
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
+using Sailor.App.Backtest.Snapshots;
 using Sailor.App.Backtest.Strategies;
 using Sailor.App.Backtest.Strategies.HarvesterConduct;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
+using Sailor.App.MarketData.Snapshots;
 
 namespace Sailor.App.Backtest;
 
@@ -23,7 +25,7 @@ public static class SimpleBacktestRunner
         BacktestOptions options = BacktestOptions.CreateDefault(symbol, timeframe, profileName, settings);
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName, settings);
         ConductExitSettings conductSettings = ResolveConductSettings(settings, profile);
-        var conductExitEngine = new SailorConductExitEngine(conductSettings);
+        var conductExitEngine = new SailorConductExitEngine(conductSettings, settings.L1L2);
 
         string logDirectory = SailorLogPaths.Backtest;
         Directory.CreateDirectory(logDirectory);
@@ -52,11 +54,12 @@ public static class SimpleBacktestRunner
         }
 
         var dataProvider = new CsvBacktestDataProvider();
-        IBacktestStrategy strategy = CreateStrategy(profile);
+        IBacktestStrategy strategy = CreateStrategy(profile, settings);
 
         BacktestDataSet dataSet = dataProvider.LoadBars(options.Symbol, options.Timeframe);
         IReadOnlyList<BacktestBar> bars = dataSet.Bars;
         IReadOnlyList<BacktestIndicatorSnapshot> indicators = TechnicalIndicatorCalculator.Calculate(bars);
+        var snapshotProvider = new SyntheticBacktestMarketSnapshotProvider(settings.L1L2);
 
         decimal cash = options.InitialCash;
 
@@ -83,6 +86,7 @@ public static class SimpleBacktestRunner
         Log($"Side mode: {profile.SideMode}");
         Log($"Bars: {bars.Count}");
         Log("Indicators: EMA9, SMA20, SMA200, VWAP, VolumeAverage20");
+        Log($"L1/L2 snapshots: syntheticBacktest={settings.L1L2.EnableBacktestSyntheticSnapshots}, entryGuards={settings.L1L2.EnableEntryGuards}, exitGuards={settings.L1L2.EnableExitGuards}, advisorySynthetic={settings.L1L2.SyntheticSnapshotsAreAdvisoryOnly}");
         Log($"Initial cash: {cash:F2}");
         Log($"Max position notional: {options.MaxPositionNotional:F2}");
         Log($"Stop loss: {options.StopLossPercent:F2}%");
@@ -126,10 +130,20 @@ public static class SimpleBacktestRunner
         {
             BacktestBar bar = bars[barIndex];
             BacktestIndicatorSnapshot indicator = indicators[barIndex];
+            SailorMarketSnapshot? marketSnapshot = snapshotProvider.CreateSnapshot(bars, indicators, barIndex);
+
+            if (strategy is ISailorMarketSnapshotConsumer snapshotConsumer)
+            {
+                snapshotConsumer.UpdateMarketSnapshot(marketSnapshot);
+            }
 
             if (barIndex == 0 || barIndex == 8 || barIndex == 19 || barIndex == 199)
             {
                 Log($"{bar.Time:yyyy-MM-dd HH:mm} | indicators ready check | {indicator.ToCompactString()}");
+                if (marketSnapshot is not null)
+                {
+                    Log($"{bar.Time:yyyy-MM-dd HH:mm} | L1/L2 snapshot check | {marketSnapshot.ToCompactString()}");
+                }
             }
 
             if (hasOpenPosition && ShouldForceFlat(profile, bar))
@@ -207,7 +221,8 @@ public static class SimpleBacktestRunner
                         ref entryTime,
                         ref entryReason,
                         ref entryBarIndex,
-                        ref conductState)
+                        ref conductState,
+                        marketSnapshot)
                     : TryCloseByExitRule(
                         bar,
                         barIndex,
@@ -398,18 +413,20 @@ public static class SimpleBacktestRunner
             Trades: trades.ToArray());
     }
 
-    private static IBacktestStrategy CreateStrategy(SailorStrategyProfile profile)
+    private static IBacktestStrategy CreateStrategy(
+        SailorStrategyProfile profile,
+        SailorAppSettings settings)
     {
         if (profile.UseConductExits ||
             profile.Name.Contains("conduct", StringComparison.OrdinalIgnoreCase) ||
             SailorConductStrategyRegistry.IsSupported(profile.Name))
         {
-            return new SailorConductBacktestStrategy(profile);
+            return new SailorConductBacktestStrategy(profile, settings.L1L2);
         }
 
         return profile.Name.Equals("simple-momentum", StringComparison.OrdinalIgnoreCase)
             ? new SimpleMomentumBacktestStrategy(profile)
-            : new SailorTrendVolumeBacktestStrategy(profile);
+            : new SailorTrendVolumeBacktestStrategy(profile, settings.L1L2);
     }
 
     private static ConductExitSettings ResolveConductSettings(
@@ -516,7 +533,8 @@ public static class SimpleBacktestRunner
         ref DateTimeOffset entryTime,
         ref string entryReason,
         ref int entryBarIndex,
-        ref SailorConductExitState? conductState)
+        ref SailorConductExitState? conductState,
+        SailorMarketSnapshot? marketSnapshot)
     {
         if (conductState is null)
         {
@@ -531,7 +549,8 @@ public static class SimpleBacktestRunner
             options,
             profile,
             conductState,
-            barIndex);
+            barIndex,
+            marketSnapshot);
 
         if (!decision.ShouldExit)
         {

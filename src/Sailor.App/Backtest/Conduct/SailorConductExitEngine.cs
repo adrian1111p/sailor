@@ -1,16 +1,21 @@
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Configuration;
+using Sailor.App.MarketData.Snapshots;
 
 namespace Sailor.App.Backtest.Conduct;
 
 public sealed class SailorConductExitEngine
 {
     private readonly ConductExitSettings _settings;
+    private readonly L1L2SnapshotSettings _snapshotSettings;
 
-    public SailorConductExitEngine(ConductExitSettings settings)
+    public SailorConductExitEngine(
+        ConductExitSettings settings,
+        L1L2SnapshotSettings? snapshotSettings = null)
     {
         _settings = settings;
+        _snapshotSettings = snapshotSettings ?? new L1L2SnapshotSettings();
     }
 
     public SailorConductExitDecision EvaluateExit(
@@ -21,11 +26,12 @@ public sealed class SailorConductExitEngine
         BacktestOptions options,
         SailorStrategyProfile profile,
         SailorConductExitState state,
-        int currentBarIndex)
+        int currentBarIndex,
+        SailorMarketSnapshot? snapshot = null)
     {
         return positionSide < 0
-            ? EvaluateShortExit(bar, previousBar, indicators, options, profile, state, currentBarIndex)
-            : EvaluateLongExit(bar, previousBar, indicators, options, profile, state, currentBarIndex);
+            ? EvaluateShortExit(bar, previousBar, indicators, options, profile, state, currentBarIndex, snapshot)
+            : EvaluateLongExit(bar, previousBar, indicators, options, profile, state, currentBarIndex, snapshot);
     }
 
     public SailorConductExitDecision EvaluateLongExit(
@@ -35,7 +41,8 @@ public sealed class SailorConductExitEngine
         BacktestOptions options,
         SailorStrategyProfile profile,
         SailorConductExitState state,
-        int currentBarIndex)
+        int currentBarIndex,
+        SailorMarketSnapshot? snapshot = null)
     {
         state.ObserveBarHigh(bar.High);
 
@@ -176,6 +183,13 @@ public sealed class SailorConductExitEngine
             }
         }
 
+        if (ShouldExitByAdverseSnapshot(profile, snapshot, positionSide: 1, out string l1L2ExitReason))
+        {
+            return SailorConductExitDecision.Exit(
+                bar.Close,
+                $"{l1L2ExitReason}, held {barsHeld} bars.");
+        }
+
         return SailorConductExitDecision.Hold(
             $"conduct hold long: peak {state.PeakPrice:F2}, active stop {activeStop:F2}, held {barsHeld} bars.");
     }
@@ -187,7 +201,8 @@ public sealed class SailorConductExitEngine
         BacktestOptions options,
         SailorStrategyProfile profile,
         SailorConductExitState state,
-        int currentBarIndex)
+        int currentBarIndex,
+        SailorMarketSnapshot? snapshot = null)
     {
         state.ObserveBarLow(bar.Low);
 
@@ -328,8 +343,56 @@ public sealed class SailorConductExitEngine
             }
         }
 
+        if (ShouldExitByAdverseSnapshot(profile, snapshot, positionSide: -1, out string l1L2ExitReason))
+        {
+            return SailorConductExitDecision.Exit(
+                bar.Close,
+                $"{l1L2ExitReason}, held {barsHeld} bars.");
+        }
+
         return SailorConductExitDecision.Hold(
             $"conduct hold short: trough {state.TroughPrice:F2}, active stop {activeStop:F2}, held {barsHeld} bars.");
+    }
+
+    private bool ShouldExitByAdverseSnapshot(
+        SailorStrategyProfile profile,
+        SailorMarketSnapshot? snapshot,
+        int positionSide,
+        out string reason)
+    {
+        reason = string.Empty;
+
+        if (!_snapshotSettings.EnableExitGuards || !_snapshotSettings.IsProfileSuitable(profile.Name))
+        {
+            return false;
+        }
+
+        if (snapshot is null)
+        {
+            return false;
+        }
+
+        if (snapshot.Quality == SailorMarketSnapshotQuality.SyntheticBacktest &&
+            _snapshotSettings.SyntheticSnapshotsAreAdvisoryOnly)
+        {
+            return false;
+        }
+
+        decimal imbalance = snapshot.BookImbalance;
+
+        if (positionSide > 0 && imbalance <= -_snapshotSettings.MaximumAdverseBookImbalance)
+        {
+            reason = $"conduct L1/L2 adverse exit: long book imbalance {imbalance:F2} <= -{_snapshotSettings.MaximumAdverseBookImbalance:F2}";
+            return true;
+        }
+
+        if (positionSide < 0 && imbalance >= _snapshotSettings.MaximumAdverseBookImbalance)
+        {
+            reason = $"conduct L1/L2 adverse exit: short book imbalance {imbalance:F2} >= {_snapshotSettings.MaximumAdverseBookImbalance:F2}";
+            return true;
+        }
+
+        return false;
     }
 
     private decimal CalculateGivebackPerShare(SailorConductExitState state)

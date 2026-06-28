@@ -12,6 +12,8 @@ public sealed class SailorAppSettings
 
     public ConductExitSettings Conduct { get; set; } = new();
 
+    public L1L2SnapshotSettings L1L2 { get; set; } = new();
+
     public Dictionary<string, ConductExitSettings> ConductProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public ScannerSettings Scanner { get; set; } = new();
@@ -67,6 +69,66 @@ public sealed class ConductExitSettings
     public decimal MicroTrailPercent { get; set; } = 0.20m;
 
     public int MaxHoldBars { get; set; } = 45;
+}
+
+
+public sealed class L1L2SnapshotSettings
+{
+    public bool EnableBacktestSyntheticSnapshots { get; set; } = true;
+
+    public bool EnableEntryGuards { get; set; } = true;
+
+    public bool EnableExitGuards { get; set; } = false;
+
+    public bool SyntheticSnapshotsAreAdvisoryOnly { get; set; } = true;
+
+    public bool RequireSnapshotForEntry { get; set; } = false;
+
+    public decimal SyntheticSpreadBps { get; set; } = 6.0m;
+
+    public decimal SyntheticMinimumSpreadCents { get; set; } = 1.0m;
+
+    public decimal MaxSpreadBps { get; set; } = 85.0m;
+
+    public decimal MinimumLiquidityScore { get; set; } = 10.0m;
+
+    public decimal MinimumBookImbalanceForMomentum { get; set; } = 0.02m;
+
+    public decimal MaximumAdverseBookImbalance { get; set; } = 0.60m;
+
+    public int DepthLevels { get; set; } = 5;
+
+    public string[] SuitableProfiles { get; set; } =
+    [
+        "sailor-trend-volume",
+        "sailor-conduct-v3",
+        "conduct-v3",
+        "harvester-conduct-v3",
+        "harvester-conduct-v9",
+        "v16-sqzbreakout",
+        "v13",
+        "v10-hybrid",
+        "v17-hybridflow",
+        "v2-conduct",
+        "v18-silver",
+        "v1-first",
+        "v19-purplecloud",
+        "v15-shortcap",
+        "v14-smallcap",
+        "v20-gen001-choppyshield",
+        "v12"
+    ];
+
+    public bool IsProfileSuitable(string? profileName)
+    {
+        if (string.IsNullOrWhiteSpace(profileName))
+        {
+            return false;
+        }
+
+        return SuitableProfiles.Any(profile =>
+            profileName.Equals(profile, StringComparison.OrdinalIgnoreCase));
+    }
 }
 
 public sealed class ScannerSettings

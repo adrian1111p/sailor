@@ -1,15 +1,28 @@
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
+using Sailor.App.Backtest.Strategies.HarvesterConduct;
+using Sailor.App.Configuration;
+using Sailor.App.MarketData.Snapshots;
 
 namespace Sailor.App.Backtest.Strategies;
 
-public sealed class SailorTrendVolumeBacktestStrategy : IBacktestStrategy
+public sealed class SailorTrendVolumeBacktestStrategy : IBacktestStrategy, ISailorMarketSnapshotConsumer
 {
     private readonly SailorStrategyProfile _profile;
+    private readonly L1L2SnapshotSettings _snapshotSettings;
+    private SailorMarketSnapshot? _currentSnapshot;
 
-    public SailorTrendVolumeBacktestStrategy(SailorStrategyProfile profile)
+    public SailorTrendVolumeBacktestStrategy(
+        SailorStrategyProfile profile,
+        L1L2SnapshotSettings? snapshotSettings = null)
     {
         _profile = profile;
+        _snapshotSettings = snapshotSettings ?? new L1L2SnapshotSettings();
+    }
+
+    public void UpdateMarketSnapshot(SailorMarketSnapshot? snapshot)
+    {
+        _currentSnapshot = snapshot;
     }
 
     public bool AllowsShortEntries => _profile.SideMode.AllowsShort();
@@ -53,7 +66,21 @@ public sealed class SailorTrendVolumeBacktestStrategy : IBacktestStrategy
             BacktestSignal longSignal = EvaluateLongEntry(currentBar, previousBar, indicators);
             if (longSignal.Type == BacktestSignalType.Buy)
             {
-                return longSignal;
+                SailorSnapshotGuardDecision snapshotDecision = SailorSnapshotEntryGuard.Evaluate(
+                    _profile.Name,
+                    intendedSide: 1,
+                    _currentSnapshot,
+                    _snapshotSettings);
+
+                if (!snapshotDecision.Passed)
+                {
+                    return BacktestSignal.Hold(snapshotDecision.Reason);
+                }
+
+                return longSignal with
+                {
+                    Reason = $"{longSignal.Reason} | {snapshotDecision.Reason}"
+                };
             }
         }
 
@@ -62,7 +89,21 @@ public sealed class SailorTrendVolumeBacktestStrategy : IBacktestStrategy
             BacktestSignal shortSignal = EvaluateShortEntry(currentBar, previousBar, indicators);
             if (shortSignal.Type == BacktestSignalType.Sell)
             {
-                return shortSignal;
+                SailorSnapshotGuardDecision snapshotDecision = SailorSnapshotEntryGuard.Evaluate(
+                    _profile.Name,
+                    intendedSide: -1,
+                    _currentSnapshot,
+                    _snapshotSettings);
+
+                if (!snapshotDecision.Passed)
+                {
+                    return BacktestSignal.Hold(snapshotDecision.Reason);
+                }
+
+                return shortSignal with
+                {
+                    Reason = $"{shortSignal.Reason} | {snapshotDecision.Reason}"
+                };
             }
         }
 

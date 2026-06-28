@@ -1,9 +1,11 @@
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
+using Sailor.App.Configuration;
+using Sailor.App.MarketData.Snapshots;
 
 namespace Sailor.App.Backtest.Strategies.HarvesterConduct;
 
-public abstract class SailorConductProfileStrategyBase : ISailorConductEntryStrategy
+public abstract class SailorConductProfileStrategyBase : ISailorSnapshotAwareEntryStrategy
 {
     private readonly SailorConductEntryRules _rules;
 
@@ -25,6 +27,25 @@ public abstract class SailorConductProfileStrategyBase : ISailorConductEntryStra
         IReadOnlyList<BacktestBar> recentBars,
         SailorStrategyProfile profile)
     {
+        return EvaluateEntry(
+            currentBar,
+            previousBar,
+            indicators,
+            recentBars,
+            profile,
+            snapshot: null,
+            snapshotSettings: new L1L2SnapshotSettings());
+    }
+
+    public BacktestSignal EvaluateEntry(
+        BacktestBar currentBar,
+        BacktestBar previousBar,
+        BacktestIndicatorSnapshot indicators,
+        IReadOnlyList<BacktestBar> recentBars,
+        SailorStrategyProfile profile,
+        SailorMarketSnapshot? snapshot,
+        L1L2SnapshotSettings snapshotSettings)
+    {
         string prefix = $"{StrategyName}/{VariantName}";
 
         if (!PassesCommonFilters(currentBar, indicators, prefix, out string commonRejectReason, out decimal volumeRatio))
@@ -37,7 +58,21 @@ public abstract class SailorConductProfileStrategyBase : ISailorConductEntryStra
             BacktestSignal longSignal = EvaluateLongEntry(currentBar, previousBar, indicators, recentBars, profile, prefix, volumeRatio);
             if (longSignal.Type == BacktestSignalType.Buy)
             {
-                return longSignal;
+                SailorSnapshotGuardDecision snapshotDecision = SailorSnapshotEntryGuard.Evaluate(
+                    profile.Name,
+                    intendedSide: 1,
+                    snapshot,
+                    snapshotSettings);
+
+                if (!snapshotDecision.Passed)
+                {
+                    return BacktestSignal.Hold(snapshotDecision.Reason);
+                }
+
+                return longSignal with
+                {
+                    Reason = $"{longSignal.Reason} | {snapshotDecision.Reason}"
+                };
             }
         }
 
@@ -46,7 +81,21 @@ public abstract class SailorConductProfileStrategyBase : ISailorConductEntryStra
             BacktestSignal shortSignal = EvaluateShortEntry(currentBar, previousBar, indicators, recentBars, profile, prefix, volumeRatio);
             if (shortSignal.Type == BacktestSignalType.Sell)
             {
-                return shortSignal;
+                SailorSnapshotGuardDecision snapshotDecision = SailorSnapshotEntryGuard.Evaluate(
+                    profile.Name,
+                    intendedSide: -1,
+                    snapshot,
+                    snapshotSettings);
+
+                if (!snapshotDecision.Passed)
+                {
+                    return BacktestSignal.Hold(snapshotDecision.Reason);
+                }
+
+                return shortSignal with
+                {
+                    Reason = $"{shortSignal.Reason} | {snapshotDecision.Reason}"
+                };
             }
         }
 
