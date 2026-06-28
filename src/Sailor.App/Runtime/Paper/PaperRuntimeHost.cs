@@ -31,9 +31,13 @@ public sealed class PaperRuntimeHost
         var healthMonitor = new RuntimeHealthMonitor(request.RuntimeOptions.Mode, incidentReporter, request.CanOpenEntries);
         var recoveryService = new ConnectionRecoveryService(healthMonitor, _log);
 
-        _log("SAILOR-030 implementation: paper conduct loop.");
-        _log("This first paper runtime slice runs the scanner, activates selected symbols, builds strategy frames on a cadence, converts strategy decisions to order intents, and routes them through the paper order router.");
-        _log("Dry-run mode assumes fills locally so the conduct/exit path can be exercised without broker orders. Send-orders mode requires broker reconciliation and only updates local session position after actual filled quantity is reported.");
+        _log(request.RuntimeOptions.Mode == SailorRuntimeMode.Live
+            ? "SAILOR-034 implementation: live pilot conduct loop."
+            : "SAILOR-030 implementation: paper conduct loop.");
+        _log("This runtime slice runs the scanner, activates selected symbols, builds strategy frames on a cadence, converts strategy decisions to order intents, and routes them through the configured order router.");
+        _log(request.RuntimeOptions.Mode == SailorRuntimeMode.Live
+            ? "Live pilot mode requires the live-readiness gate, one explicit symbol, small max notional, close-only safety, and final broker reconciliation."
+            : "Dry-run mode assumes fills locally so the conduct/exit path can be exercised without broker orders. Send-orders mode requires broker reconciliation and only updates local session position after actual filled quantity is reported.");
         _log("");
         _log("SAILOR-031 implementation: disconnection and degraded-state handling.");
         _log("Runtime health starts in Normal only when the pre-run broker/reconciliation gate is clean. Any disconnect, degraded broker signal, or routing failure moves the runtime to CloseOnly and blocks new entries.");
@@ -140,7 +144,7 @@ public sealed class PaperRuntimeHost
             cancellationToken).ConfigureAwait(false);
 
         runtimeState.SetStatus(SailorRuntimeStatus.Stopped, "SAILOR-030 conduct loop finished.");
-        _log("Final paper session state");
+        _log($"Final {request.RuntimeOptions.ModeName} session state");
         _log("-------------------------");
         foreach (PaperSymbolSession session in sessions)
         {

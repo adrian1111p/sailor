@@ -1,4 +1,5 @@
 using Sailor.App.Broker.Orders;
+using Sailor.App.Runtime.Common;
 
 namespace Sailor.App.Broker.Ibkr.Orders;
 
@@ -15,15 +16,16 @@ public static class IbkrOrderRouterFactory
             return new DryRunOrderRouter();
         }
 
-        if (connectionOptions.Mode == Sailor.App.Runtime.Common.SailorRuntimeMode.Live)
+        if (connectionOptions.Mode == SailorRuntimeMode.Live && !connectionOptions.SendOrders)
         {
-            return new DisabledBrokerOrderRouter("SAILOR-028 blocks live order submission. Use paper mode only.");
+            return new DisabledBrokerOrderRouter("Live order submission was requested, but the live connection options are not marked send-orders. The live-readiness gate must pass first.");
         }
 
 #if SAILOR_IBAPI
         return new IbkrPaperOrderRouter(connectionOptions, primaryExchange, waitSeconds);
 #else
-        return new DisabledBrokerOrderRouter("IBKR paper order router requires the optional IBApi build. Re-run with -p:EnableIbkrApi=true, or use dry-run mode.");
+        string target = connectionOptions.Mode == SailorRuntimeMode.Live ? "live" : "paper";
+        return new DisabledBrokerOrderRouter($"IBKR {target} order router requires the optional IBApi build. Re-run with -p:EnableIbkrApi=true, or use dry-run mode.");
 #endif
     }
 }

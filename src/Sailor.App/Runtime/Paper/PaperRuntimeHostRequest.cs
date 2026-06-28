@@ -23,7 +23,9 @@ public sealed record PaperRuntimeHostRequest(
     int ReconnectAttempts,
     int ReconnectBackoffSeconds,
     int SimulateDisconnectAtIteration,
-    RuntimeReconciliationDelegate? ReconcileBrokerStateAsync);
+    RuntimeReconciliationDelegate? ReconcileBrokerStateAsync,
+    bool EnforceMaxOrderNotional = false,
+    decimal MaxOrderNotional = 0m);
 
 public sealed record PaperRuntimeHostResult(
     IReadOnlyList<string> ActiveSymbols,

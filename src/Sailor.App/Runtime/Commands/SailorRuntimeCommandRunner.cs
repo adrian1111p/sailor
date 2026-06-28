@@ -598,22 +598,7 @@ public static class SailorRuntimeCommandRunner
 
         if (mode == SailorRuntimeMode.Live)
         {
-            SailorRuntimeModeSettings liveSettings = GetModeSettings(mode, settings);
-            string liveAccount = ReadStringOption(args, "--account", liveSettings.Account ?? string.Empty);
-            LiveReadinessGateResult gate = EvaluateLiveReadiness(
-                settings,
-                "live run",
-                args,
-                requiresTrading: true,
-                readOnly: false,
-                account: liveAccount);
-            LogLiveReadinessGate(writer, gate);
-            Log(writer, "");
-            Log(writer, gate.LiveTradingAllowed
-                ? "SAILOR-033 live-readiness gate passed, but live conduct routing is still disabled until SAILOR-034 live pilot."
-                : "SAILOR-033 blocked live conduct before any broker order route could be created.");
-            Log(writer, "No broker order was sent.");
-            Log(writer, $"Runtime log: {logFilePath}");
+            await RunLivePilotAsync(args, settings, runtimeOptions, logFilePath, writer);
             return;
         }
 
@@ -713,9 +698,12 @@ public static class SailorRuntimeCommandRunner
                 TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
                 executionRequestId);
 
-            await using IPositionProvider positionProvider = CreatePositionProvider(localOnly: false, connectionOptions);
-            Log(writer, $"Pre-run reconciliation provider: {positionProvider.ProviderName}");
-            reconciliation = await reconciliationService.ReconcileAsync(positionProvider, positionRequest, CancellationToken.None);
+            await using (IPositionProvider positionProvider = CreatePositionProvider(localOnly: false, connectionOptions))
+            {
+                Log(writer, $"Pre-run reconciliation provider: {positionProvider.ProviderName}");
+                reconciliation = await reconciliationService.ReconcileAsync(positionProvider, positionRequest, CancellationToken.None);
+            }
+
             Log(writer, reconciliation.ToSummaryString());
             Log(writer, reconciliation.Message);
             foreach (string warning in reconciliation.Warnings)
@@ -802,6 +790,283 @@ public static class SailorRuntimeCommandRunner
         Log(writer, result.OrderIntentCount > 0 ? "SAILOR-030 conduct loop produced order intents." : "SAILOR-030 conduct loop produced no order intents.");
         Log(writer, "SAILOR-031 degraded-state handling was active for this paper run.");
         Log(writer, sendOrders ? "Paper send-orders mode was active." : "Dry-run mode: no broker orders were sent.");
+        Log(writer, $"Runtime log: {logFilePath}");
+    }
+
+    private static async Task RunLivePilotAsync(
+        string[] args,
+        SailorAppSettings settings,
+        SailorRuntimeOptions initialOptions,
+        string logFilePath,
+        StreamWriter writer)
+    {
+        SailorRuntimeModeSettings liveSettings = settings.Runtime.Live;
+        string account = ReadStringOption(args, "--account", liveSettings.Account ?? string.Empty);
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+        int waitSeconds = ReadIntOption(args, "--wait-seconds", liveSettings.ConnectTimeoutSeconds);
+        int cadenceSeconds = ReadIntOption(args, "--cadence-seconds", 1);
+        int quantity = ReadIntOption(args, "--quantity", 1);
+        int marketDataType = ReadIntOption(args, "--market-data-type", 1);
+        int days = ReadIntOption(args, "--days", 5);
+        int snapshotSeconds = ReadIntOption(args, "--snapshot-seconds", 2);
+        int depthLevels = ReadIntOption(args, "--levels", settings.L1L2.DepthLevels <= 0 ? 5 : settings.L1L2.DepthLevels);
+        int seconds = ReadIntOption(args, "--seconds", 10);
+        int iterations = ReadIntOption(args, "--iterations", Math.Max(1, seconds / Math.Max(1, cadenceSeconds)));
+        int executionRequestId = ReadIntOption(args, "--execution-request-id", 34_000);
+        int reconnectAttempts = ReadIntOption(args, "--reconnect-attempts", Math.Max(1, settings.Runtime.Safety.MaxReconnectAttempts));
+        int reconnectBackoffSeconds = ReadIntOption(args, "--reconnect-backoff-seconds", Math.Max(1, settings.Runtime.Safety.ReconnectDelaySeconds));
+        int simulateDisconnectAtIteration = ReadIntOption(args, "--simulate-disconnect-at", 0, allowZero: true);
+
+        bool dryRunRequested = args.Any(arg => arg.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
+        bool localCache = args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
+        bool requestIbkrHistory = !localCache && !args.Any(arg => arg.Equals("--no-history-refresh", StringComparison.OrdinalIgnoreCase));
+        bool mirrorHistoryToBacktest = !args.Any(arg => arg.Equals("--no-backtest-copy", StringComparison.OrdinalIgnoreCase));
+        bool useRth = !args.Any(arg => arg.Equals("--all-hours", StringComparison.OrdinalIgnoreCase));
+        bool captureSnapshots = !args.Any(arg => arg.Equals("--no-quotes", StringComparison.OrdinalIgnoreCase));
+        bool useL2 = initialOptions.UseL2 || args.Any(arg => arg.Equals("--with-depth", StringComparison.OrdinalIgnoreCase));
+        if (args.Any(arg => arg.Equals("--no-depth", StringComparison.OrdinalIgnoreCase)))
+        {
+            useL2 = false;
+        }
+
+        bool requestIbkrMarketData = captureSnapshots && !localCache;
+        bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+        bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
+
+        LiveReadinessGateResult gate = EvaluateLiveReadiness(
+            settings,
+            dryRunRequested ? "live run dry-run" : "live run pilot",
+            args,
+            requiresTrading: !dryRunRequested,
+            readOnly: dryRunRequested,
+            account: account);
+        LiveReadinessGateOutput gateOutput = new LiveReadinessGate(settings).WriteResult(gate);
+
+        LivePilotRestrictionResult restrictions = EvaluateLivePilotRestrictions(initialOptions, args, settings);
+        bool sendOrders = !dryRunRequested && gate.LiveTradingAllowed && restrictions.Passed;
+        bool dryRun = !sendOrders;
+
+        var runtimeOptions = initialOptions with
+        {
+            Universe = restrictions.Symbol,
+            TopCount = 1,
+            DryRun = dryRun,
+            SendOrders = sendOrders,
+            AllowShort = restrictions.ShortEnabled
+        };
+
+        var connectionOptions = new IbkrConnectionOptions(
+            SailorRuntimeMode.Live,
+            runtimeOptions.Host,
+            runtimeOptions.Port,
+            runtimeOptions.ClientId,
+            account,
+            liveSettings.ConnectTimeoutSeconds,
+            runtimeOptions.UseL1,
+            runtimeOptions.UseL2,
+            sendOrders,
+            runtimeOptions.AllowShort);
+
+        var scannerOptions = new PaperScannerOptions(
+            SailorRuntimeMode.Live,
+            runtimeOptions.Timeframe,
+            runtimeOptions.ProfileName,
+            restrictions.Symbol,
+            1,
+            1,
+            days,
+            requestIbkrHistory,
+            mirrorHistoryToBacktest,
+            useRth,
+            captureSnapshots,
+            requestIbkrMarketData,
+            runtimeOptions.UseL1,
+            useL2,
+            snapshotSeconds,
+            depthLevels,
+            marketDataType,
+            primaryExchange,
+            smartDepth);
+
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, scannerOptions.ToDisplayString());
+        Log(writer, $"quantity={quantity} cadenceSeconds={cadenceSeconds} iterations={iterations} waitSeconds={waitSeconds} dryRun={dryRun} sendOrders={sendOrders} account={(string.IsNullOrWhiteSpace(account) ? "not-configured" : account)} maxNotional={gate.RequestedMaxNotional:F2}");
+        Log(writer, $"reconnectAttempts={reconnectAttempts} reconnectBackoffSeconds={reconnectBackoffSeconds} simulateDisconnectAtIteration={simulateDisconnectAtIteration}");
+        Log(writer, "");
+        Log(writer, "SAILOR-034 implementation: live pilot.");
+        Log(writer, "Restrictions: one explicit symbol, one profile, long-only unless explicitly enabled, small max notional, close-only flatten command, force-flat safety, and operator watching TWS.");
+        Log(writer, "Live orders are routed only when Runtime.Live.AllowLiveTrading=true, --confirm-live is supplied, paper certification is promotable, account matches, max notional is small, and live-pilot restrictions pass.");
+        Log(writer, "");
+        LogLiveReadinessGate(writer, gate);
+        Log(writer, $"Readiness JSON: {gateOutput.JsonPath}");
+        Log(writer, $"Readiness CSV:  {gateOutput.CsvPath}");
+        Log(writer, "");
+        Log(writer, restrictions.ToSummaryString());
+        foreach (string check in restrictions.Checks)
+        {
+            Log(writer, check);
+        }
+        foreach (string warning in restrictions.Warnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
+
+        if (!gate.LiveTradingAllowed || !restrictions.Passed)
+        {
+            var blockedReport = LivePilotReport.From(
+                gate,
+                restrictions,
+                preRunReconciliation: null,
+                finalReconciliation: null,
+                runtimeResult: null,
+                warnings: restrictions.Warnings.Concat(gate.Checks.Where(check => !check.Passed).Select(check => check.ToDisplayLine())).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            LivePilotReportOutput blockedOutput = new LivePilotReportWriter().Write(blockedReport);
+            Log(writer, "");
+            Log(writer, gate.LiveTradingAllowed ? restrictions.BlockReason : gate.Reason);
+            Log(writer, "SAILOR-034 blocked live pilot before any broker order route could be created. No live order was sent.");
+            Log(writer, blockedReport.ToSummaryString());
+            Log(writer, $"Live pilot JSON: {blockedOutput.JsonPath}");
+            Log(writer, $"Live pilot CSV:  {blockedOutput.CsvPath}");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        var reconciliationService = new ReconciliationService(SailorRuntimeMode.Live);
+        var positionRequest = new PositionRequest(
+            SailorRuntimeMode.Live,
+            account,
+            TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
+            executionRequestId);
+
+        Log(writer, "");
+        ReconciliationResult preRunReconciliation;
+        if (dryRun)
+        {
+            preRunReconciliation = reconciliationService.BuildLocalStatus();
+            Log(writer, "Pre-run reconciliation provider: local-status");
+        }
+        else
+        {
+            await using IPositionProvider positionProvider = CreatePositionProvider(localOnly: false, connectionOptions);
+            Log(writer, $"Pre-run reconciliation provider: {positionProvider.ProviderName}");
+            preRunReconciliation = await reconciliationService.ReconcileAsync(positionProvider, positionRequest, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Log(writer, preRunReconciliation.ToSummaryString());
+        Log(writer, preRunReconciliation.Message);
+        foreach (string warning in preRunReconciliation.Warnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
+
+        if (sendOrders && !preRunReconciliation.CanOpenNewEntries)
+        {
+            var blockedReport = LivePilotReport.From(
+                gate,
+                restrictions,
+                preRunReconciliation,
+                finalReconciliation: preRunReconciliation,
+                runtimeResult: null,
+                warnings: preRunReconciliation.Warnings);
+            LivePilotReportOutput blockedOutput = new LivePilotReportWriter().Write(blockedReport);
+            Log(writer, "");
+            Log(writer, "SAILOR-034 blocked live pilot because pre-run live reconciliation did not match. No live order was sent.");
+            Log(writer, blockedReport.ToSummaryString());
+            Log(writer, $"Live pilot JSON: {blockedOutput.JsonPath}");
+            Log(writer, $"Live pilot CSV:  {blockedOutput.CsvPath}");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        RuntimeReconciliationDelegate? brokerReconcileAsync = null;
+        int nextRecoveryExecutionRequestId = executionRequestId + 1000;
+        if (sendOrders)
+        {
+            brokerReconcileAsync = async cancellationToken =>
+            {
+                await using IPositionProvider recoveryProvider = CreatePositionProvider(localOnly: false, connectionOptions);
+                var recoveryRequest = new PositionRequest(
+                    SailorRuntimeMode.Live,
+                    account,
+                    TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
+                    nextRecoveryExecutionRequestId++);
+
+                return await reconciliationService.ReconcileAsync(recoveryProvider, recoveryRequest, cancellationToken).ConfigureAwait(false);
+            };
+        }
+
+        var request = new PaperRuntimeHostRequest(
+            runtimeOptions,
+            connectionOptions,
+            scannerOptions,
+            preRunReconciliation,
+            sendOrders,
+            dryRun,
+            dryRun || preRunReconciliation.CanOpenNewEntries,
+            account,
+            quantity,
+            cadenceSeconds,
+            iterations,
+            waitSeconds,
+            primaryExchange,
+            forceFlatNow,
+            reconnectAttempts,
+            reconnectBackoffSeconds,
+            simulateDisconnectAtIteration,
+            brokerReconcileAsync,
+            EnforceMaxOrderNotional: true,
+            MaxOrderNotional: gate.RequestedMaxNotional);
+
+        var host = new PaperRuntimeHost(settings, message => Log(writer, message));
+        PaperRuntimeHostResult runtimeResult = await host.RunAsync(request, CancellationToken.None).ConfigureAwait(false);
+
+        ReconciliationResult finalReconciliation;
+        if (sendOrders)
+        {
+            await using IPositionProvider finalProvider = CreatePositionProvider(localOnly: false, connectionOptions);
+            var finalRequest = new PositionRequest(
+                SailorRuntimeMode.Live,
+                account,
+                TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
+                executionRequestId + 2000);
+            finalReconciliation = await reconciliationService.ReconcileAsync(finalProvider, finalRequest, CancellationToken.None).ConfigureAwait(false);
+        }
+        else
+        {
+            finalReconciliation = reconciliationService.BuildLocalStatus();
+        }
+
+        var allWarnings = preRunReconciliation.Warnings
+            .Concat(finalReconciliation.Warnings)
+            .Concat(runtimeResult.Warnings)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        LivePilotReport report = LivePilotReport.From(
+            gate,
+            restrictions,
+            preRunReconciliation,
+            finalReconciliation,
+            runtimeResult,
+            allWarnings);
+        LivePilotReportOutput output = new LivePilotReportWriter().Write(report);
+
+        Log(writer, "");
+        Log(writer, "Final live reconciliation");
+        Log(writer, "-------------------------");
+        Log(writer, finalReconciliation.ToSummaryString());
+        Log(writer, finalReconciliation.Message);
+        foreach (string warning in finalReconciliation.Warnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
+
+        Log(writer, "");
+        Log(writer, report.ToSummaryString());
+        Log(writer, $"promotion result: {(report.CanPromote ? "Passed" : "Blocked")} - {report.Reason}");
+        Log(writer, $"Live pilot JSON: {output.JsonPath}");
+        Log(writer, $"Live pilot CSV:  {output.CsvPath}");
+        Log(writer, sendOrders ? "SAILOR-034 live pilot send-orders mode was active." : "SAILOR-034 live pilot dry-run mode: no broker orders were sent.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -934,7 +1199,7 @@ public static class SailorRuntimeCommandRunner
             if (sendOrdersRequested)
             {
                 Log(writer, gate.LiveTradingAllowed
-                    ? "SAILOR-033 live-readiness gate passed, but live order routing remains disabled until SAILOR-034 live pilot."
+                    ? "SAILOR-034 keeps manual live order routing disabled. Use live run for the one-symbol pilot or live flatten for close-only exit."
                     : "SAILOR-033 blocked live order submission before any broker order route could be created.");
                 Log(writer, "No broker order was sent.");
                 Log(writer, $"Runtime log: {logFilePath}");
@@ -1243,23 +1508,250 @@ public static class SailorRuntimeCommandRunner
             return;
         }
 
-        SailorRuntimeOptions options = CreateOptions(mode, args.Skip(1).ToArray(), settings);
-        SailorOrderIntent intent = SailorOrderIntent.Flatten(
-            mode,
-            symbol,
-            "manual-runtime-command",
-            "Manual flatten command skeleton. SAILOR-029 can reconcile positions, but real flatten order generation waits for the paper conduct/close-only milestone.",
-            dryRun: true);
-
+        SailorRuntimeOptions options = CreateOptions(mode, Array.Empty<string>(), settings);
         string logFilePath = CreateRuntimeLogFilePath(mode, $"flatten_{symbol}");
         await using var writer = CreateWriter(logFilePath);
-        Log(writer, $"sailor {options.ModeName} flatten skeleton");
-        Log(writer, options.ToCompactString());
+
+        if (mode != SailorRuntimeMode.Live)
+        {
+            SailorOrderIntent paperFlattenIntent = SailorOrderIntent.Flatten(
+                mode,
+                symbol,
+                "manual-runtime-command",
+                "Manual flatten command skeleton. SAILOR-034 implements live close-only flatten; paper flatten remains runtime/strategy driven.",
+                dryRun: true);
+
+            Log(writer, $"sailor {options.ModeName} flatten skeleton");
+            Log(writer, options.ToCompactString());
+            Log(writer, paperFlattenIntent.ToDisplayString());
+            Log(writer, "No persistent broker session. No order sent. Use paper run --force-flat-now for paper close-only behavior.");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        SailorRuntimeModeSettings liveSettings = settings.Runtime.Live;
+        string account = ReadStringOption(args, "--account", liveSettings.Account ?? string.Empty);
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+        int waitSeconds = ReadIntOption(args, "--wait-seconds", liveSettings.ConnectTimeoutSeconds);
+        int executionRequestId = ReadIntOption(args, "--execution-request-id", 34_500);
+        bool confirmLive = args.Any(arg => arg.Equals("--confirm-live", StringComparison.OrdinalIgnoreCase));
+        bool sendOrdersRequested = args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase));
+        bool dryRunRequested = args.Any(arg => arg.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
+        bool localOnly = args.Any(arg => arg.Equals("--local-only", StringComparison.OrdinalIgnoreCase));
+        bool sendOrders = sendOrdersRequested && confirmLive && liveSettings.AllowLiveTrading && !dryRunRequested;
+        bool dryRun = !sendOrders;
+
+        var connectionOptions = new IbkrConnectionOptions(
+            SailorRuntimeMode.Live,
+            options.Host,
+            options.Port,
+            options.ClientId,
+            account,
+            liveSettings.ConnectTimeoutSeconds,
+            options.UseL1,
+            options.UseL2,
+            sendOrders,
+            AllowShort: true);
+
+        Log(writer, "sailor live close-only flatten");
+        Log(writer, FormatRuntimeOptionsForDisplay(options));
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, $"symbol={symbol} waitSeconds={waitSeconds} sendOrdersRequested={sendOrdersRequested} confirmLive={confirmLive} allowLiveTrading={liveSettings.AllowLiveTrading} dryRun={dryRun} localOnly={localOnly}");
+        Log(writer, "");
+        Log(writer, "SAILOR-034 live close-only flatten command.");
+        Log(writer, "This command may only reduce/close an existing broker position. It never opens a new live position and requires --send-orders, --confirm-live, and Runtime.Live.AllowLiveTrading=true before routing.");
+        Log(writer, "");
+
+        if (!confirmLive)
+        {
+            Log(writer, "Blocked: --confirm-live is required even for close-only flatten.");
+        }
+
+        if (sendOrdersRequested && !liveSettings.AllowLiveTrading)
+        {
+            Log(writer, "Blocked: Runtime.Live.AllowLiveTrading=false. No live flatten order will be sent.");
+        }
+
+        var positionRequest = new PositionRequest(
+            SailorRuntimeMode.Live,
+            account,
+            TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
+            executionRequestId);
+        BrokerStateSnapshot brokerSnapshot;
+        await using (IPositionProvider positionProvider = CreatePositionProvider(localOnly: localOnly, connectionOptions))
+        {
+            brokerSnapshot = await positionProvider.GetBrokerStateAsync(positionRequest, CancellationToken.None).ConfigureAwait(false);
+        }
+
+        Log(writer, brokerSnapshot.ToSummaryString());
+        foreach (string evt in brokerSnapshot.Events)
+        {
+            Log(writer, $"broker-event: {evt}");
+        }
+        foreach (string warning in brokerSnapshot.Warnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
+
+        BrokerPositionRow? position = brokerSnapshot.Positions
+            .Select(row => row.Normalize())
+            .Where(row => row.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase) && !row.IsFlat)
+            .OrderByDescending(row => Math.Abs(row.Quantity))
+            .FirstOrDefault();
+
+        if (position is null)
+        {
+            Log(writer, "");
+            Log(writer, $"No non-flat live broker position found for {symbol}. No flatten order was created.");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
+        }
+
+        SailorOrderSide side = position.Quantity > 0 ? SailorOrderSide.Sell : SailorOrderSide.BuyToCover;
+        int quantity = Math.Abs(position.Quantity);
+        SailorOrderIntent intent = SailorOrderIntent.CreateManual(
+            SailorRuntimeMode.Live,
+            symbol,
+            side,
+            SailorOrderType.Market,
+            quantity,
+            limitPrice: null,
+            strategyName: "live-close-only-flatten",
+            reason: $"SAILOR-034 close-only flatten from broker position qty={position.Quantity} avgCost={position.AverageCost:F4}.",
+            dryRun: dryRun,
+            account: account,
+            timeInForce: "DAY");
+
+        Log(writer, "");
+        Log(writer, position.ToDisplayLine());
         Log(writer, intent.ToDisplayString());
-        Log(writer, "No persistent broker session. No order sent. Run reconcile first; real flatten routing starts in the paper conduct/close-only milestone.");
+
+        if (sendOrdersRequested && !sendOrders)
+        {
+            Log(writer, "WARN: --send-orders was requested, but live flatten remains dry-run because one or more live safety switches are missing.");
+        }
+
+        await using IOrderRouter router = IbkrOrderRouterFactory.Create(sendOrders, connectionOptions, primaryExchange, waitSeconds);
+        Log(writer, $"Order router: {router.RouterName}");
+        SailorOrderReceipt receipt = await router.SubmitAsync(intent, CancellationToken.None).ConfigureAwait(false);
+        var ledger = new OrderLedgerStore(SailorRuntimeMode.Live);
+        string ledgerPath = ledger.Append(intent, receipt);
+
+        Log(writer, receipt.ToDisplayString());
+        Log(writer, $"Ledger JSONL: {ledgerPath}");
+        Log(writer, $"Ledger CSV:   {ledger.DailyCsvPath}");
+        foreach (string evt in receipt.Events)
+        {
+            Log(writer, $"event: {evt}");
+        }
+        foreach (string warning in receipt.Warnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
+
+        Log(writer, "");
+        Log(writer, receipt.SentToBroker ? "Close-only flatten order was sent to IBKR live." : "No live flatten order was sent to broker.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
+
+    private static LivePilotRestrictionResult EvaluateLivePilotRestrictions(
+        SailorRuntimeOptions options,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        var checks = new List<string>();
+        var warnings = new List<string>();
+
+        bool oneTop = options.TopCount == 1;
+        checks.Add($"{(oneTop ? "PASS" : "FAIL")} one-symbol-top: live pilot top count must be 1. requestedTop={options.TopCount}.");
+
+        bool singleSymbol = TryGetSinglePilotSymbol(options.Universe, out string symbol, out string symbolReason);
+        checks.Add($"{(singleSymbol ? "PASS" : "FAIL")} one-explicit-symbol: {symbolReason}");
+
+        bool oneProfile = !string.IsNullOrWhiteSpace(options.ProfileName);
+        checks.Add($"{(oneProfile ? "PASS" : "FAIL")} one-profile: profile={(string.IsNullOrWhiteSpace(options.ProfileName) ? "n/a" : options.ProfileName)}.");
+
+        bool operatorWatchedTws = HasAnyFlag(args, "--operator-watching-tws", "--watching-tws", "--operator-watch-tws");
+        checks.Add($"{(operatorWatchedTws ? "PASS" : "FAIL")} operator-watching-tws: operator must watch TWS during the live pilot.");
+
+        bool forceFlatRequired = settings.Runtime.Safety.ForceFlatMinute > 0
+                                 && settings.Runtime.Safety.ForceFlatMinute >= settings.Runtime.Safety.LastEntryMinute;
+        checks.Add($"{(forceFlatRequired ? "PASS" : "FAIL")} force-flat-required: lastEntryMinute={settings.Runtime.Safety.LastEntryMinute} forceFlatMinute={settings.Runtime.Safety.ForceFlatMinute}.");
+
+        bool requestedShort = HasAnyFlag(args, "--allow-short-live", "--allow-short");
+        bool shortEnabled = settings.Runtime.Live.AllowShort && requestedShort;
+        if (requestedShort && !settings.Runtime.Live.AllowShort)
+        {
+            warnings.Add("Short pilot was requested, but Runtime.Live.AllowShort=false. Live pilot remains long-only.");
+        }
+
+        checks.Add(shortEnabled
+            ? "PASS long-only-first: explicit short pilot enabled by config and command."
+            : "PASS long-only-first: live pilot is long-only; short entries are blocked.");
+
+        bool passed = oneTop && singleSymbol && oneProfile && operatorWatchedTws && forceFlatRequired;
+        string blockReason = passed
+            ? "Live-pilot restrictions passed."
+            : checks.FirstOrDefault(row => row.StartsWith("FAIL", StringComparison.OrdinalIgnoreCase)) ?? "Live-pilot restrictions failed.";
+
+        return new LivePilotRestrictionResult(
+            passed,
+            symbol,
+            options.ProfileName,
+            operatorWatchedTws,
+            forceFlatRequired,
+            shortEnabled,
+            checks,
+            warnings,
+            blockReason);
+    }
+
+    private static bool TryGetSinglePilotSymbol(string? universe, out string symbol, out string reason)
+    {
+        symbol = string.Empty;
+        string raw = string.IsNullOrWhiteSpace(universe) ? string.Empty : universe.Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            reason = "No symbol was provided. Use: live run 1m v21-15minutes 1 TSLA --confirm-live --operator-watching-tws.";
+            return false;
+        }
+
+        string[] parts = raw
+            .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(part => !string.IsNullOrWhiteSpace(part))
+            .ToArray();
+
+        if (parts.Length != 1)
+        {
+            reason = $"Live pilot requires exactly one explicit symbol. Received '{raw}'.";
+            return false;
+        }
+
+        string candidate = parts[0].Trim().ToUpperInvariant();
+        if (candidate.Equals("SMALLCAPS", StringComparison.OrdinalIgnoreCase) ||
+            candidate.EndsWith(".CSV", StringComparison.OrdinalIgnoreCase) ||
+            candidate.Contains('\\', StringComparison.Ordinal) ||
+            candidate.Contains('/', StringComparison.Ordinal))
+        {
+            reason = $"Live pilot requires one explicit symbol, not a universe or file: '{raw}'.";
+            return false;
+        }
+
+        bool valid = candidate.All(ch => char.IsLetterOrDigit(ch) || ch is '.' or '-');
+        if (!valid)
+        {
+            reason = $"Symbol '{candidate}' contains unsupported characters for the live pilot.";
+            return false;
+        }
+
+        symbol = candidate;
+        reason = $"explicitSymbol={symbol}.";
+        return true;
+    }
+
+    private static bool HasAnyFlag(string[] args, params string[] flags)
+        => args.Any(arg => flags.Any(flag => arg.Equals(flag, StringComparison.OrdinalIgnoreCase)));
 
     private static LiveReadinessGateResult EvaluateLiveReadiness(
         SailorAppSettings settings,
@@ -1315,8 +1807,14 @@ public static class SailorRuntimeCommandRunner
 #if SAILOR_IBAPI
         return new IbkrPositionProvider(connectionOptions);
 #else
-        return new DisabledPositionProvider();
+        return new DisabledPositionProvider($"Broker position provider is disabled. Re-run with -p:EnableIbkrApi=true to request TWS {connectionOptions.ModeName} broker positions/open orders/executions.");
 #endif
+    }
+
+    private static string FormatRuntimeOptionsForDisplay(SailorRuntimeOptions options)
+    {
+        string orderMode = options.SendOrders && !options.DryRun ? "send-orders" : "dry-run";
+        return $"{options.ModeName} {orderMode} host={options.Host} port={options.Port} clientId={options.ClientId} timeframe={options.Timeframe} profile={options.ProfileName} universe={options.Universe} top={options.TopCount} L1={options.UseL1} L2={options.UseL2} allowShort={options.AllowShort}";
     }
 
     private static void LogReconciliationResult(
@@ -1634,7 +2132,8 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
         if (mode == SailorRuntimeMode.Live)
         {
-            Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --max-notional 100 --confirm-live");
+            Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --account DU123456 --max-notional 100 --confirm-live --operator-watching-tws");
+            Console.WriteLine($"  sailor {name} flatten TSLA --account DU123456 --send-orders --confirm-live");
         }
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --simulate-disconnect-at 2");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --dry-run");
@@ -1647,7 +2146,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} report latest");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-033 status:");
+        Console.WriteLine("SAILOR-034 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
@@ -1667,8 +2166,10 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - live connect requires --read-only before opening the TCP probe");
         Console.WriteLine("  - live scan remains read-only and never creates an order router");
         Console.WriteLine("  - live readiness/gate evaluates config, --confirm-live, paper certification age/status, account match, and max notional");
-        Console.WriteLine("  - live order/run paths remain blocked even when the SAILOR-033 gate passes; SAILOR-034 will consume the evidence");
-        Console.WriteLine("  - live order sending is blocked");
+        Console.WriteLine("  - SAILOR-034 consumes the live-readiness gate for a one-symbol live pilot");
+        Console.WriteLine("  - live pilot enforces one explicit symbol, small max notional, operator-watching-TWS acknowledgement, long-only default, pre-run reconciliation, and final zero exposure");
+        Console.WriteLine("  - live flatten is available as a close-only command and never opens a new position");
+        Console.WriteLine("  - manual live order sending remains blocked; use live run for pilot entries and live flatten for close-only exit");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
         Console.WriteLine($"  host:       {modeSettings.Host}");

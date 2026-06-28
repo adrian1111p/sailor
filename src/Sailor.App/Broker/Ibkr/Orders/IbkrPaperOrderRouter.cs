@@ -31,13 +31,15 @@ public sealed class IbkrPaperOrderRouter : IOrderRouter
         _client = new EClientSocket(_wrapper, _signal);
     }
 
-    public string RouterName => "ibkr-paper-order-router";
+    public string RouterName => _connectionOptions.Mode == Sailor.App.Runtime.Common.SailorRuntimeMode.Live
+        ? "ibkr-live-pilot-order-router"
+        : "ibkr-paper-order-router";
 
     public async Task<SailorOrderReceipt> SubmitAsync(SailorOrderIntent intent, CancellationToken cancellationToken)
     {
-        if (_connectionOptions.Mode != Sailor.App.Runtime.Common.SailorRuntimeMode.Paper)
+        if (_connectionOptions.Mode == Sailor.App.Runtime.Common.SailorRuntimeMode.Live && !_connectionOptions.SendOrders)
         {
-            return Failed(intent, "SAILOR-028 IBKR order router supports paper mode only. Live order submission is blocked.");
+            return Failed(intent, "Live order submission is blocked because the live-readiness gate did not mark the connection as send-orders.");
         }
 
         if (intent.DryRun)
@@ -79,7 +81,7 @@ public sealed class IbkrPaperOrderRouter : IOrderRouter
                     intent.Quantity,
                     FilledQuantity: 0,
                     AverageFillPrice: 0m,
-                    $"IBKR paper order was submitted, but no final acknowledgement arrived within {_waitSeconds}s. Check TWS paper order panel.",
+                    $"IBKR order was submitted, but no final acknowledgement arrived within {_waitSeconds}s. Check the matching TWS order panel.",
                     SentToBroker: true,
                     intent.CreatedAt,
                     DateTimeOffset.Now,
@@ -106,7 +108,7 @@ public sealed class IbkrPaperOrderRouter : IOrderRouter
         }
         catch (Exception ex)
         {
-            return Failed(intent, $"IBKR paper order submission failed: {ex.Message}", _wrapper.DrainEvents(), _wrapper.DrainErrors());
+            return Failed(intent, $"IBKR order submission failed: {ex.Message}", _wrapper.DrainEvents(), _wrapper.DrainErrors());
         }
     }
 
@@ -153,10 +155,10 @@ public sealed class IbkrPaperOrderRouter : IOrderRouter
         return Task.FromResult(new SailorFlattenResult(
             symbol.Trim().ToUpperInvariant(),
             Success: false,
-            "SAILOR-029 now tracks/reconciles positions, but automatic flatten routing is deferred until the paper conduct/close-only milestone.",
+            "SAILOR-034 live pilot uses explicit close-only flatten command; automatic flatten routing remains command/runtime driven.",
             DateTimeOffset.Now,
             ["flatten-deferred"],
-            ["Use paper reconcile first; real flatten order generation is handled by the next paper conduct milestone."]));
+            ["Run reconcile first; live pilot flatten creates an explicit close-only market order from broker state."]));
     }
 
     private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
@@ -317,7 +319,7 @@ public sealed class IbkrPaperOrderRouter : IOrderRouter
         {
             _orders[orderId] = (intentId, symbol);
             _orderAckTasks[orderId] = new TaskCompletionSource<SailorOrderReceipt>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _events.Enqueue($"prepared paper order orderId={orderId} intentId={intentId} symbol={symbol}");
+            _events.Enqueue($"prepared order orderId={orderId} intentId={intentId} symbol={symbol}");
         }
 
         public Task<SailorOrderReceipt> GetOrderAckTask(int orderId)
@@ -373,7 +375,7 @@ public sealed class IbkrPaperOrderRouter : IOrderRouter
                 submitted,
                 Convert.ToInt32(Math.Round(filled, MidpointRounding.AwayFromZero)),
                 Convert.ToDecimal(avgFillPrice),
-                $"IBKR paper order callback status={statusText} permId={permId} lastFill={lastFillPrice:F4}.",
+                $"IBKR order callback status={statusText} permId={permId} lastFill={lastFillPrice:F4}.",
                 SentToBroker: true,
                 DateTimeOffset.Now,
                 DateTimeOffset.Now,

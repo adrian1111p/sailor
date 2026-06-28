@@ -40,9 +40,16 @@ public sealed class LiveReadinessGate
         PaperCertificationReport? paperReport = LoadLatestPaperReport(out string? reportLoadError);
 
         bool readOnlyAllowed = request.ReadOnly || !request.RequiresTrading;
-        Add(checks, "read-only-start", readOnlyAllowed, request.ReadOnly
-            ? "Live command is explicitly read-only."
-            : "Command is read-only by design; no order router is enabled.");
+        if (request.RequiresTrading)
+        {
+            Add(checks, "read-only-start", true, "Trading command requested; read-only start is not required for this gate.");
+        }
+        else
+        {
+            Add(checks, "read-only-start", readOnlyAllowed, request.ReadOnly
+                ? "Live command is explicitly read-only."
+                : "Command is read-only by design; no order router is enabled.");
+        }
 
         if (request.RequiresTrading)
         {
@@ -104,7 +111,7 @@ public sealed class LiveReadinessGate
             ? "Passed"
             : request.RequiresTrading ? "Blocked" : "ReadOnly";
         string reason = allowTrading
-            ? "All live-readiness checks passed. SAILOR-033 still does not route live orders; SAILOR-034 will consume this gate."
+            ? "All live-readiness checks passed. SAILOR-034 live pilot may consume this gate."
             : request.RequiresTrading
                 ? BuildBlockReason(checks)
                 : "Read-only live command is allowed. Live trading remains blocked unless the explicit trading gate passes.";
@@ -191,7 +198,7 @@ public sealed class LiveReadinessGate
     }
 
     private static bool IsTradingOnlyCheck(string name)
-        => name is "config-allow-live-trading" or "command-confirm-live" or "max-notional-small";
+        => name is "config-allow-live-trading" or "command-confirm-live" or "max-notional-small" or "read-only-start";
 
     private static string Csv(string? value)
     {

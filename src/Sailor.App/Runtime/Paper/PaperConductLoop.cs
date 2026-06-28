@@ -39,9 +39,9 @@ public sealed class PaperConductLoop
             return new PaperRuntimeHostResult(Array.Empty<string>(), 0, 0, 0, 0, warnings);
         }
 
-        _log("Paper conduct loop");
+        _log($"{request.RuntimeOptions.ModeName.ToUpperInvariant()} conduct loop");
         _log("------------------");
-        _log($"cadence={request.CadenceSeconds}s iterations={request.MaxIterations} sendOrders={request.SendOrders} dryRun={request.DryRun} canOpenEntries={request.CanOpenEntries} forceFlatNow={request.ForceFlatNow}");
+        _log($"cadence={request.CadenceSeconds}s iterations={request.MaxIterations} sendOrders={request.SendOrders} dryRun={request.DryRun} canOpenEntries={request.CanOpenEntries} forceFlatNow={request.ForceFlatNow} enforceMaxNotional={request.EnforceMaxOrderNotional} maxNotional={request.MaxOrderNotional:F2}");
         _log($"reconnectAttempts={request.ReconnectAttempts} reconnectBackoffSeconds={request.ReconnectBackoffSeconds} simulateDisconnectAtIteration={request.SimulateDisconnectAtIteration}");
         _log($"router={router.RouterName}");
         _log(healthMonitor.SafetyState.ToDisplayString());
@@ -145,6 +145,20 @@ public sealed class PaperConductLoop
                     warnings.Add(warning);
                     _log($"WARN: {warning}");
                     continue;
+                }
+
+                if (isEntry && request.EnforceMaxOrderNotional && request.MaxOrderNotional > 0m)
+                {
+                    int entryQuantity = Math.Max(1, decision.Quantity > 0 ? decision.Quantity : request.Quantity);
+                    decimal referencePrice = decision.LimitPrice is > 0m ? decision.LimitPrice.Value : bar.Close;
+                    decimal estimatedNotional = Math.Abs(referencePrice * entryQuantity);
+                    if (estimatedNotional > request.MaxOrderNotional)
+                    {
+                        string warning = $"{session.Symbol}: entry blocked because estimated notional {estimatedNotional:F2} exceeds live-pilot max notional {request.MaxOrderNotional:F2}.";
+                        warnings.Add(warning);
+                        _log($"WARN: {warning}");
+                        continue;
+                    }
                 }
 
                 SailorOrderIntent? intent = CreateOrderIntent(request, decision, positionBefore, bar.Close);
@@ -338,7 +352,7 @@ public sealed class PaperConductLoop
             quantity,
             limitPrice,
             request.RuntimeOptions.ProfileName,
-            $"SAILOR-030 paper conduct loop: {decision.Reason}",
+            $"SAILOR-030/S034 {request.RuntimeOptions.ModeName} conduct loop: {decision.Reason}",
             request.DryRun,
             DateTimeOffset.Now,
             IntentId: string.Empty,
