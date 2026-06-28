@@ -1,6 +1,7 @@
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Scanner;
+using Sailor.App.Broker.Ibkr;
 using Sailor.App.Broker.Orders;
 using Sailor.App.Configuration;
 using Sailor.App.Logging;
@@ -59,21 +60,56 @@ public static class SailorRuntimeCommandRunner
         SailorAppSettings settings)
     {
         SailorRuntimeOptions options = CreateOptions(mode, Array.Empty<string>(), settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        var connectionOptions = IbkrConnectionOptions.FromRuntimeOptions(
+            options,
+            modeSettings.Account,
+            modeSettings.ConnectTimeoutSeconds);
+
         string logFilePath = CreateRuntimeLogFilePath(mode, "connect");
 
         await using var writer = CreateWriter(logFilePath);
-        Log(writer, $"sailor {options.ModeName} connect skeleton started");
+        Log(writer, $"sailor {options.ModeName} IBKR connection session started");
         Log(writer, options.ToCompactString());
+        Log(writer, connectionOptions.ToDisplayString());
         Log(writer, "");
-        Log(writer, "SAILOR-022 does not connect to IBKR yet.");
-        Log(writer, "This command validates the runtime command model and prints the target connection settings.");
-        Log(writer, "IBKR connection session starts in SAILOR-023.");
+
+        foreach (string line in IbkrConnectionChecklist.BuildPreflightLines(connectionOptions))
+        {
+            Log(writer, line);
+        }
+
         Log(writer, "");
-        Log(writer, $"Expected TWS/Gateway host: {options.Host}");
-        Log(writer, $"Expected TWS/Gateway port: {options.Port}");
-        Log(writer, $"Expected client id: {options.ClientId}");
-        Log(writer, $"Send orders enabled in settings: {options.SendOrders}");
-        Log(writer, "No market data requested. No orders sent.");
+        Log(writer, "SAILOR-024 implementation: TCP connection session probe.");
+        Log(writer, "This verifies that TWS/Gateway is reachable and establishes the Sailor connection state contract.");
+        Log(writer, "It intentionally does not request market data and does not send orders.");
+        Log(writer, "Full IBApi nextValidId/managedAccounts handshake remains the next adapter layer.");
+        Log(writer, "");
+
+        await using var session = new IbkrConnectionProbeSession();
+        IbkrConnectionResult result = await session.ConnectAsync(connectionOptions, CancellationToken.None);
+
+        foreach (string message in result.Messages)
+        {
+            Log(writer, message);
+        }
+
+        Log(writer, "");
+        Log(writer, result.ToDisplayString());
+
+        foreach (string line in IbkrConnectionChecklist.BuildPostConnectLines(result))
+        {
+            Log(writer, line);
+        }
+
+        if (result.Success)
+        {
+            IbkrConnectionSnapshot disconnected = await session.DisconnectAsync("SAILOR-024 connect command completed", CancellationToken.None);
+            Log(writer, "");
+            Log(writer, $"Disconnected cleanly: {disconnected.ToDisplayString()}");
+        }
+
+        Log(writer, "");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -171,13 +207,13 @@ public static class SailorRuntimeCommandRunner
     {
         SailorRuntimeOptions options = CreateOptions(mode, Array.Empty<string>(), settings);
         var state = new SailorRuntimeState(mode);
-        state.SetStatus(SailorRuntimeStatus.Stopped, "Runtime status skeleton only; no persistent runtime session exists yet.");
+        state.SetStatus(SailorRuntimeStatus.Stopped, "Runtime status only; no persistent runtime session exists yet.");
 
         string logFilePath = CreateRuntimeLogFilePath(mode, "status");
         await using var writer = CreateWriter(logFilePath);
         Log(writer, $"sailor {options.ModeName} status");
         Log(writer, state.ToDisplayString());
-        Log(writer, "No broker connection. No active subscriptions. No open Sailor-tracked positions in SAILOR-022.");
+        Log(writer, "No persistent broker connection. No active subscriptions. No open Sailor-tracked positions in SAILOR-024.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -201,7 +237,7 @@ public static class SailorRuntimeCommandRunner
             mode,
             symbol,
             "manual-runtime-command",
-            "Manual flatten command skeleton. SAILOR-022 logs intent only.",
+            "Manual flatten command skeleton. SAILOR-024 logs intent only.",
             dryRun: true);
 
         string logFilePath = CreateRuntimeLogFilePath(mode, $"flatten_{symbol}");
@@ -209,18 +245,23 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"sailor {options.ModeName} flatten skeleton");
         Log(writer, options.ToCompactString());
         Log(writer, intent.ToDisplayString());
-        Log(writer, "No broker connection. No order sent. Flatten routing starts after SAILOR-023/027.");
+        Log(writer, "No persistent broker session. No order sent. Flatten routing starts after the order-router milestone.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
+
+    private static SailorRuntimeModeSettings GetModeSettings(
+        SailorRuntimeMode mode,
+        SailorAppSettings settings)
+        => mode == SailorRuntimeMode.Live
+            ? settings.Runtime.Live
+            : settings.Runtime.Paper;
 
     private static SailorRuntimeOptions CreateOptions(
         SailorRuntimeMode mode,
         string[] args,
         SailorAppSettings settings)
     {
-        SailorRuntimeModeSettings modeSettings = mode == SailorRuntimeMode.Live
-            ? settings.Runtime.Live
-            : settings.Runtime.Paper;
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
 
         bool sendOrdersRequested = args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase));
         bool dryRunRequested = args.Any(arg => arg.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
@@ -295,12 +336,10 @@ public static class SailorRuntimeCommandRunner
 
     public static void PrintHelp(SailorRuntimeMode mode, SailorAppSettings settings)
     {
-        SailorRuntimeModeSettings modeSettings = mode == SailorRuntimeMode.Live
-            ? settings.Runtime.Live
-            : settings.Runtime.Paper;
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
 
         string name = mode.ToDisplayName();
-        Console.WriteLine($"Sailor {name} runtime command skeleton");
+        Console.WriteLine($"Sailor {name} runtime commands");
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine($"  sailor {name} connect");
@@ -311,17 +350,19 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} status");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-022 status:");
-        Console.WriteLine("  - contracts and command model only");
-        Console.WriteLine("  - no IBKR dependency yet");
+        Console.WriteLine("SAILOR-024 status:");
+        Console.WriteLine("  - runtime contracts and command model exist");
+        Console.WriteLine("  - paper/live connect now performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - no market data subscriptions yet");
         Console.WriteLine("  - no orders sent");
+        Console.WriteLine("  - full IBApi nextValidId/account handshake is prepared as the next adapter layer");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
         Console.WriteLine($"  host:       {modeSettings.Host}");
         Console.WriteLine($"  port:       {modeSettings.Port}");
         Console.WriteLine($"  client id:  {modeSettings.ClientId}");
         Console.WriteLine($"  sendOrders: {modeSettings.SendOrders}");
+        Console.WriteLine($"  timeout:    {modeSettings.ConnectTimeoutSeconds}s");
         Console.WriteLine($"  L1/L2:      {modeSettings.UseL1}/{modeSettings.UseL2}");
         Console.WriteLine($"  last entry: {settings.Runtime.Safety.LastEntryMinute} ET minute");
         Console.WriteLine($"  force flat: {settings.Runtime.Safety.ForceFlatMinute} ET minute");

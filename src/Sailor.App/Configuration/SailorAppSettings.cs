@@ -180,6 +180,8 @@ public sealed class SailorRuntimeModeSettings
     public int DefaultTopCount { get; set; } = 3;
 
     public int ScannerRefreshSeconds { get; set; } = 60;
+
+    public int ConnectTimeoutSeconds { get; set; } = 10;
 }
 
 public sealed class SailorRuntimeSafetySettings

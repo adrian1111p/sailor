@@ -1093,7 +1093,7 @@ paper run --send-orders
 
 ## 16. Detailed step-by-step implementation plan
 
-## SAILOR-022 — Runtime contracts and command skeleton
+## SAILOR-023 — Runtime contracts and command skeleton
 
 Goal: add structure only, no IBKR dependency yet.
 
@@ -1137,7 +1137,7 @@ backtest behavior unchanged
 
 ---
 
-## SAILOR-023 — IBKR connection session
+## SAILOR-024 — IBKR connection session
 
 Goal: connect to TWS/Gateway but do not request data or send orders yet.
 
@@ -1177,7 +1177,7 @@ no orders sent
 
 ---
 
-## SAILOR-024 — IBKR historical 1m data loader
+## SAILOR-025 — IBKR historical 1m data loader
 
 Goal: download history for symbols and cache it.
 
@@ -1214,7 +1214,7 @@ missing permissions produce clear message
 
 ---
 
-## SAILOR-025 — Live L1/L2 snapshot stream
+## SAILOR-026 — Live L1/L2 snapshot stream
 
 Goal: fill Sailor-native L1/L2 snapshots from IBKR.
 
@@ -1254,7 +1254,7 @@ missing L2 does not crash session
 
 ---
 
-## SAILOR-026 — Paper scanner from live/history snapshots
+## SAILOR-027 — Paper scanner from live/history snapshots
 
 Goal: run current Sailor scanner in paper mode.
 
@@ -1293,7 +1293,7 @@ no orders sent
 
 ---
 
-## SAILOR-027 — Paper order intent and IBKR paper order router
+## SAILOR-028 — Paper order intent and IBKR paper order router
 
 Goal: send first controlled paper order, but not full strategy loop yet.
 
@@ -1330,7 +1330,7 @@ order status callbacks update ledger
 
 ---
 
-## SAILOR-028 — Positions and reconciliation
+## SAILOR-029 — Positions and reconciliation
 
 Goal: know what the broker actually holds.
 
@@ -1369,7 +1369,7 @@ no strategy entry if state mismatch is critical
 
 ---
 
-## SAILOR-029 — Paper conduct loop
+## SAILOR-030 — Paper conduct loop
 
 Goal: strategy runs in paper and conducts open positions until exit/flat.
 
@@ -1411,7 +1411,7 @@ logs under logs/Paper
 
 ---
 
-## SAILOR-030 — Disconnection and degraded-state handling
+## SAILOR-031 — Disconnection and degraded-state handling
 
 Goal: robust paper runtime under disconnect/reconnect.
 
@@ -1446,7 +1446,7 @@ exits remain allowed after reconnect
 
 ---
 
-## SAILOR-031 — Paper certification report
+## SAILOR-032 — Paper certification report
 
 Goal: one report to prove paper readiness.
 
@@ -1492,7 +1492,7 @@ session cannot be promoted if end exposure is non-zero
 
 ---
 
-## SAILOR-032 — Live-readiness gate
+## SAILOR-033 — Live-readiness gate
 
 Goal: live mode exists but cannot accidentally trade.
 
@@ -1522,7 +1522,7 @@ no live order can be sent without both config and command confirmation
 
 ---
 
-## SAILOR-033 — Live pilot
+## SAILOR-034 — Live pilot
 
 Goal: one-symbol live pilot with very small size.
 
@@ -1562,21 +1562,21 @@ Do not start with full live trading.
 Recommended immediate next implementation:
 
 ```text
-SAILOR-022 Runtime contracts and command skeleton
+SAILOR-023 Runtime contracts and command skeleton
 ```
 
 Then:
 
 ```text
-SAILOR-023 IBKR connection session
-SAILOR-024 historical data loader
-SAILOR-025 live L1/L2 snapshots
+SAILOR-024 IBKR connection session
+SAILOR-025 historical data loader
+SAILOR-026 live L1/L2 snapshots
 ```
 
 Only after those are stable:
 
 ```text
-SAILOR-027 paper order router
+SAILOR-028 paper order router
 SAILOR-029 paper conduct loop
 ```
 
@@ -1618,7 +1618,7 @@ Sailor should now move toward paper/live, but in a controlled way.
 The best next coding step is not order submission yet. It is:
 
 ```text
-SAILOR-022: runtime contracts + paper/live command skeleton
+SAILOR-023: runtime contracts + paper/live command skeleton
 ```
 
 Then add IBKR connection and historical data. Only after live market data and reconciliation are working should Sailor send paper orders.
