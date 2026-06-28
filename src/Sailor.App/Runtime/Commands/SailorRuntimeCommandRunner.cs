@@ -62,7 +62,12 @@ public static class SailorRuntimeCommandRunner
                 break;
 
             case "status":
-                await RunStatusSkeletonAsync(mode, settings);
+            case "positions":
+                await RunStatusAsync(mode, settings);
+                break;
+
+            case "reconcile":
+                await RunReconcileAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
             case "flatten":
@@ -718,19 +723,101 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
-    private static async Task RunStatusSkeletonAsync(
+    private static async Task RunStatusAsync(
         SailorRuntimeMode mode,
         SailorAppSettings settings)
     {
         SailorRuntimeOptions options = CreateOptions(mode, Array.Empty<string>(), settings);
         var state = new SailorRuntimeState(mode);
-        state.SetStatus(SailorRuntimeStatus.Stopped, "Runtime status only; no persistent runtime session exists yet.");
+        state.SetStatus(SailorRuntimeStatus.Stopped, "Runtime status from local state files. Use reconcile to verify broker state.");
+
+        var service = new ReconciliationService(mode);
+        ReconciliationResult localStatus = service.BuildLocalStatus();
+        ReconciliationResult? lastReconciliation = service.LoadLastReconciliation();
 
         string logFilePath = CreateRuntimeLogFilePath(mode, "status");
         await using var writer = CreateWriter(logFilePath);
         Log(writer, $"sailor {options.ModeName} status");
         Log(writer, state.ToDisplayString());
-        Log(writer, "No persistent broker connection. No active subscriptions. No open Sailor-tracked positions in SAILOR-028. Order ledger is available under state/{mode}/order-ledger.jsonl.");
+        Log(writer, "");
+        Log(writer, "SAILOR-029 implementation: positions and reconciliation status.");
+        Log(writer, "This command reads the Sailor order ledger and position store. It does not request broker state; use reconcile for TWS verification.");
+        Log(writer, "");
+        LogReconciliationResult(writer, localStatus, includeEvents: false);
+
+        if (lastReconciliation is not null)
+        {
+            Log(writer, "");
+            Log(writer, "Last broker reconciliation");
+            Log(writer, "--------------------------");
+            Log(writer, lastReconciliation.ToSummaryString());
+            Log(writer, lastReconciliation.Message);
+            Log(writer, $"Last reconciliation JSON: {lastReconciliation.ReconciliationPath}");
+        }
+        else
+        {
+            Log(writer, "");
+            Log(writer, "No broker reconciliation JSON found yet. Run paper reconcile with the optional IBApi build before allowing strategy entries.");
+        }
+
+        Log(writer, "");
+        Log(writer, $"Runtime log: {logFilePath}");
+    }
+
+    private static async Task RunReconcileAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        SailorRuntimeOptions runtimeOptions = CreateOptions(mode, Array.Empty<string>(), settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        string account = ReadStringOption(args, "--account", modeSettings.Account ?? string.Empty);
+        int waitSeconds = ReadIntOption(args, "--wait-seconds", modeSettings.ConnectTimeoutSeconds);
+        int executionRequestId = ReadIntOption(args, "--execution-request-id", 29_000);
+        bool localOnly = args.Any(arg => arg.Equals("--local-only", StringComparison.OrdinalIgnoreCase));
+
+        var connectionOptions = new IbkrConnectionOptions(
+            mode,
+            runtimeOptions.Host,
+            runtimeOptions.Port,
+            runtimeOptions.ClientId,
+            account,
+            modeSettings.ConnectTimeoutSeconds,
+            runtimeOptions.UseL1,
+            runtimeOptions.UseL2,
+            SendOrders: false,
+            AllowShort: runtimeOptions.AllowShort);
+
+        var request = new PositionRequest(
+            mode,
+            account,
+            TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
+            executionRequestId);
+
+        string logFilePath = CreateRuntimeLogFilePath(mode, "reconcile");
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {runtimeOptions.ModeName} positions and reconciliation started");
+        Log(writer, runtimeOptions.ToCompactString());
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, request.ToDisplayString());
+        Log(writer, $"localOnly={localOnly}");
+        Log(writer, "");
+        Log(writer, "SAILOR-029 implementation: request broker positions/open orders/executions and compare with the Sailor ledger.");
+        Log(writer, "Entries must remain blocked unless reconciliation status is Matched.");
+        Log(writer, "");
+
+        await using IPositionProvider provider = CreatePositionProvider(localOnly, connectionOptions);
+        Log(writer, $"Position provider: {provider.ProviderName}");
+        Log(writer, "");
+
+        var service = new ReconciliationService(mode);
+        ReconciliationResult result = await service.ReconcileAsync(provider, request, CancellationToken.None);
+
+        LogReconciliationResult(writer, result, includeEvents: true);
+        Log(writer, "");
+        Log(writer, result.CanOpenNewEntries
+            ? "Reconciliation matched. Later paper runtime entries may proceed after normal safety gates."
+            : "Entries are BLOCKED until a broker-verified reconciliation succeeds without critical mismatches.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -754,7 +841,7 @@ public static class SailorRuntimeCommandRunner
             mode,
             symbol,
             "manual-runtime-command",
-            "Manual flatten command skeleton. SAILOR-028 logs intent only; real flatten waits for position reconciliation.",
+            "Manual flatten command skeleton. SAILOR-029 can reconcile positions, but real flatten order generation waits for the paper conduct/close-only milestone.",
             dryRun: true);
 
         string logFilePath = CreateRuntimeLogFilePath(mode, $"flatten_{symbol}");
@@ -762,8 +849,128 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"sailor {options.ModeName} flatten skeleton");
         Log(writer, options.ToCompactString());
         Log(writer, intent.ToDisplayString());
-        Log(writer, "No persistent broker session. No order sent. Real flatten routing starts after the position/reconciliation milestone.");
+        Log(writer, "No persistent broker session. No order sent. Run reconcile first; real flatten routing starts in the paper conduct/close-only milestone.");
         Log(writer, $"Runtime log: {logFilePath}");
+    }
+
+
+    private static IPositionProvider CreatePositionProvider(bool localOnly, IbkrConnectionOptions connectionOptions)
+    {
+        if (localOnly)
+        {
+            return new DisabledPositionProvider("Local-only reconciliation requested. Broker state was not requested.");
+        }
+
+#if SAILOR_IBAPI
+        return new IbkrPositionProvider(connectionOptions);
+#else
+        return new DisabledPositionProvider();
+#endif
+    }
+
+    private static void LogReconciliationResult(
+        StreamWriter writer,
+        ReconciliationResult result,
+        bool includeEvents)
+    {
+        Log(writer, result.ToSummaryString());
+        Log(writer, result.Message);
+        Log(writer, $"Order ledger:      {result.LedgerPath}");
+        Log(writer, $"Position store:    {result.PositionsPath}");
+        Log(writer, $"Reconciliation:    {result.ReconciliationPath}");
+        Log(writer, "");
+
+        if (result.LocalPositions.Count == 0)
+        {
+            Log(writer, "Sailor local positions: none");
+        }
+        else
+        {
+            Log(writer, "Sailor local positions");
+            Log(writer, "----------------------");
+            foreach (SailorPosition position in result.LocalPositions)
+            {
+                Log(writer, position.ToDisplayLine());
+            }
+        }
+
+        Log(writer, "");
+        if (result.BrokerPositions.Count == 0)
+        {
+            Log(writer, "Broker positions: none or not broker-verified");
+        }
+        else
+        {
+            Log(writer, "Broker positions");
+            Log(writer, "----------------");
+            foreach (BrokerPositionRow position in result.BrokerPositions)
+            {
+                Log(writer, position.ToDisplayLine());
+            }
+        }
+
+        Log(writer, "");
+        if (result.BrokerOpenOrders.Count == 0)
+        {
+            Log(writer, "Broker open orders: none or not broker-verified");
+        }
+        else
+        {
+            Log(writer, "Broker open orders");
+            Log(writer, "------------------");
+            foreach (BrokerOpenOrderRow order in result.BrokerOpenOrders)
+            {
+                Log(writer, order.ToDisplayLine());
+            }
+        }
+
+        Log(writer, "");
+        if (result.Rows.Count == 0)
+        {
+            Log(writer, "Reconciliation rows: none");
+        }
+        else
+        {
+            Log(writer, "Reconciliation rows");
+            Log(writer, "-------------------");
+            foreach (ReconciliationRow row in result.Rows)
+            {
+                Log(writer, row.ToDisplayLine());
+            }
+        }
+
+        if (result.BrokerExecutions.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Recent broker executions");
+            Log(writer, "------------------------");
+            foreach (BrokerExecutionRow execution in result.BrokerExecutions.Take(30))
+            {
+                Log(writer, execution.ToDisplayLine());
+            }
+        }
+
+        if (result.Warnings.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Warnings");
+            Log(writer, "--------");
+            foreach (string warning in result.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+
+        if (includeEvents && result.Events.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Broker events");
+            Log(writer, "-------------");
+            foreach (string row in result.Events)
+            {
+                Log(writer, row);
+            }
+        }
     }
 
 
@@ -954,9 +1161,12 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 MKT --dry-run");
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --send-orders");
         Console.WriteLine($"  sailor {name} status");
+        Console.WriteLine($"  sailor {name} positions");
+        Console.WriteLine($"  sailor {name} reconcile --account DU123456 --wait-seconds 15");
+        Console.WriteLine($"  sailor {name} reconcile --local-only");
         Console.WriteLine($"  sailor {name} flatten TSLA");
         Console.WriteLine();
-        Console.WriteLine("SAILOR-028 status:");
+        Console.WriteLine("SAILOR-029 status:");
         Console.WriteLine("  - runtime contracts and command model exist");
         Console.WriteLine("  - paper/live connect performs an IBKR/TWS TCP session probe");
         Console.WriteLine("  - history command can build 1m cache files under cache/history");
@@ -964,7 +1174,9 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - paper/live scan now prepares history, uses the shared Sailor scanner, and enriches candidates with snapshots");
         Console.WriteLine("  - manual paper order command creates a normalized SailorOrderIntent and writes a ledger");
         Console.WriteLine("  - optional IBApi paper order router can be enabled with -p:EnableIbkrApi=true and --send-orders");
-        Console.WriteLine("  - default build uses dry-run order routing only");
+        Console.WriteLine("  - status reads the local order ledger and position store");
+        Console.WriteLine("  - reconcile requests broker positions, open orders, and executions when built with -p:EnableIbkrApi=true");
+        Console.WriteLine("  - entries are blocked unless broker reconciliation succeeds without critical mismatch");
         Console.WriteLine("  - live order sending is blocked");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");

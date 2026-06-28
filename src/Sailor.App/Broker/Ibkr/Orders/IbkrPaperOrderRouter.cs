@@ -153,10 +153,10 @@ public sealed class IbkrPaperOrderRouter : IOrderRouter
         return Task.FromResult(new SailorFlattenResult(
             symbol.Trim().ToUpperInvariant(),
             Success: false,
-            "SAILOR-028 does not know broker positions yet, so automatic flatten is intentionally deferred to SAILOR-029.",
+            "SAILOR-029 now tracks/reconciles positions, but automatic flatten routing is deferred until the paper conduct/close-only milestone.",
             DateTimeOffset.Now,
             ["flatten-deferred"],
-            ["Position reconciliation is required before real flatten routing."]));
+            ["Use paper reconcile first; real flatten order generation is handled by the next paper conduct milestone."]));
     }
 
     private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
