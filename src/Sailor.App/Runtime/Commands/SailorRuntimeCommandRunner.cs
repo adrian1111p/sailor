@@ -458,7 +458,7 @@ public static class SailorRuntimeCommandRunner
         int scanRefreshSeconds = ReadIntOption(args, "--scan-refresh-seconds", ScanListWorkbookOptions.DefaultRefreshSeconds);
         int historyBatchSize = ReadIntOption(args, "--history-batch-size", ScanListWorkbookOptions.DefaultHistoryBatchSize);
         int historyBatchIntervalMinutes = ReadIntOption(args, "--history-batch-interval-minutes", ScanListWorkbookOptions.DefaultHistoryBatchIntervalMinutes);
-        int tradeTop = ReadIntOption(args, "--trade-top", Math.Max(1, topCount));
+        int tradeTop = Math.Max(10, ReadIntOption(args, "--trade-top", ReadIntOption(args, "--keep-trade-top", Math.Max(10, topCount))));
         string universeArgument = SymbolUniverseProviderFactory.BuildXlsxUniverseArgument(file, sheet, symbolColumn);
 
         var workbookOptions = new ScanListWorkbookOptions(
@@ -471,6 +471,12 @@ public static class SailorRuntimeCommandRunner
             historyBatchIntervalMinutes);
         var reader = new ScanListWorkbookReader();
         ScanListWorkbookResult workbook = reader.Read(workbookOptions);
+        var scanListMemory = new ScanListMemoryStore();
+        ScanListReloadResult reload = scanListMemory.ApplyWorkbookSnapshot(workbook);
+        IReadOnlyList<ScanListHistoryBatch> historyBatches = ScanListHistoryBatchScheduler.Plan(
+            reload.ActiveSymbols,
+            historyBatchSize,
+            historyBatchIntervalMinutes);
 
         var scanArgs = new List<string>
         {
@@ -555,13 +561,16 @@ public static class SailorRuntimeCommandRunner
         Log(writer, scannerOptions.ToDisplayString());
         Log(writer, workbook.ToSummaryString());
         Log(writer, workbookOptions.ToDisplayString());
-        Log(writer, $"historyBatchesPlanned={Math.Max(1, (int)Math.Ceiling(workbook.SymbolCount / (double)Math.Max(1, historyBatchSize)))} scanRefreshSeconds={scanRefreshSeconds} tradeTop={tradeTop}");
+        Log(writer, reload.ToSummaryString());
+        Log(writer, $"historyBatchesPlanned={historyBatches.Count} scanRefreshSeconds={scanRefreshSeconds} tradeTop={tradeTop}");
         Log(writer, "");
-        Log(writer, "SAILOR-037 implementation: scan-default workbook input and xlsx universe provider.");
-        Log(writer, "The workbook list can change every trading day. Later runtime milestones will reload it every 5 minutes and keep added symbols in memory without dropping exit management for existing positions.");
-        Log(writer, "This milestone keeps order routing disabled for scan-list commands. It reads the workbook, applies the existing scanner, and writes scanner evidence only.");
-        Log(writer, "Connection interruption policy: if the broker/server connection is degraded in later dynamic runtimes, the last clean symbol snapshot remains in memory and entries move to CloseOnly.");
-        Log(writer, "Trade retention policy: the top scan-rated symbols are retained for paper/live entry eligibility; exits/flatten remain allowed for symbols removed from the top list.");
+        Log(writer, "SAILOR-038 implementation: scan-list memory store, removed-symbol retention, and history batch scheduler contract.");
+        Log(writer, "The workbook list can change every trading day and may be updated intraday. The runtime keeps the last clean symbol snapshot in memory, detects added/removed symbols, and retains removed symbols when they still have an open position or recent top-scan selection.");
+        Log(writer, "The scan-list must be reloaded every --scan-refresh-seconds seconds by the later long-running host. This command executes one safe cycle and writes the memory/scheduler evidence.");
+        Log(writer, "The history scheduler plans at most --history-batch-size symbols per batch and spaces batches by --history-batch-interval-minutes minutes. Default is 45 symbols every 10 minutes.");
+        Log(writer, "Trade retention policy: paper/live entry eligibility keeps at least the best 10 scanner-rated symbols by default. Exits/flatten remain allowed for symbols removed from the top list.");
+        Log(writer, "Connection interruption policy: when history/market-data/server state is degraded, the runtime must stay CloseOnly and keep the last clean list in memory.");
+        Log(writer, "This milestone keeps order routing disabled for scan-list commands. No paper/live order router is created.");
         Log(writer, "");
 
         if (mode == SailorRuntimeMode.Live)
@@ -584,12 +593,46 @@ public static class SailorRuntimeCommandRunner
         Log(writer, "");
 
         PaperScannerRunResult result = await runner.RunAsync(scannerOptions, CancellationToken.None);
+        scanListMemory.RetainTradeCandidates(result.Candidates, tradeTop);
+        IReadOnlyList<string> tradeEligibleSymbols = scanListMemory.TradeEligibleSymbols();
+        RuntimeSafetyState scanListSafety = BuildScanListSafetyState(result, workbook.Warnings);
+        ScanListRuntimeEvidence evidence = ScanListRuntimeEvidenceWriter.Create(
+            mode,
+            workbookOptions,
+            workbook,
+            reload,
+            tradeEligibleSymbols,
+            historyBatches,
+            scanListSafety,
+            workbook.Warnings.Concat(result.Warnings).ToArray());
+        (string evidenceJson, string evidenceCsv) = ScanListRuntimeEvidenceWriter.Write(evidence);
 
         Log(writer, "Scan-list preparation summary");
         Log(writer, "-----------------------------");
         Log(writer, result.ToSummaryString());
         Log(writer, $"Resolved workbook symbols: {result.ResolvedSymbols.Count}");
         Log(writer, $"Prepared symbols: {string.Join(", ", result.PreparedSymbols.Take(80))}{(result.PreparedSymbols.Count > 80 ? ", ..." : string.Empty)}");
+        Log(writer, $"Memory evidence: {evidence.ToSummaryString()}");
+        Log(writer, $"Safety: {scanListSafety.ToDisplayString()}");
+        Log(writer, "");
+
+        Log(writer, "Scan-list memory and reload state");
+        Log(writer, "---------------------------------");
+        Log(writer, $"Added symbols: {FormatSymbols(reload.AddedSymbols, 40)}");
+        Log(writer, $"Removed symbols: {FormatSymbols(reload.RemovedSymbols, 40)}");
+        Log(writer, $"Retained removed symbols: {FormatSymbols(reload.RetainedRemovedSymbols, 40)}");
+        Log(writer, "");
+
+        Log(writer, "History batch schedule");
+        Log(writer, "----------------------");
+        foreach (ScanListHistoryBatch batch in historyBatches.Take(8))
+        {
+            Log(writer, batch.ToDisplayLine());
+        }
+        if (historyBatches.Count > 8)
+        {
+            Log(writer, $"... {historyBatches.Count - 8} more batches");
+        }
         Log(writer, "");
 
         if (result.Candidates.Count == 0)
@@ -606,11 +649,20 @@ public static class SailorRuntimeCommandRunner
             }
         }
 
+        if (tradeEligibleSymbols.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, $"Trade-eligible retained symbols: {FormatSymbols(tradeEligibleSymbols, 80)}");
+        }
+
         if (!string.IsNullOrWhiteSpace(result.CandidateReportPath))
         {
             Log(writer, "");
             Log(writer, $"Scanner CSV report: {result.CandidateReportPath}");
         }
+
+        Log(writer, $"Scan-list evidence JSON: {evidenceJson}");
+        Log(writer, $"Scan-list evidence CSV:  {evidenceCsv}");
 
         if (result.Warnings.Count > 0 || workbook.Warnings.Count > 0)
         {
@@ -755,7 +807,6 @@ public static class SailorRuntimeCommandRunner
                 }
             }
         }
-
         if (!string.IsNullOrWhiteSpace(result.CandidateReportPath))
         {
             Log(writer, "");
@@ -2275,6 +2326,48 @@ public static class SailorRuntimeCommandRunner
             settings.Runtime.Safety.ForceFlatMinute);
     }
 
+    private static RuntimeSafetyState BuildScanListSafetyState(
+        PaperScannerRunResult result,
+        IEnumerable<string> workbookWarnings)
+    {
+        string[] warnings = workbookWarnings
+            .Concat(result.Warnings)
+            .Where(warning => !string.IsNullOrWhiteSpace(warning))
+            .Select(warning => warning.Trim())
+            .ToArray();
+
+        bool degraded = warnings.Any(IsScanListDegradedSignal) || result.HistorySuccessCount == 0;
+        if (degraded)
+        {
+            string reason = result.HistorySuccessCount == 0
+                ? "Scan-list history scheduler has no clean usable 1m history yet. Entries must stay close-only until history/market data recovers."
+                : "Scan-list history/market-data/server state is degraded. Entries must stay close-only while the last clean list remains in memory.";
+            return RuntimeSafetyState.CloseOnly(reason);
+        }
+
+        return RuntimeSafetyState.Normal("Scan-list one-cycle evidence is clean. Long-running host may evaluate entry eligibility using retained top symbols.");
+    }
+
+    private static bool IsScanListDegradedSignal(string warning)
+        => warning.Contains("connection", StringComparison.OrdinalIgnoreCase)
+           || warning.Contains("disconnect", StringComparison.OrdinalIgnoreCase)
+           || warning.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+           || warning.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+           || warning.Contains("socket", StringComparison.OrdinalIgnoreCase)
+           || warning.Contains("disabled", StringComparison.OrdinalIgnoreCase)
+           || warning.Contains("not available", StringComparison.OrdinalIgnoreCase)
+           || warning.Contains("failed", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatSymbols(IReadOnlyList<string> symbols, int max)
+    {
+        if (symbols.Count == 0)
+        {
+            return "none";
+        }
+
+        return $"{string.Join(", ", symbols.Take(Math.Max(1, max)))}{(symbols.Count > max ? ", ..." : string.Empty)}";
+    }
+
     private static StreamWriter CreateWriter(string logFilePath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(logFilePath)!);
@@ -2364,6 +2457,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - live scan remains read-only and never creates an order router");
         Console.WriteLine("  - live readiness/gate evaluates config, --confirm-live, paper certification age/status, account match, and max notional");
         Console.WriteLine("  - SAILOR-037 can read scan/data/scan_default.xlsx and feed workbook symbols into backtest/paper/live scan-list ranking");
+        Console.WriteLine("  - SAILOR-038 adds scan-list memory evidence, removed-symbol retention, history batch planning, and the in-memory candle merge foundation");
         Console.WriteLine("  - scan-list inputs support 5-minute refresh, daily list changes, intraday additions, and top-N trade eligibility contracts for the next dynamic runtime milestone");
         Console.WriteLine("  - SAILOR-034 consumes the live-readiness gate for a one-symbol live pilot");
         Console.WriteLine("  - live pilot enforces one explicit symbol, small max notional, operator-watching-TWS acknowledgement, long-only default, pre-run reconciliation, and final zero exposure");

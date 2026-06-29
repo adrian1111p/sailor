@@ -1462,3 +1462,293 @@ Recommended implementation sequence:
 6. Connect scheduler status to SAILOR-031 degraded-state handling.
 7. Write logs/{Mode}/ScanList/scanlist_latest.json evidence.
 ```
+
+---
+
+## 19. SAILOR-038 implementation update — Steps 4, 5, and 6
+
+Commit reference expected from the operator before this milestone:
+
+```text
+SAILOR-037 Add scan-default workbook provider
+```
+
+SAILOR-038 continues the scan-default module with the next safe foundation layer. It does not enable dynamic paper/live order routing from the workbook list yet. It makes the runtime state explicit and auditable so the later conduct-loop milestone can consume it safely.
+
+### 19.1 Implemented Step 4 — removed-symbol retention contract
+
+New source files:
+
+```text
+src/Sailor.App/Scanner/ScanList/ScanListSymbolState.cs
+src/Sailor.App/Scanner/ScanList/ScanListReloadResult.cs
+src/Sailor.App/Scanner/ScanList/ScanListMemoryStore.cs
+```
+
+The memory store keeps a per-symbol state with:
+
+```text
+- symbol
+- active / retained-for-open-position / retained-for-recent-selection / removed status
+- first seen UTC
+- last seen UTC
+- removed UTC
+- open-position retention flag
+- retained trade candidate flag
+- last scanner rank
+- last scanner score
+- source workbook description
+```
+
+This is needed because the workbook can change every trading day and can also be edited during the trading day. When a symbol disappears from `scan_default.xlsx`, Sailor must not blindly forget it if it still has an open broker/local position or if it was part of the recent retained top scanner selection.
+
+Current behavior in this milestone:
+
+```text
+- one `paper scan-list` or `live scan-list` command executes one memory cycle,
+- workbook symbols are loaded into ScanListMemoryStore,
+- added symbols are detected versus the previous in-memory active set for that process,
+- removed symbols are assigned retention status when open-position/recent-selection flags require it,
+- the state is written to scan-list evidence JSON/CSV.
+```
+
+The long-running process that keeps this memory across 5-minute reloads is still planned for the next dynamic scan-list runtime milestone.
+
+### 19.2 Implemented Step 5 — 45-symbol / 10-minute history batch scheduler contract
+
+New source files:
+
+```text
+src/Sailor.App/Scanner/ScanList/ScanListHistoryBatch.cs
+src/Sailor.App/Scanner/ScanList/ScanListHistoryBatchScheduler.cs
+```
+
+Default scheduler behavior:
+
+```text
+--history-batch-size 45
+--history-batch-interval-minutes 10
+```
+
+For the uploaded `scan/data/scan_default.xlsx` Candidates sheet with 131 symbols, the planned schedule is:
+
+```text
+batch 1: first 45 symbols, now
+batch 2: next 45 symbols, now + 10 minutes
+batch 3: remaining 41 symbols, now + 20 minutes
+```
+
+The scheduler is deterministic:
+
+```text
+- normalizes symbols to upper-case,
+- de-duplicates symbols,
+- sorts symbols alphabetically,
+- splits into batches of max N symbols,
+- assigns each batch a not-before UTC time.
+```
+
+This avoids requesting too much IBKR history at once when the workbook contains more than 45 symbols.
+
+### 19.3 Implemented Step 6 — scheduler/degraded-state safety contract
+
+New source file:
+
+```text
+src/Sailor.App/Scanner/ScanList/ScanListRuntimeEvidence.cs
+src/Sailor.App/Scanner/ScanList/ScanListRuntimeEvidenceWriter.cs
+```
+
+`paper scan-list` and `live scan-list` now produce scan-list runtime evidence under:
+
+```text
+logs/Paper/ScanList/scanlist_latest.json
+logs/Paper/ScanList/scanlist_YYYYMMDD.csv
+logs/Live/ScanList/scanlist_latest.json
+logs/Live/ScanList/scanlist_YYYYMMDD.csv
+```
+
+The evidence contains:
+
+```text
+- mode
+- workbook file/sheet/column
+- refresh seconds
+- trade top
+- history batch size
+- history batch interval
+- workbook symbol count
+- active symbol count
+- added symbol count
+- removed symbol count
+- retained removed symbol count
+- trade eligible symbol count
+- history batch count
+- runtime safety mode
+- runtime safety reason
+- previews of trade-eligible / added / removed symbols
+- warnings
+```
+
+The scan-list command also builds a `RuntimeSafetyState` for the scan-list scheduler cycle. If no usable history is available or if warning text indicates provider/server degradation, the scan-list evidence is marked `CloseOnly`. This aligns the scan-list scheduler with the SAILOR-031 degraded-state principle:
+
+```text
+- keep last clean list in memory,
+- block new entries,
+- keep exit/flatten management available once broker connectivity is available.
+```
+
+### 19.4 Implemented in-memory candle foundation
+
+New source files:
+
+```text
+src/Sailor.App/Scanner/ScanList/ScanListCandleQuality.cs
+src/Sailor.App/Scanner/ScanList/ScanListMemoryCandle.cs
+src/Sailor.App/Scanner/ScanList/ScanListCandleAccumulator.cs
+src/Sailor.App/Scanner/ScanList/ScanListCandleMergeResult.cs
+src/Sailor.App/Scanner/ScanList/ScanListCandleMergeEngine.cs
+```
+
+This implements the data model and merge engine needed for the original audit requirement:
+
+```text
+Build 1-minute candles in memory from real-time scan-list symbols, then merge them with historical broker bars when the delayed history batch arrives.
+```
+
+Current milestone status:
+
+```text
+- candle accumulator can create/update 1-minute in-memory candles from trade ticks,
+- merge engine can merge historical `BacktestBar` rows with realtime memory candles,
+- realtime bars overlapping historical minutes are merged deterministically,
+- realtime bars after the historical range are appended,
+- candle quality flags mark historical, realtime-memory, merged, and partial-realtime bars.
+```
+
+The actual IBKR real-time event feed into this accumulator is not activated yet. That belongs to the next live/paper dynamic scanner runtime milestone.
+
+### 19.5 Command behavior updated in SAILOR-038
+
+Paper scan-list one-cycle evidence:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --max-symbols 45
+```
+
+Live read-only scan-list one-cycle evidence:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45
+```
+
+New/updated options used by SAILOR-038:
+
+```text
+--scan-refresh-seconds 300
+--history-batch-size 45
+--history-batch-interval-minutes 10
+--trade-top 10
+--keep-trade-top 10
+```
+
+`--trade-top` and `--keep-trade-top` are treated as the retained scanner-rated trade eligibility count. For paper/live scan-list workflows, the implementation keeps a minimum of 10 by default.
+
+### 19.6 Warning correction
+
+SAILOR-038 also corrects the nullable warning reported by the operator:
+
+```text
+SailorSymbolUniverses.cs(36,20): warning CS8603: Possible null reference return.
+```
+
+The XLSX resolver now returns an empty array by default and only returns the workbook symbol list after a successful read path.
+
+### 19.7 Acceptance tests for SAILOR-038
+
+```powershell
+dotnet clean
+dotnet build
+```
+
+Expected:
+
+```text
+Build succeeded with 0 warnings.
+```
+
+Inspect workbook:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- scan-list inspect --file scan\data\scan_default.xlsx --sheet Candidates
+```
+
+Paper scan-list evidence:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --max-symbols 45
+```
+
+Expected:
+
+```text
+SAILOR-038 implementation: scan-list memory store, removed-symbol retention, and history batch scheduler contract.
+Scan-list evidence JSON: logs/Paper/ScanList/scanlist_latest.json
+No orders sent.
+```
+
+Live scan-list evidence:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45
+```
+
+Expected:
+
+```text
+SAILOR-037 live scan-list is read-only. No live order router is created.
+Scan-list evidence JSON: logs/Live/ScanList/scanlist_latest.json
+No orders sent.
+```
+
+IBApi build check:
+
+```powershell
+dotnet restore src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
+dotnet build src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
+```
+
+### 19.8 Remaining work after SAILOR-038
+
+Not implemented yet:
+
+```text
+- long-running scan-list host that persists memory across the whole trading day,
+- actual 5-minute reload loop in `paper run` / `live run`,
+- actual IBKR realtime trade/quote feed into ScanListCandleAccumulator,
+- automatic historical batch execution every 10 minutes,
+- top-10 dynamic entry gating inside the paper conduct loop,
+- paper certification report extension for scan-list evidence,
+- live best-1/top-N dynamic pilot consuming scan-list evidence.
+```
+
+Recommended next milestone:
+
+```text
+SAILOR-039 — Dynamic scan-list runtime host with 5-minute reload loop and in-memory candle updates
+```
+
+Recommended implementation sequence:
+
+```text
+1. Add a long-running ScanListRuntimeHost for paper/live.
+2. Keep ScanListMemoryStore alive across the runtime session.
+3. Reload scan/data/scan_default.xlsx every --scan-refresh-seconds.
+4. Detect intraday additions and subscribe/request history for added symbols.
+5. Keep removed symbols if open position or recent top-10 selection.
+6. Execute ScanListHistoryBatchScheduler batches every 10 minutes.
+7. Feed live ticks/quotes into ScanListCandleAccumulator.
+8. Merge historical bars into realtime memory candles as each batch arrives.
+9. Expose only retained top-10 symbols as entry-eligible for paper conduct.
+10. Keep exits/flatten enabled for all open symbols even if removed from the workbook.
+```

@@ -31,7 +31,7 @@ public static class SailorSymbolUniverses
             return SmallCaps;
         }
 
-        if (TryResolveXlsxUniverse(universeNameOrCsv, out IReadOnlyList<string>? xlsxSymbols))
+        if (TryResolveXlsxUniverse(universeNameOrCsv, out IReadOnlyList<string> xlsxSymbols))
         {
             return xlsxSymbols;
         }
@@ -46,9 +46,9 @@ public static class SailorSymbolUniverses
     }
 
 
-    private static bool TryResolveXlsxUniverse(string value, out IReadOnlyList<string>? symbols)
+    private static bool TryResolveXlsxUniverse(string value, out IReadOnlyList<string> symbols)
     {
-        symbols = null;
+        symbols = Array.Empty<string>();
         string[] parts = value.Split('#', StringSplitOptions.TrimEntries);
         string path = parts.Length > 0 ? parts[0] : value;
         if (!path.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
