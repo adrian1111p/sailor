@@ -1,4 +1,5 @@
 using System.Globalization;
+using Sailor.App.Backtest.Scanner.Points;
 using Sailor.App.Logging;
 using Sailor.App.Runtime.Common;
 
@@ -16,16 +17,22 @@ public static class PaperScannerReportWriter
         string path = Path.Combine(root, $"scanner_{result.Options.ProfileName}_{result.Options.Timeframe}_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
 
         using var writer = new StreamWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read));
-        writer.WriteLine("Rank,Symbol,Side,Close,Score,MomentumPercent,Volume,VolumeRatio,Ema9,Sma20,Sma200,Vwap,HasL1,HasL2,SpreadBps,BookImbalance,LiquidityScore,SnapshotSource,Reason");
+        writer.WriteLine("Rank,ScannerMode,Symbol,Side,CandidateStatus,Close,Score,LongScore,ShortScore,PositivePoints,NegativePoints,MomentumPercent,Volume,VolumeRatio,Ema9,Sma20,Sma200,Vwap,HasL1,HasL2,SpreadBps,BookImbalance,LiquidityScore,SnapshotSource,LegacyBlockReasons,TopPositiveFactors,TopNegativeFactors,Reason");
 
         foreach (PaperScannerCandidate row in result.Candidates)
         {
             writer.WriteLine(string.Join(',',
                 row.Rank.ToString(CultureInfo.InvariantCulture),
+                Escape(row.ScannerMode),
                 row.Candidate.Symbol,
                 row.Candidate.Side,
+                Escape(row.PointsCandidate is null ? string.Empty : row.PointsCandidate.Status.ToDisplayName()),
                 Format(row.Candidate.Close),
                 Format(row.Candidate.Score),
+                Format(row.PointsCandidate?.LongScore.Score),
+                Format(row.PointsCandidate?.ShortScore.Score),
+                Format(row.PointsCandidate?.PositivePoints),
+                Format(row.PointsCandidate?.NegativePoints),
                 Format(row.Candidate.MomentumPercent),
                 row.Candidate.Volume.ToString(CultureInfo.InvariantCulture),
                 Format(row.Candidate.VolumeRatio),
@@ -39,6 +46,9 @@ public static class PaperScannerReportWriter
                 Format(row.BookImbalance),
                 Format(row.LiquidityScore),
                 Escape(row.Snapshot?.Source ?? "n/a"),
+                Escape(row.PointsCandidate is null ? string.Empty : string.Join(" | ", row.PointsCandidate.LegacyBlockReasons)),
+                Escape(row.PointsCandidate?.SelectedScore.TopPositiveFactors() ?? string.Empty),
+                Escape(row.PointsCandidate?.SelectedScore.TopNegativeFactors() ?? string.Empty),
                 Escape(row.Candidate.Reason)));
         }
 

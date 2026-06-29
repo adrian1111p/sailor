@@ -218,6 +218,8 @@ public sealed class SailorRuntimeSafetySettings
 public sealed class ScannerSettings
 {
     public int DefaultTopCount { get; set; } = 20;
+
+    public string DefaultMode { get; set; } = "legacy-blocks";
 }
 
 public sealed class SailorProfileSettings

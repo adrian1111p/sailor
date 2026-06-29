@@ -1,6 +1,7 @@
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Scanner;
+using Sailor.App.Backtest.Scanner.Points;
 using Sailor.App.Broker.Ibkr;
 using Sailor.App.Configuration;
 using Sailor.App.MarketData.History;
@@ -99,19 +100,19 @@ public sealed class PaperScannerRunner : IDisposable
         }
 
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName, _settings);
-        var scanner = new SailorScanner(csvProvider);
-        IReadOnlyList<ScannerCandidate> scannerCandidates = scanner.Scan(
-            options.Timeframe,
+        IReadOnlyList<(ScannerCandidate Candidate, PointsScannerCandidate? PointsCandidate)> scannerCandidates = CreateScannerCandidates(
+            options,
+            csvProvider,
             profile,
-            options.TopCount,
-            preparedSymbols);
+            preparedSymbols,
+            warnings);
 
         var candidates = new List<PaperScannerCandidate>();
         int snapshotRequestId = 27_500;
         for (int i = 0; i < scannerCandidates.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ScannerCandidate candidate = scannerCandidates[i];
+            (ScannerCandidate candidate, PointsScannerCandidate? pointsCandidate) = scannerCandidates[i];
             var snapshot = await _snapshotProvider.CaptureSnapshotAsync(
                 options,
                 candidate.Symbol,
@@ -128,7 +129,8 @@ public sealed class PaperScannerRunner : IDisposable
                 Candidate: candidate,
                 Snapshot: snapshot.Snapshot,
                 SnapshotMessage: snapshot.Message,
-                SnapshotWarnings: snapshot.Warnings));
+                SnapshotWarnings: snapshot.Warnings,
+                PointsCandidate: pointsCandidate));
         }
 
         string? reportPath = null;
@@ -148,6 +150,41 @@ public sealed class PaperScannerRunner : IDisposable
         }
 
         return result;
+    }
+
+
+    private static IReadOnlyList<(ScannerCandidate Candidate, PointsScannerCandidate? PointsCandidate)> CreateScannerCandidates(
+        PaperScannerOptions options,
+        CsvBacktestDataProvider csvProvider,
+        SailorStrategyProfile profile,
+        IReadOnlyList<string> preparedSymbols,
+        List<string> warnings)
+    {
+        if (options.ScannerMode == PointsScannerMode.PointsOnly)
+        {
+            var pointsScanner = new PointsScanner(csvProvider);
+            return pointsScanner.Scan(
+                    options.Timeframe,
+                    profile,
+                    options.TopCount,
+                    preparedSymbols)
+                .Select(candidate => (candidate.ToScannerCandidate(), (PointsScannerCandidate?)candidate))
+                .ToArray();
+        }
+
+        if (options.ScannerMode == PointsScannerMode.HybridCompare)
+        {
+            warnings.Add("scanner-mode=hybrid-compare is parsed and recorded by SAILOR-045, but runtime routing still uses legacy-blocks until the hybrid comparison report is implemented in a later step.");
+        }
+
+        var scanner = new SailorScanner(csvProvider);
+        return scanner.Scan(
+                options.Timeframe,
+                profile,
+                options.TopCount,
+                preparedSymbols)
+            .Select(candidate => (candidate, (PointsScannerCandidate?)null))
+            .ToArray();
     }
 
     public void Dispose() => _snapshotProvider.Dispose();

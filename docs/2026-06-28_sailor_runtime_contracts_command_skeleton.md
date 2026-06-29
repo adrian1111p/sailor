@@ -822,3 +822,39 @@ New options:
 - `--scan-entry-wait-seconds N`: maximum waiting time for at least one trade-eligible symbol.
 
 The command still sends no orders unless scan-list selection, broker reconciliation, runtime safety, and paper order routing gates are all clean.
+
+---
+
+## SAILOR-045 points scanner foundation options
+
+SAILOR-045 adds scanner mode parsing and the first points-based scanner implementation.
+
+Supported scanner modes:
+
+```text
+--scanner-mode legacy-blocks
+--scanner-mode points-only
+--scanner-mode hybrid-compare
+```
+
+Default remains:
+
+```text
+legacy-blocks
+```
+
+`points-only` uses the new `PointsScanner` and ranks prepared symbols with points instead of silently dropping every symbol that fails a legacy hard scanner filter. `hybrid-compare` is parsed and logged, but still routes through legacy mode until the dedicated hybrid comparison report is implemented later.
+
+Points-only scan-list smoke test:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45 --scanner-mode points-only
+```
+
+IBKR paper scan-list observation:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-list 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --no-depth --max-symbols 45 --scanner-mode points-only --wait-seconds 15
+```
+
+For SAILOR-045, use `points-only` in dry-run/observation mode first. Trade-eligibility status handling for Ready/WeakReady/WatchOnly/NotReady is planned for the later scan-list retention step.

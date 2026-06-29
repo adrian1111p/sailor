@@ -2,6 +2,7 @@ using System.Globalization;
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Scanner;
+using Sailor.App.Backtest.Scanner.Points;
 using Sailor.App.Broker.Ibkr;
 using Sailor.App.Broker.Ibkr.Orders;
 using Sailor.App.Broker.Orders;
@@ -520,6 +521,7 @@ public static class SailorRuntimeCommandRunner
         int depthLevels = ReadIntOption(args, "--levels", settings.L1L2.DepthLevels <= 0 ? 5 : settings.L1L2.DepthLevels);
         string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+        PointsScannerMode scannerMode = ReadScannerMode(args, settings);
 
         int defaultMaxSymbols = Math.Max(1, historyBatchSize);
         int maxSymbols = ReadIntOption(args, "--max-symbols", defaultMaxSymbols);
@@ -543,7 +545,8 @@ public static class SailorRuntimeCommandRunner
             depthLevels,
             marketDataType,
             primaryExchange,
-            smartDepth);
+            smartDepth,
+            scannerMode);
 
         var runRequest = new ScanListRunRequest(
             mode,
@@ -707,6 +710,7 @@ public static class SailorRuntimeCommandRunner
         int depthLevels = ReadIntOption(args, "--levels", settings.L1L2.DepthLevels <= 0 ? 5 : settings.L1L2.DepthLevels);
         string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+        PointsScannerMode scannerMode = ReadScannerMode(args, settings);
 
         int defaultMaxSymbols = localCache
             ? int.MaxValue
@@ -732,7 +736,8 @@ public static class SailorRuntimeCommandRunner
             depthLevels,
             marketDataType,
             primaryExchange,
-            smartDepth);
+            smartDepth,
+            scannerMode);
 
         string logFilePath = CreateRuntimeLogFilePath(mode, "scan");
         await using var writer = CreateWriter(logFilePath);
@@ -1064,6 +1069,7 @@ public static class SailorRuntimeCommandRunner
 
         bool requestIbkrMarketData = captureSnapshots && !localCache;
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+        PointsScannerMode scannerMode = ReadScannerMode(args, settings);
         bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
 
         bool sendOrdersRequested = args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase));
@@ -1112,7 +1118,8 @@ public static class SailorRuntimeCommandRunner
             depthLevels,
             marketDataType,
             primaryExchange,
-            smartDepth);
+            smartDepth,
+            scannerMode);
 
         if (mode == SailorRuntimeMode.Paper && HasScanListInput(args))
         {
@@ -1324,6 +1331,7 @@ public static class SailorRuntimeCommandRunner
 
         bool requestIbkrMarketData = captureSnapshots && !localCache;
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+        PointsScannerMode scannerMode = ReadScannerMode(args, settings);
         bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
         ScanListRuntimeEvidence? liveScanListEvidence = null;
         string? liveScanListEvidencePath = null;
@@ -1363,7 +1371,8 @@ public static class SailorRuntimeCommandRunner
                 depthLevels,
                 marketDataType,
                 primaryExchange,
-                smartDepth);
+                smartDepth,
+                scannerMode);
 
             ScanListRunResult scanListResult = await RunScanListSelectionForConductAsync(
                 SailorRuntimeMode.Live,
@@ -1455,7 +1464,8 @@ public static class SailorRuntimeCommandRunner
             depthLevels,
             marketDataType,
             primaryExchange,
-            smartDepth);
+            smartDepth,
+            scannerMode);
 
         Log(writer, connectionOptions.ToDisplayString());
         Log(writer, scannerOptions.ToDisplayString());
@@ -2630,6 +2640,15 @@ public static class SailorRuntimeCommandRunner
         }
 
         return defaultValue;
+    }
+
+    private static PointsScannerMode ReadScannerMode(string[] args, SailorAppSettings settings)
+    {
+        PointsScannerMode configuredFallback = PointsScannerModeExtensions.ParseOrDefault(
+            settings.Scanner.DefaultMode,
+            PointsScannerMode.LegacyBlocks);
+        string rawValue = ReadStringOption(args, "--scanner-mode", configuredFallback.ToConfigValue());
+        return PointsScannerModeExtensions.ParseOrDefault(rawValue, configuredFallback);
     }
 
     private static SailorRuntimeModeSettings GetModeSettings(

@@ -1208,3 +1208,180 @@ condition fails -> symbol receives penalty, remains visible, ranked, explainable
 ```
 
 The new scanner should therefore produce ranked candidates for every data-usable symbol, and only runtime safety should remain hard-blocking. This gives the operator a useful top 10 watch list, improves paper testing, and prevents silent `NoSelection` sessions where the system technically worked but produced no actionable explanation beyond `candidates=0`.
+
+---
+
+## 10. SAILOR-045 implementation — Steps 1 to 5 foundation
+
+Date: 2026-06-29  
+Status: implemented foundation; runtime default remains safe `legacy-blocks`.
+
+### 10.1 Step 1 — Legacy behavior freeze
+
+The first implementation keeps the current scanner behavior as the default:
+
+```text
+scannerMode=legacy-blocks
+```
+
+This means all existing commands continue to use `SailorScanner` and the current hard-filter behavior unless the operator explicitly asks for another mode. The legacy mode is the baseline for future comparison and keeps the current `candidates=0` behavior available for regression checks.
+
+Manual regression commands:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45 --scanner-mode legacy-blocks
+```
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-list 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --no-depth --max-symbols 45 --scanner-mode legacy-blocks
+```
+
+Expected legacy behavior is unchanged: a symbol must still survive all hard legacy filters before it can become a candidate.
+
+### 10.2 Step 2 — Scanner mode enum/config
+
+Added scanner mode support:
+
+```text
+legacy-blocks
+points-only
+hybrid-compare
+```
+
+New code:
+
+```text
+src/Sailor.App/Backtest/Scanner/Points/PointsScannerMode.cs
+```
+
+Updated runtime option model:
+
+```text
+src/Sailor.App/Scanner/Runtime/PaperScannerOptions.cs
+```
+
+Updated configuration:
+
+```json
+"Scanner": {
+  "DefaultTopCount": 20,
+  "DefaultMode": "legacy-blocks"
+}
+```
+
+New command option:
+
+```text
+--scanner-mode legacy-blocks|points-only|hybrid-compare
+```
+
+The option is parsed by scan, scan-list, paper run scan-list selection, and live scan-list selection paths. The default remains `legacy-blocks`.
+
+### 10.3 Step 3 — Points factor model
+
+Added the points model foundation:
+
+```text
+src/Sailor.App/Backtest/Scanner/Points/PointsScannerFactor.cs
+src/Sailor.App/Backtest/Scanner/Points/PointsScannerSideScore.cs
+src/Sailor.App/Backtest/Scanner/Points/PointsScannerCandidate.cs
+src/Sailor.App/Backtest/Scanner/Points/PointsScannerStatus.cs
+```
+
+Each points candidate now has:
+
+```text
+FinalScore
+LongScore
+ShortScore
+SelectedSide
+Status
+PositivePoints
+NegativePoints
+LegacyBlockReasons
+TopPositiveFactors
+TopNegativeFactors
+```
+
+The candidate can also be converted back to the existing `ScannerCandidate` model so the runtime can consume it without changing conduct/order-routing code.
+
+### 10.4 Step 4 — PointsScannerSettings
+
+Added centralized score weights:
+
+```text
+src/Sailor.App/Backtest/Scanner/Points/PointsScannerSettings.cs
+```
+
+The first implementation keeps weights in code, as planned, to reduce configuration complexity while the model is validated. Main categories:
+
+```text
+data availability
+price range
+volume
+volume ratio
+lookback momentum
+EMA trend
+VWAP position
+SMA200 position
+V18-Silver candle color
+V18-Silver bar momentum
+V18-Silver VWAP reversion/extension
+V18-Silver choppy shield
+```
+
+### 10.5 Step 5 — PointsScanner
+
+Added:
+
+```text
+src/Sailor.App/Backtest/Scanner/Points/PointsScanner.cs
+```
+
+The points scanner:
+
+1. Loads bars using the existing `CsvBacktestDataProvider`.
+2. Calculates indicators using `TechnicalIndicatorCalculator.Calculate`.
+3. Scores LONG and SHORT sides independently.
+4. Converts former hard scanner blocks into penalties and `LegacyBlockReasons`.
+5. Adds positive points for favorable factors.
+6. Selects the best enabled side.
+7. Returns ranked candidates even when the legacy scanner would have returned no candidate.
+
+Runtime integration added for:
+
+```text
+--scanner-mode points-only
+```
+
+When explicitly used, `PaperScannerRunner` uses `PointsScanner` and writes candidate rows through the existing scanner report pipeline. Default behavior remains unchanged.
+
+`hybrid-compare` is currently parsed and logged, but routing still uses legacy mode until the dedicated hybrid comparison report is implemented in the later audit steps.
+
+### 10.6 SAILOR-045 smoke-test commands
+
+Default legacy behavior:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45 --scanner-mode legacy-blocks
+```
+
+Points-only local-cache scan:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45 --scanner-mode points-only
+```
+
+Points-only IBKR paper scan-list observation:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-list 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --no-depth --max-symbols 45 --scanner-mode points-only --wait-seconds 15
+```
+
+Points-only paper run dry-run only:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper run 1m v18-silver 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --dry-run --iterations 60 --cadence-seconds 1 --max-symbols 45 --wait-seconds 15 --quantity 1 --no-depth --scanner-mode points-only
+```
+
+Paper send-orders with `points-only` should wait until later steps complete the trade-eligibility/status controls. Use dry-run for SAILOR-045 validation.
