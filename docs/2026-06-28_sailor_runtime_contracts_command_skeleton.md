@@ -806,3 +806,19 @@ Operational guidance:
 - Avoid running Sailor exactly while Excel is in the middle of saving the file.
 - If a save-time lock is hit, rerun the command after a few seconds.
 ```
+
+### SAILOR-043 paper run wait-for-scan-entry
+
+Use this when the Excel scan-list is valid but the first scan cycle returns no trade-eligible symbols. The command waits inside the runtime window and starts conduct only after at least one selected symbol appears.
+
+```powershell
+ dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper run 1m v18-silver 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --send-orders --iterations 2700 --cadence-seconds 1 --max-symbols 45 --wait-seconds 15 --quantity 1 --no-depth --wait-for-scan-entry --scan-entry-target 10 --scan-entry-wait-seconds 2700 --scan-refresh-seconds 300
+```
+
+New options:
+
+- `--wait-for-scan-entry`: do not stop immediately when the first scan has `tradeEligible=0`; keep rescanning.
+- `--scan-entry-target N`: desired retained symbol count before conduct, capped by the normal `top` argument.
+- `--scan-entry-wait-seconds N`: maximum waiting time for at least one trade-eligible symbol.
+
+The command still sends no orders unless scan-list selection, broker reconciliation, runtime safety, and paper order routing gates are all clean.

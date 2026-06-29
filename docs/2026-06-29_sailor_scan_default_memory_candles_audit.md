@@ -2288,3 +2288,30 @@ Behavior:
 ```
 
 This correction is mandatory before committing SAILOR-042 because the dynamic scan-list commands must not crash simply because the operator has the workbook open for updates.
+
+## SAILOR-043 — Wait-for-scan-entry paper command
+
+Step 16 follow-up adds a paper-run wait gate for near-market-open testing.
+
+Problem observed during paper testing: the scan-list may load successfully and IBKR history may be clean, but the first scan cycle can still return `tradeEligible=0`. Before SAILOR-043, `paper run --scan-file ... --send-orders` stopped immediately in that case.
+
+SAILOR-043 adds:
+
+- `--wait-for-scan-entry`
+- `--scan-entry-target N`
+- `--scan-entry-wait-seconds N`
+
+When enabled, `paper run` keeps rescanning until at least one trade-eligible symbol appears, up to the requested target count, or until the wait window expires. No orders are sent while `tradeEligible=0`. When a candidate appears, the conduct loop starts with the selected scan-list symbols and uses the remaining runtime iterations.
+
+Paper command for account `DUN559573`, 45 minutes, V18-Silver/selective-short, up to 10 symbols, fallback quantity 1:
+
+```powershell
+ dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper run 1m v18-silver 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --send-orders --iterations 2700 --cadence-seconds 1 --max-symbols 45 --wait-seconds 15 --quantity 1 --no-depth --wait-for-scan-entry --scan-entry-target 10 --scan-entry-wait-seconds 2700 --scan-refresh-seconds 300
+```
+
+Safety contract:
+
+- If no scan-rated candidate appears in the 45-minute window, no orders are sent.
+- If one or more candidates appear, the run uses those symbols, up to the requested top count.
+- Existing reconciliation, close-only, degraded-state, and order-router gates still apply.
+- The fallback order size remains `--quantity 1` unless a later sizing milestone overrides it.

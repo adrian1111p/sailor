@@ -945,6 +945,76 @@ public static class SailorRuntimeCommandRunner
             .ToArray();
     }
 
+    private static async Task<(ScanListRunResult RunResult, IReadOnlyList<string> SelectedSymbols, int RemainingIterations)> WaitForScanListEntrySelectionAsync(
+        SailorRuntimeMode mode,
+        SailorAppSettings settings,
+        IbkrConnectionOptions connectionOptions,
+        PaperScannerOptions scannerOptions,
+        ScanListWorkbookOptions workbookOptions,
+        string[] args,
+        StreamWriter writer,
+        int requestedTopCount,
+        int requestedIterations,
+        int cadenceSeconds)
+    {
+        int safeCadenceSeconds = Math.Max(1, cadenceSeconds);
+        int totalWindowSeconds = Math.Max(safeCadenceSeconds, requestedIterations * safeCadenceSeconds);
+        int maxWaitSeconds = ReadIntOption(args, "--scan-entry-wait-seconds", totalWindowSeconds);
+        int refreshSeconds = Math.Max(1, ReadIntOption(args, "--scan-refresh-seconds", workbookOptions.RefreshSeconds));
+        int targetSymbols = Math.Max(1, Math.Min(requestedTopCount, ReadIntOption(args, "--scan-entry-target", requestedTopCount)));
+        DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
+        ScanListRunResult latestResult = new("n/a", "n/a", Array.Empty<ScanListCycleResult>(), Array.Empty<string>());
+        IReadOnlyList<string> selectedSymbols = Array.Empty<string>();
+
+        Log(writer, "");
+        Log(writer, "SAILOR-043 wait-for-scan-entry is active.");
+        Log(writer, $"The paper run will keep rescanning until at least one trade-eligible symbol appears, up to target={targetSymbols}, or until {maxWaitSeconds}s of the runtime window has elapsed.");
+        Log(writer, "Orders remain blocked while no trade-eligible scan-list symbol is available.");
+
+        while (selectedSymbols.Count == 0)
+        {
+            int elapsedSeconds = (int)Math.Max(0, Math.Round((DateTimeOffset.UtcNow - startedUtc).TotalSeconds, MidpointRounding.AwayFromZero));
+            int remainingWaitSeconds = maxWaitSeconds - elapsedSeconds;
+            if (remainingWaitSeconds <= 0)
+            {
+                break;
+            }
+
+            int delaySeconds = Math.Min(refreshSeconds, remainingWaitSeconds);
+            Log(writer, $"SAILOR-043 waiting {delaySeconds}s before rescanning scan-list; elapsed={elapsedSeconds}s remainingWait={remainingWaitSeconds}s.");
+            await Task.Delay(TimeSpan.FromSeconds(delaySeconds)).ConfigureAwait(false);
+
+            latestResult = await RunScanListSelectionForConductAsync(
+                mode,
+                settings,
+                connectionOptions,
+                scannerOptions,
+                workbookOptions,
+                args,
+                writer,
+                "paper run wait-for-scan-entry").ConfigureAwait(false);
+
+            selectedSymbols = SelectScanListTradeSymbols(latestResult, targetSymbols, livePilot: false);
+            if (selectedSymbols.Count > 0)
+            {
+                Log(writer, $"SAILOR-043 found trade-eligible scan-list symbols: {string.Join(", ", selectedSymbols)}");
+                break;
+            }
+        }
+
+        int totalElapsedSeconds = (int)Math.Max(0, Math.Round((DateTimeOffset.UtcNow - startedUtc).TotalSeconds, MidpointRounding.AwayFromZero));
+        int consumedIterations = Math.Min(Math.Max(0, requestedIterations - 1), totalElapsedSeconds / safeCadenceSeconds);
+        int remainingIterations = Math.Max(1, requestedIterations - consumedIterations);
+
+        if (selectedSymbols.Count > 0)
+        {
+            Log(writer, $"SAILOR-043 scan wait consumed approximately {totalElapsedSeconds}s. Remaining conduct iterations={remainingIterations}.");
+        }
+
+        return (latestResult, selectedSymbols, remainingIterations);
+    }
+
+
     private static async Task RunStrategySkeletonAsync(
         SailorRuntimeMode mode,
         string[] args,
@@ -1058,10 +1128,29 @@ public static class SailorRuntimeCommandRunner
                 "paper run").ConfigureAwait(false);
 
             IReadOnlyList<string> selectedScanListSymbols = SelectScanListTradeSymbols(scanListResult, runtimeOptions.TopCount, livePilot: false);
+            if (selectedScanListSymbols.Count == 0 && HasOption(args, "--wait-for-scan-entry"))
+            {
+                (scanListResult, selectedScanListSymbols, iterations) = await WaitForScanListEntrySelectionAsync(
+                    mode,
+                    settings,
+                    connectionOptions,
+                    scannerOptions,
+                    workbookOptions,
+                    args,
+                    writer,
+                    runtimeOptions.TopCount,
+                    iterations,
+                    cadenceSeconds).ConfigureAwait(false);
+            }
+
             if (selectedScanListSymbols.Count == 0)
             {
                 Log(writer, "");
                 Log(writer, "SAILOR-040 blocked paper dynamic scan-list conduct because no trade-eligible symbols were retained. No orders sent.");
+                if (HasOption(args, "--wait-for-scan-entry"))
+                {
+                    Log(writer, "SAILOR-043 wait-for-scan-entry expired without a trade-eligible symbol. No orders sent.");
+                }
                 Log(writer, $"Runtime log: {logFilePath}");
                 return;
             }
@@ -2491,6 +2580,9 @@ public static class SailorRuntimeCommandRunner
 
         return normalized is "MKT" or "MARKET" or "LMT" or "LIMIT" or "STP" or "STOP" or "STPLMT" or "STP_LMT" or "STOP_LIMIT";
     }
+
+    private static bool HasOption(string[] args, string optionName)
+        => args.Any(arg => arg.Equals(optionName, StringComparison.OrdinalIgnoreCase));
 
     private static int ReadIntOption(string[] args, string optionName, int defaultValue, bool allowZero = false)
     {
