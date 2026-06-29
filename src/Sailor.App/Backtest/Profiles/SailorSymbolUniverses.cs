@@ -1,3 +1,5 @@
+using Sailor.App.Scanner.ScanList;
+
 namespace Sailor.App.Backtest.Profiles;
 
 public static class SailorSymbolUniverses
@@ -29,6 +31,11 @@ public static class SailorSymbolUniverses
             return SmallCaps;
         }
 
+        if (TryResolveXlsxUniverse(universeNameOrCsv, out IReadOnlyList<string>? xlsxSymbols))
+        {
+            return xlsxSymbols;
+        }
+
         return universeNameOrCsv
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(symbol => symbol.Trim().ToUpperInvariant())
@@ -36,6 +43,30 @@ public static class SailorSymbolUniverses
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(symbol => symbol, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+
+    private static bool TryResolveXlsxUniverse(string value, out IReadOnlyList<string>? symbols)
+    {
+        symbols = null;
+        string[] parts = value.Split('#', StringSplitOptions.TrimEntries);
+        string path = parts.Length > 0 ? parts[0] : value;
+        if (!path.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+        {
+            return false;
+        }
+
+        string sheet = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1])
+            ? parts[1]
+            : ScanListWorkbookOptions.DefaultSheetName;
+        string column = parts.Length > 2 && !string.IsNullOrWhiteSpace(parts[2])
+            ? parts[2]
+            : ScanListWorkbookOptions.DefaultSymbolColumn;
+
+        var reader = new ScanListWorkbookReader();
+        ScanListWorkbookResult result = reader.Read(new ScanListWorkbookOptions(path, sheet, column));
+        symbols = result.Symbols;
+        return true;
     }
 
     public static IReadOnlyList<string> SmallCapSymbols => SmallCaps;

@@ -1216,3 +1216,249 @@ Harvester code may still be useful later for comparison when implementing:
 ```
 
 Upload Harvester later only if the Sailor implementation reaches one of those detailed behavior decisions and we want to compare against the existing Harvester pattern.
+
+---
+
+## 18. SAILOR-037 implementation update — Steps 1, 2, and 3
+
+Commit reference used by the operator before this milestone:
+
+```text
+SAILOR-036 Add scan-default memory candles audit
+```
+
+SAILOR-037 implements the first low-risk foundation layer from this audit.
+
+### 18.1 Implemented scope
+
+Implemented now:
+
+```text
+Step 1 — scan-list input files and Git rules
+Step 2 — workbook reader without Excel Interop
+Step 3 — Xlsx universe provider
+```
+
+New/updated files:
+
+```text
+scan/data/.gitkeep
+scan/data/scan_default.xlsx
+.gitignore
+src/Sailor.App/Scanner/ScanList/ScanListWorkbookOptions.cs
+src/Sailor.App/Scanner/ScanList/ScanListWorkbookResult.cs
+src/Sailor.App/Scanner/ScanList/ScanListWorkbookReader.cs
+src/Sailor.App/Scanner/Universe/XlsxUniverseProvider.cs
+src/Sailor.App/Scanner/Universe/SymbolUniverseProviderFactory.cs
+src/Sailor.App/Backtest/Profiles/SailorSymbolUniverses.cs
+src/Sailor.App/Program.cs
+src/Sailor.App/Runtime/Commands/SailorRuntimeCommandRunner.cs
+```
+
+### 18.2 Workbook input rules
+
+The default workbook location is now:
+
+```text
+scan/data/scan_default.xlsx
+```
+
+Default sheet and column:
+
+```text
+sheet=Candidates
+symbolColumn=A
+```
+
+The reader:
+
+```text
+- reads .xlsx directly through ZIP/XML OpenXML parts,
+- does not use Microsoft Excel Interop,
+- supports shared strings and inline strings,
+- reads one symbol column,
+- ignores blank rows,
+- ignores header values such as SYMBOL/TICKER/CANDIDATES,
+- normalizes symbols to uppercase,
+- removes duplicates,
+- rejects invalid/empty tokens.
+```
+
+The file `scan/data/local/` is ignored so daily/private exports can be placed there without accidental Git commits.
+
+### 18.3 Daily list changes and intraday symbol additions
+
+SAILOR-037 introduces the command/options contract for daily-changing lists and intraday additions:
+
+```text
+--scan-refresh-seconds 300
+--trade-top 10
+```
+
+Runtime meaning for the next dynamic milestone:
+
+```text
+- at startup, load the current trading-day workbook,
+- every 5 minutes, reload the workbook,
+- detect added symbols and create new symbol state for them,
+- detect removed symbols but do not remove exit/flatten management for symbols with open positions,
+- keep the previous clean scan-list snapshot in memory if the file is temporarily missing or partially written,
+- write warnings if a reload fails.
+```
+
+SAILOR-037 does not yet keep a long-running in-memory reload loop. It makes the input reader/provider and command contract available so the dynamic runtime can be built safely in the next step.
+
+### 18.4 Connection interruption handling contract
+
+SAILOR-037 scan-list commands are read-only and do not route orders.
+
+For the later dynamic backtest/paper/live runtime, the implemented command output now documents this policy:
+
+```text
+- if TWS/server/history connection is interrupted, keep the last clean scan-list snapshot in memory,
+- continue managing exits/flatten for any already-active positions,
+- block new entries by moving the runtime to CloseOnly when broker/server state is degraded,
+- resume entry eligibility only after reconnect + reconciliation is clean.
+```
+
+This must be connected to the already implemented SAILOR-031 degraded-state handling in the next dynamic runtime milestone.
+
+### 18.5 Top-10 trade eligibility contract
+
+The default trade retention contract is now:
+
+```text
+--trade-top 10
+--scan-refresh-seconds 300
+```
+
+Meaning:
+
+```text
+- every 5 minutes, rerank the workbook symbols,
+- keep at least the best 10 scan-rated symbols in memory for paper/live entry eligibility,
+- entries are allowed only for symbols in the retained top list,
+- exits and flatten remain allowed even if a symbol falls out of the top list,
+- live trading remains subject to SAILOR-033/034 live gates.
+```
+
+SAILOR-037 applies this contract to scan-list reporting and command output. Actual dynamic entry gating by the retained top list is planned for the next paper dynamic scan-list conduct milestone.
+
+### 18.6 New commands implemented now
+
+Inspect the default workbook:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- scan-list inspect --file scan\data\scan_default.xlsx --sheet Candidates
+```
+
+Inspect the fallback/raw sheet:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- scan-list inspect --file scan\data\scan_default.xlsx --sheet Sheet1
+```
+
+Backtest ranking from the workbook:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- backtest scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates
+```
+
+Equivalent rank command:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- rank 1m v21-15minutes 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates
+```
+
+Paper read-only scan-list ranking:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --scan-refresh-seconds 300 --trade-top 10
+```
+
+Live read-only scan-list ranking:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --scan-refresh-seconds 300 --trade-top 10
+```
+
+Direct universe argument form, useful for advanced backtest/rank commands:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- rank 1m v21-15minutes 10 "scan\data\scan_default.xlsx#Candidates#A"
+```
+
+### 18.7 Acceptance tests for SAILOR-037
+
+Build:
+
+```powershell
+dotnet clean
+dotnet build
+```
+
+Workbook reader:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- scan-list inspect --file scan\data\scan_default.xlsx --sheet Candidates
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- scan-list inspect --file scan\data\scan_default.xlsx --sheet Sheet1
+```
+
+Expected:
+
+```text
+Candidates: around 131 unique symbols
+Sheet1: around 232 unique symbols
+```
+
+Paper read-only smoke test:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --max-symbols 45
+```
+
+Live read-only smoke test:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45
+```
+
+IBApi build:
+
+```powershell
+dotnet restore src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
+dotnet build src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
+```
+
+### 18.8 Remaining work after SAILOR-037
+
+Not implemented yet:
+
+```text
+- long-running 5-minute workbook reload loop,
+- in-memory 1m candle accumulator,
+- historical + real-time candle merger,
+- 45-symbol / 10-minute history batch scheduler,
+- dynamic top-10 entry gating inside paper conduct,
+- paper certification scan-list evidence,
+- live read-only streaming candle observation,
+- live best-1/top-N dynamic pilot.
+```
+
+Recommended next milestone:
+
+```text
+SAILOR-038 — Scan-list memory store, refresh loop, and history batch scheduler contract
+```
+
+Recommended implementation sequence:
+
+```text
+1. Create ScanListMemoryStore and ScanListSymbolState.
+2. Add workbook reload every --scan-refresh-seconds.
+3. Detect added/removed symbols.
+4. Keep removed symbols if there is an open position or recent selection.
+5. Add ScanListHistoryBatchScheduler for 45 symbols every 10 minutes.
+6. Connect scheduler status to SAILOR-031 degraded-state handling.
+7. Write logs/{Mode}/ScanList/scanlist_latest.json evidence.
+```

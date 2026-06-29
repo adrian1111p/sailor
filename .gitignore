@@ -10,3 +10,5 @@ obj/
 logs/
 state/
 cache/
+# Sailor operator-maintained local scan exports
+scan/data/local/

@@ -15,6 +15,8 @@ using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.Live;
 using Sailor.App.Runtime.Paper;
 using Sailor.App.Scanner.Runtime;
+using Sailor.App.Scanner.ScanList;
+using Sailor.App.Scanner.Universe;
 
 namespace Sailor.App.Runtime.Commands;
 
@@ -37,6 +39,10 @@ public static class SailorRuntimeCommandRunner
 
             case "scan":
                 await RunScanSkeletonAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
+            case "scan-list":
+                await RunScanListSkeletonAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
             case "history":
@@ -429,6 +435,196 @@ public static class SailorRuntimeCommandRunner
         }
 
         Log(writer, "");
+        Log(writer, $"Runtime log: {logFilePath}");
+        Log(writer, "No orders sent.");
+    }
+
+
+    private static async Task RunScanListSkeletonAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        string[] positional = args.Where(arg => !arg.StartsWith("--", StringComparison.Ordinal)).ToArray();
+        string timeframe = positional.Length >= 1 ? positional[0].Trim() : settings.DefaultTimeframe;
+        string profileName = positional.Length >= 2 ? positional[1].Trim() : settings.DefaultProfile;
+        int topCount = positional.Length >= 3 && int.TryParse(positional[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedTop) && parsedTop > 0
+            ? parsedTop
+            : settings.Scanner.DefaultTopCount;
+
+        string file = ReadStringOption(args, "--file", ReadStringOption(args, "--scan-file", ScanListWorkbookOptions.DefaultFilePath));
+        string sheet = ReadStringOption(args, "--sheet", ReadStringOption(args, "--scan-sheet", ScanListWorkbookOptions.DefaultSheetName));
+        string symbolColumn = ReadStringOption(args, "--symbol-column", ScanListWorkbookOptions.DefaultSymbolColumn);
+        int scanRefreshSeconds = ReadIntOption(args, "--scan-refresh-seconds", ScanListWorkbookOptions.DefaultRefreshSeconds);
+        int historyBatchSize = ReadIntOption(args, "--history-batch-size", ScanListWorkbookOptions.DefaultHistoryBatchSize);
+        int historyBatchIntervalMinutes = ReadIntOption(args, "--history-batch-interval-minutes", ScanListWorkbookOptions.DefaultHistoryBatchIntervalMinutes);
+        int tradeTop = ReadIntOption(args, "--trade-top", Math.Max(1, topCount));
+        string universeArgument = SymbolUniverseProviderFactory.BuildXlsxUniverseArgument(file, sheet, symbolColumn);
+
+        var workbookOptions = new ScanListWorkbookOptions(
+            file,
+            sheet,
+            symbolColumn,
+            scanRefreshSeconds,
+            tradeTop,
+            historyBatchSize,
+            historyBatchIntervalMinutes);
+        var reader = new ScanListWorkbookReader();
+        ScanListWorkbookResult workbook = reader.Read(workbookOptions);
+
+        var scanArgs = new List<string>
+        {
+            timeframe,
+            profileName,
+            topCount.ToString(CultureInfo.InvariantCulture),
+            universeArgument
+        };
+
+        scanArgs.AddRange(args.Where(arg => arg.StartsWith("--", StringComparison.Ordinal) &&
+            !arg.Equals("--file", StringComparison.OrdinalIgnoreCase) &&
+            !arg.Equals("--scan-file", StringComparison.OrdinalIgnoreCase) &&
+            !arg.Equals("--sheet", StringComparison.OrdinalIgnoreCase) &&
+            !arg.Equals("--scan-sheet", StringComparison.OrdinalIgnoreCase) &&
+            !arg.Equals("--symbol-column", StringComparison.OrdinalIgnoreCase)));
+
+        SailorRuntimeOptions runtimeOptions = CreateOptions(mode, scanArgs.ToArray(), settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        string account = ReadStringOption(args, "--account", modeSettings.Account ?? string.Empty);
+        var connectionOptions = new IbkrConnectionOptions(
+            mode,
+            runtimeOptions.Host,
+            runtimeOptions.Port,
+            runtimeOptions.ClientId,
+            account,
+            modeSettings.ConnectTimeoutSeconds,
+            runtimeOptions.UseL1,
+            runtimeOptions.UseL2,
+            SendOrders: false,
+            runtimeOptions.AllowShort);
+
+        bool localCache = args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
+        bool requestIbkrHistory = !localCache && !args.Any(arg => arg.Equals("--no-history-refresh", StringComparison.OrdinalIgnoreCase));
+        bool mirrorHistoryToBacktest = !args.Any(arg => arg.Equals("--no-backtest-copy", StringComparison.OrdinalIgnoreCase));
+        bool useRth = !args.Any(arg => arg.Equals("--all-hours", StringComparison.OrdinalIgnoreCase));
+        bool captureSnapshots = !args.Any(arg => arg.Equals("--no-quotes", StringComparison.OrdinalIgnoreCase));
+        bool useL2 = runtimeOptions.UseL2 || args.Any(arg => arg.Equals("--with-depth", StringComparison.OrdinalIgnoreCase));
+        if (args.Any(arg => arg.Equals("--no-depth", StringComparison.OrdinalIgnoreCase)))
+        {
+            useL2 = false;
+        }
+
+        bool requestIbkrMarketData = captureSnapshots && !localCache;
+        int days = ReadIntOption(args, "--days", 5);
+        int marketDataType = ReadIntOption(args, "--market-data-type", 1);
+        int snapshotSeconds = ReadIntOption(args, "--seconds", 3);
+        int depthLevels = ReadIntOption(args, "--levels", settings.L1L2.DepthLevels <= 0 ? 5 : settings.L1L2.DepthLevels);
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+        bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+
+        int defaultMaxSymbols = localCache
+            ? int.MaxValue
+            : Math.Min(workbook.SymbolCount, Math.Max(1, historyBatchSize));
+        int maxSymbols = ReadIntOption(args, "--max-symbols", defaultMaxSymbols);
+
+        var scannerOptions = new PaperScannerOptions(
+            mode,
+            runtimeOptions.Timeframe,
+            runtimeOptions.ProfileName,
+            runtimeOptions.Universe,
+            runtimeOptions.TopCount,
+            maxSymbols,
+            days,
+            requestIbkrHistory,
+            mirrorHistoryToBacktest,
+            useRth,
+            captureSnapshots,
+            requestIbkrMarketData,
+            runtimeOptions.UseL1,
+            useL2,
+            snapshotSeconds,
+            depthLevels,
+            marketDataType,
+            primaryExchange,
+            smartDepth);
+
+        string logFilePath = CreateRuntimeLogFilePath(mode, "scan_list");
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {runtimeOptions.ModeName} scan-list runtime started");
+        Log(writer, runtimeOptions.ToCompactString());
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, scannerOptions.ToDisplayString());
+        Log(writer, workbook.ToSummaryString());
+        Log(writer, workbookOptions.ToDisplayString());
+        Log(writer, $"historyBatchesPlanned={Math.Max(1, (int)Math.Ceiling(workbook.SymbolCount / (double)Math.Max(1, historyBatchSize)))} scanRefreshSeconds={scanRefreshSeconds} tradeTop={tradeTop}");
+        Log(writer, "");
+        Log(writer, "SAILOR-037 implementation: scan-default workbook input and xlsx universe provider.");
+        Log(writer, "The workbook list can change every trading day. Later runtime milestones will reload it every 5 minutes and keep added symbols in memory without dropping exit management for existing positions.");
+        Log(writer, "This milestone keeps order routing disabled for scan-list commands. It reads the workbook, applies the existing scanner, and writes scanner evidence only.");
+        Log(writer, "Connection interruption policy: if the broker/server connection is degraded in later dynamic runtimes, the last clean symbol snapshot remains in memory and entries move to CloseOnly.");
+        Log(writer, "Trade retention policy: the top scan-rated symbols are retained for paper/live entry eligibility; exits/flatten remain allowed for symbols removed from the top list.");
+        Log(writer, "");
+
+        if (mode == SailorRuntimeMode.Live)
+        {
+            LiveReadinessGateResult gate = EvaluateLiveReadiness(
+                settings,
+                "live scan-list",
+                args,
+                requiresTrading: false,
+                readOnly: true,
+                account: account);
+            LogLiveReadinessGate(writer, gate);
+            Log(writer, "SAILOR-037 live scan-list is read-only. No live order router is created.");
+            Log(writer, "");
+        }
+
+        using var runner = new PaperScannerRunner(settings, connectionOptions, scannerOptions);
+        Log(writer, $"History provider: {runner.HistoryProviderName}");
+        Log(writer, $"Market data provider: {runner.MarketDataProviderName}");
+        Log(writer, "");
+
+        PaperScannerRunResult result = await runner.RunAsync(scannerOptions, CancellationToken.None);
+
+        Log(writer, "Scan-list preparation summary");
+        Log(writer, "-----------------------------");
+        Log(writer, result.ToSummaryString());
+        Log(writer, $"Resolved workbook symbols: {result.ResolvedSymbols.Count}");
+        Log(writer, $"Prepared symbols: {string.Join(", ", result.PreparedSymbols.Take(80))}{(result.PreparedSymbols.Count > 80 ? ", ..." : string.Empty)}");
+        Log(writer, "");
+
+        if (result.Candidates.Count == 0)
+        {
+            Log(writer, "No scanner candidates found for the scan-list profile/timeframe/universe.");
+        }
+        else
+        {
+            Log(writer, $"Top scanner candidates retained for trading eligibility every {scanRefreshSeconds}s");
+            Log(writer, "-------------------------------------------------------------------");
+            foreach (PaperScannerCandidate candidate in result.Candidates.Take(tradeTop))
+            {
+                Log(writer, candidate.ToDisplayLine());
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.CandidateReportPath))
+        {
+            Log(writer, "");
+            Log(writer, $"Scanner CSV report: {result.CandidateReportPath}");
+        }
+
+        if (result.Warnings.Count > 0 || workbook.Warnings.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Warnings");
+            Log(writer, "--------");
+            foreach (string warning in workbook.Warnings.Concat(result.Warnings).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+
+        Log(writer, "");
+        Log(writer, $"sailor {runtimeOptions.ModeName} scan-list finished");
         Log(writer, $"Runtime log: {logFilePath}");
         Log(writer, "No orders sent.");
     }
@@ -2117,6 +2313,7 @@ public static class SailorRuntimeCommandRunner
             Console.WriteLine($"  sailor {name} readiness --account DU123456 --max-notional 100 --confirm-live");
         }
         Console.WriteLine($"  sailor {name} scan");
+        Console.WriteLine($"  sailor {name} scan-list 1m v21-15minutes 10 --file scan/data/scan_default.xlsx --sheet Candidates --local-cache --no-quotes");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --local-cache");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --days 5 --market-data-type 2");
         Console.WriteLine($"  sailor {name} scan 1m v21-15minutes 1 TSLA --local-cache --no-depth");
@@ -2166,6 +2363,8 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - live connect requires --read-only before opening the TCP probe");
         Console.WriteLine("  - live scan remains read-only and never creates an order router");
         Console.WriteLine("  - live readiness/gate evaluates config, --confirm-live, paper certification age/status, account match, and max notional");
+        Console.WriteLine("  - SAILOR-037 can read scan/data/scan_default.xlsx and feed workbook symbols into backtest/paper/live scan-list ranking");
+        Console.WriteLine("  - scan-list inputs support 5-minute refresh, daily list changes, intraday additions, and top-N trade eligibility contracts for the next dynamic runtime milestone");
         Console.WriteLine("  - SAILOR-034 consumes the live-readiness gate for a one-symbol live pilot");
         Console.WriteLine("  - live pilot enforces one explicit symbol, small max notional, operator-watching-TWS acknowledgement, long-only default, pre-run reconciliation, and final zero exposure");
         Console.WriteLine("  - live flatten is available as a close-only command and never opens a new position");
