@@ -92,6 +92,11 @@ public sealed class PaperRuntimeHost
             _log($"Scanner CSV report: {scannerResult.CandidateReportPath}");
         }
 
+        if (!string.IsNullOrWhiteSpace(scannerResult.HybridComparisonReportPath))
+        {
+            _log($"Hybrid comparison CSV report: {scannerResult.HybridComparisonReportPath}");
+        }
+
         foreach (string warning in scannerResult.Warnings)
         {
             warnings.Add(warning);

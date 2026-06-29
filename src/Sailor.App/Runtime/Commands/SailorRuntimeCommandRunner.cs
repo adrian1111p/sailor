@@ -522,6 +522,9 @@ public static class SailorRuntimeCommandRunner
         string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
         PointsScannerMode scannerMode = ReadScannerMode(args, settings);
+        decimal pointsMinimumTradeScore = ReadDecimalOption(args, "--points-min-trade-score", settings.Scanner.PointsMinimumTradeScore);
+        bool pointsAllowWeakEntry = ReadBooleanOption(args, "--points-allow-weak-entry", settings.Scanner.PointsAllowWeakEntry);
+        bool pointsRetainWatchOnly = ReadBooleanOption(args, "--points-retain-watch-only", settings.Scanner.PointsRetainWatchOnly);
 
         int defaultMaxSymbols = Math.Max(1, historyBatchSize);
         int maxSymbols = ReadIntOption(args, "--max-symbols", defaultMaxSymbols);
@@ -546,7 +549,10 @@ public static class SailorRuntimeCommandRunner
             marketDataType,
             primaryExchange,
             smartDepth,
-            scannerMode);
+            scannerMode,
+            pointsMinimumTradeScore,
+            pointsAllowWeakEntry,
+            pointsRetainWatchOnly);
 
         var runRequest = new ScanListRunRequest(
             mode,
@@ -565,6 +571,7 @@ public static class SailorRuntimeCommandRunner
         Log(writer, scannerOptions.ToDisplayString());
         Log(writer, workbookOptions.ToDisplayString());
         Log(writer, $"scanCycles={runRequest.SafeCycles} waitBetweenCycles={waitBetweenCycles} scanRefreshSeconds={runRequest.SafeScanRefreshSeconds} tradeTop={runRequest.SafeTradeTop}");
+        Log(writer, ScanListCandidateRetentionOptions.FromScannerOptions(scannerOptions).ToDisplayString());
         Log(writer, "");
         Log(writer, "SAILOR-041 scan-list observation/runtime evidence for audit Steps 13, 14, and 15.");
         Log(writer, "The command keeps a ScanListMemoryStore alive across scan cycles, reloads the workbook, detects intraday additions/removals, selects the due history batch, and retains the best scanner-rated symbols for later paper/live entry eligibility.");
@@ -640,8 +647,8 @@ public static class SailorRuntimeCommandRunner
             }
             else
             {
-                Log(writer, $"Top scanner candidates retained for trading eligibility every {scanRefreshSeconds}s");
-                Log(writer, "-------------------------------------------------------------------");
+                Log(writer, $"Top scanner candidates retained as trade/watch evidence every {scanRefreshSeconds}s");
+                Log(writer, "----------------------------------------------------------------");
                 foreach (PaperScannerCandidate candidate in cycle.ScannerResult.Candidates.Take(tradeTop))
                 {
                     Log(writer, candidate.ToDisplayLine());
@@ -658,6 +665,11 @@ public static class SailorRuntimeCommandRunner
             {
                 Log(writer, "");
                 Log(writer, $"Scanner CSV report: {cycle.ScannerResult.CandidateReportPath}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(cycle.ScannerResult.HybridComparisonReportPath))
+            {
+                Log(writer, $"Hybrid comparison CSV report: {cycle.ScannerResult.HybridComparisonReportPath}");
             }
 
             if (cycle.Warnings.Count > 0)
@@ -711,6 +723,9 @@ public static class SailorRuntimeCommandRunner
         string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
         PointsScannerMode scannerMode = ReadScannerMode(args, settings);
+        decimal pointsMinimumTradeScore = ReadDecimalOption(args, "--points-min-trade-score", settings.Scanner.PointsMinimumTradeScore);
+        bool pointsAllowWeakEntry = ReadBooleanOption(args, "--points-allow-weak-entry", settings.Scanner.PointsAllowWeakEntry);
+        bool pointsRetainWatchOnly = ReadBooleanOption(args, "--points-retain-watch-only", settings.Scanner.PointsRetainWatchOnly);
 
         int defaultMaxSymbols = localCache
             ? int.MaxValue
@@ -737,7 +752,10 @@ public static class SailorRuntimeCommandRunner
             marketDataType,
             primaryExchange,
             smartDepth,
-            scannerMode);
+            scannerMode,
+            pointsMinimumTradeScore,
+            pointsAllowWeakEntry,
+            pointsRetainWatchOnly);
 
         string logFilePath = CreateRuntimeLogFilePath(mode, "scan");
         await using var writer = CreateWriter(logFilePath);
@@ -898,6 +916,7 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"SAILOR-040 dynamic scan-list selection for {commandName}.");
         Log(writer, workbookOptions.ToDisplayString());
         Log(writer, $"scanCycles={request.SafeCycles} waitBetweenCycles={waitBetweenCycles} tradeTop={request.SafeTradeTop} maxSymbols={maxSymbols}");
+        Log(writer, ScanListCandidateRetentionOptions.FromScannerOptions(scanListScannerOptions).ToDisplayString());
         Log(writer, "The scan-list runtime reloads the workbook, schedules due history batches, merges history/realtime candles, and retains the best scanner-rated symbols before the conduct loop.");
         Log(writer, "Order routing remains controlled by the existing paper/live gates. Scan-list selection only controls entry eligibility; exits/flatten remain allowed for managed positions.");
 
@@ -915,6 +934,11 @@ public static class SailorRuntimeCommandRunner
             if (latest.TradeEligibleSymbols.Count > 0)
             {
                 Log(writer, $"retainedTradeEligible={string.Join(", ", latest.TradeEligibleSymbols)}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(latest.ScannerResult.HybridComparisonReportPath))
+            {
+                Log(writer, $"hybridComparisonReport={latest.ScannerResult.HybridComparisonReportPath}");
             }
         }
 
@@ -940,7 +964,9 @@ public static class SailorRuntimeCommandRunner
 
         IReadOnlyList<string> retained = latest.TradeEligibleSymbols.Count > 0
             ? latest.TradeEligibleSymbols
-            : latest.ScannerResult.Candidates.Select(candidate => candidate.Symbol).ToArray();
+            : latest.ScannerResult.Options.ScannerMode == PointsScannerMode.LegacyBlocks
+                ? latest.ScannerResult.Candidates.Select(candidate => candidate.Symbol).ToArray()
+                : Array.Empty<string>();
 
         return retained
             .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
@@ -1070,6 +1096,9 @@ public static class SailorRuntimeCommandRunner
         bool requestIbkrMarketData = captureSnapshots && !localCache;
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
         PointsScannerMode scannerMode = ReadScannerMode(args, settings);
+        decimal pointsMinimumTradeScore = ReadDecimalOption(args, "--points-min-trade-score", settings.Scanner.PointsMinimumTradeScore);
+        bool pointsAllowWeakEntry = ReadBooleanOption(args, "--points-allow-weak-entry", settings.Scanner.PointsAllowWeakEntry);
+        bool pointsRetainWatchOnly = ReadBooleanOption(args, "--points-retain-watch-only", settings.Scanner.PointsRetainWatchOnly);
         bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
 
         bool sendOrdersRequested = args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase));
@@ -1119,7 +1148,10 @@ public static class SailorRuntimeCommandRunner
             marketDataType,
             primaryExchange,
             smartDepth,
-            scannerMode);
+            scannerMode,
+            pointsMinimumTradeScore,
+            pointsAllowWeakEntry,
+            pointsRetainWatchOnly);
 
         if (mode == SailorRuntimeMode.Paper && HasScanListInput(args))
         {
@@ -1332,6 +1364,9 @@ public static class SailorRuntimeCommandRunner
         bool requestIbkrMarketData = captureSnapshots && !localCache;
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
         PointsScannerMode scannerMode = ReadScannerMode(args, settings);
+        decimal pointsMinimumTradeScore = ReadDecimalOption(args, "--points-min-trade-score", settings.Scanner.PointsMinimumTradeScore);
+        bool pointsAllowWeakEntry = ReadBooleanOption(args, "--points-allow-weak-entry", settings.Scanner.PointsAllowWeakEntry);
+        bool pointsRetainWatchOnly = ReadBooleanOption(args, "--points-retain-watch-only", settings.Scanner.PointsRetainWatchOnly);
         bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
         ScanListRuntimeEvidence? liveScanListEvidence = null;
         string? liveScanListEvidencePath = null;
@@ -1372,7 +1407,10 @@ public static class SailorRuntimeCommandRunner
                 marketDataType,
                 primaryExchange,
                 smartDepth,
-                scannerMode);
+                scannerMode,
+                pointsMinimumTradeScore,
+                pointsAllowWeakEntry,
+                pointsRetainWatchOnly);
 
             ScanListRunResult scanListResult = await RunScanListSelectionForConductAsync(
                 SailorRuntimeMode.Live,
@@ -1465,7 +1503,10 @@ public static class SailorRuntimeCommandRunner
             marketDataType,
             primaryExchange,
             smartDepth,
-            scannerMode);
+            scannerMode,
+            pointsMinimumTradeScore,
+            pointsAllowWeakEntry,
+            pointsRetainWatchOnly);
 
         Log(writer, connectionOptions.ToDisplayString());
         Log(writer, scannerOptions.ToDisplayString());
@@ -2625,6 +2666,42 @@ public static class SailorRuntimeCommandRunner
         }
 
         return defaultValue > 0m ? defaultValue : 0m;
+    }
+
+
+    private static bool ReadBooleanOption(string[] args, string optionName, bool defaultValue)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (!args[i].Equals(optionName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (i < args.Length - 1 && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                string value = args[i + 1].Trim();
+                if (value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("on", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                if (value.Equals("false", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("no", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("0", StringComparison.OrdinalIgnoreCase) ||
+                    value.Equals("off", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return defaultValue;
     }
 
     private static string ReadStringOption(string[] args, string optionName, string defaultValue)

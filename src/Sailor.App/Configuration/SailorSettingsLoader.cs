@@ -86,6 +86,11 @@ public static class SailorSettingsLoader
             settings.Scanner.DefaultTopCount = 20;
         }
 
+        if (settings.Scanner.PointsMinimumTradeScore <= 0m)
+        {
+            settings.Scanner.PointsMinimumTradeScore = 45m;
+        }
+
         if (settings.L1L2.DepthLevels <= 0)
         {
             settings.L1L2.DepthLevels = 5;

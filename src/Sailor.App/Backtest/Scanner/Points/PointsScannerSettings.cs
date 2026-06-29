@@ -52,6 +52,8 @@ public sealed class PointsScannerSettings
 
     public decimal ChoppyShieldPoints { get; init; } = 6m;
 
+    public decimal V18VolumeRatioProfilePoints { get; init; } = 8m;
+
     public decimal VwapExtensionWithinLimitPoints { get; init; } = 6m;
 
     public decimal VwapExtensionMaximumPenalty { get; init; } = -15m;

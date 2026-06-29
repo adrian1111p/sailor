@@ -1,3 +1,4 @@
+using Sailor.App.Backtest.Scanner.Points;
 using Sailor.App.Scanner.Runtime;
 
 namespace Sailor.App.Scanner.ScanList;
@@ -54,6 +55,8 @@ public sealed class ScanListMemoryStore
                     RemovedUtc: null,
                     HasOpenPosition: openPositionSet.Contains(symbol),
                     IsRetainedTradeCandidate: false,
+                    IsRetainedWatchCandidate: false,
+                    LastPointsStatus: null,
                     LastRank: null,
                     LastScore: null,
                     Source: SourceDescription(workbook));
@@ -79,7 +82,7 @@ public sealed class ScanListMemoryStore
                     LastSeenUtc = now
                 };
             }
-            else if (state.IsRetainedTradeCandidate)
+            else if (state.IsRetainedCandidate)
             {
                 _states[symbol] = state with
                 {
@@ -120,15 +123,24 @@ public sealed class ScanListMemoryStore
             workbook.Warnings);
     }
 
-    public void RetainTradeCandidates(IEnumerable<PaperScannerCandidate> candidates, int tradeTop, DateTimeOffset? observedUtc = null)
+    public void RetainTradeCandidates(
+        IEnumerable<PaperScannerCandidate> candidates,
+        int tradeTop,
+        ScanListCandidateRetentionOptions? retentionOptions = null,
+        DateTimeOffset? observedUtc = null)
     {
         DateTimeOffset now = observedUtc ?? DateTimeOffset.UtcNow;
+        ScanListCandidateRetentionOptions options = retentionOptions ?? new ScanListCandidateRetentionOptions(
+            PointsMinimumTradeScore: 45m,
+            PointsAllowWeakEntry: false,
+            PointsRetainWatchOnly: true);
+
         var rankedCandidates = candidates
             .Take(Math.Max(1, tradeTop))
             .ToArray();
 
         // SAILOR-039: no candidate batch can be a normal waiting state when no history batch
-        // is due. In that case keep the last retained trade list in memory instead of
+        // is due. In that case keep the last retained trade/watch list in memory instead of
         // clearing it, so the runtime preserves the previous top-N selection between
         // the 5-minute workbook refresh and 10-minute history batch cadence.
         if (rankedCandidates.Length == 0)
@@ -146,11 +158,14 @@ public sealed class ScanListMemoryStore
             ScanListSymbolState state = _states[symbol];
             if (retained.TryGetValue(symbol, out PaperScannerCandidate? candidate))
             {
+                (bool retain, bool tradeEligible, string? pointsStatus) = EvaluateRetention(candidate, options);
                 _states[symbol] = state with
                 {
-                    IsRetainedTradeCandidate = true,
-                    LastRank = candidate.Rank,
-                    LastScore = candidate.Candidate.Score,
+                    IsRetainedTradeCandidate = tradeEligible,
+                    IsRetainedWatchCandidate = retain && !tradeEligible,
+                    LastPointsStatus = pointsStatus,
+                    LastRank = retain ? candidate.Rank : null,
+                    LastScore = retain ? candidate.Candidate.Score : null,
                     LastSeenUtc = now
                 };
             }
@@ -159,12 +174,44 @@ public sealed class ScanListMemoryStore
                 _states[symbol] = state with
                 {
                     IsRetainedTradeCandidate = false,
+                    IsRetainedWatchCandidate = false,
+                    LastPointsStatus = null,
                     LastRank = null,
                     LastScore = null,
                     LastSeenUtc = now
                 };
             }
         }
+    }
+
+    private static (bool Retain, bool TradeEligible, string? PointsStatus) EvaluateRetention(
+        PaperScannerCandidate candidate,
+        ScanListCandidateRetentionOptions options)
+    {
+        if (candidate.PointsCandidate is null)
+        {
+            return (Retain: true, TradeEligible: true, PointsStatus: null);
+        }
+
+        PointsScannerStatus status = candidate.PointsCandidate.Status;
+        bool scoreOk = candidate.PointsCandidate.FinalScore >= options.PointsMinimumTradeScore;
+        bool tradeEligible = status switch
+        {
+            PointsScannerStatus.Ready => scoreOk,
+            PointsScannerStatus.WeakReady => scoreOk && options.PointsAllowWeakEntry,
+            _ => false
+        };
+
+        bool retain = status switch
+        {
+            PointsScannerStatus.Ready => true,
+            PointsScannerStatus.WeakReady => true,
+            PointsScannerStatus.WatchOnly => options.PointsRetainWatchOnly,
+            PointsScannerStatus.NotReady => false,
+            _ => false
+        };
+
+        return (retain, tradeEligible, status.ToDisplayName());
     }
 
 

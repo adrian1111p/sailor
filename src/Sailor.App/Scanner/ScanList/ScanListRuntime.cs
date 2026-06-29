@@ -131,7 +131,11 @@ public sealed class ScanListRuntime : IDisposable
             }
         }
 
-        _memoryStore.RetainTradeCandidates(scannerResult.Candidates, request.SafeTradeTop, observedUtc);
+        _memoryStore.RetainTradeCandidates(
+            scannerResult.Candidates,
+            request.SafeTradeTop,
+            ScanListCandidateRetentionOptions.FromScannerOptions(request.ScannerOptions),
+            observedUtc);
         IReadOnlyList<string> tradeEligibleSymbols = _memoryStore.TradeEligibleSymbols();
 
         ScanListMergeSummary mergeSummary = MergePreparedSymbols(

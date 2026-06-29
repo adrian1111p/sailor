@@ -23,13 +23,17 @@ public sealed record PaperScannerOptions(
     int MarketDataType,
     string PrimaryExchange,
     bool UseSmartDepth,
-    PointsScannerMode ScannerMode = PointsScannerMode.LegacyBlocks)
+    PointsScannerMode ScannerMode = PointsScannerMode.LegacyBlocks,
+    decimal PointsMinimumTradeScore = 45m,
+    bool PointsAllowWeakEntry = false,
+    bool PointsRetainWatchOnly = true)
 {
     public string ModeName => Mode.ToDisplayName();
 
     public string ToDisplayString()
         => $"mode={ModeName} timeframe={Timeframe} profile={ProfileName} universe={Universe} top={TopCount} " +
            $"maxSymbols={MaxSymbolsToPrepare} historyDays={HistoryDays} scannerMode={ScannerMode.ToConfigValue()} " +
+           $"pointsMinTradeScore={PointsMinimumTradeScore:F2} pointsAllowWeakEntry={PointsAllowWeakEntry} pointsRetainWatchOnly={PointsRetainWatchOnly} " +
            $"requestHistoryIbkr={RequestIbkrHistory} mirrorBacktest={MirrorHistoryToBacktest} useRth={UseRegularTradingHours} " +
            $"captureSnapshots={CaptureSnapshots} requestMarketDataIbkr={RequestIbkrMarketData} L1={UseL1} L2={UseL2} " +
            $"snapshotSeconds={SnapshotSeconds} depthLevels={DepthLevels} marketDataType={MarketDataType} " +

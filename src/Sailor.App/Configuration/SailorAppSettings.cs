@@ -220,6 +220,12 @@ public sealed class ScannerSettings
     public int DefaultTopCount { get; set; } = 20;
 
     public string DefaultMode { get; set; } = "legacy-blocks";
+
+    public decimal PointsMinimumTradeScore { get; set; } = 45m;
+
+    public bool PointsAllowWeakEntry { get; set; } = false;
+
+    public bool PointsRetainWatchOnly { get; set; } = true;
 }
 
 public sealed class SailorProfileSettings

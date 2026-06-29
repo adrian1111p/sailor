@@ -10,7 +10,8 @@ public sealed record PaperScannerCandidate(
     SailorMarketSnapshot? Snapshot,
     string SnapshotMessage,
     IReadOnlyList<string> SnapshotWarnings,
-    PointsScannerCandidate? PointsCandidate = null)
+    PointsScannerCandidate? PointsCandidate = null,
+    PointsScannerMode Mode = PointsScannerMode.LegacyBlocks)
 {
     public string Symbol => Candidate.Symbol;
 
@@ -24,7 +25,7 @@ public sealed record PaperScannerCandidate(
 
     public decimal LiquidityScore => Snapshot?.LiquidityScore ?? 0m;
 
-    public string ScannerMode => PointsCandidate is null ? "legacy-blocks" : "points-only";
+    public string ScannerMode => Mode.ToConfigValue();
 
     public string ToDisplayLine()
     {

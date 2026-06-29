@@ -100,12 +100,13 @@ public sealed class PaperScannerRunner : IDisposable
         }
 
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(options.ProfileName, _settings);
-        IReadOnlyList<(ScannerCandidate Candidate, PointsScannerCandidate? PointsCandidate)> scannerCandidates = CreateScannerCandidates(
+        ScannerCandidateSelection scannerSelection = CreateScannerCandidates(
             options,
             csvProvider,
             profile,
             preparedSymbols,
             warnings);
+        IReadOnlyList<(ScannerCandidate Candidate, PointsScannerCandidate? PointsCandidate)> scannerCandidates = scannerSelection.Candidates;
 
         var candidates = new List<PaperScannerCandidate>();
         int snapshotRequestId = 27_500;
@@ -130,7 +131,8 @@ public sealed class PaperScannerRunner : IDisposable
                 Snapshot: snapshot.Snapshot,
                 SnapshotMessage: snapshot.Message,
                 SnapshotWarnings: snapshot.Warnings,
-                PointsCandidate: pointsCandidate));
+                PointsCandidate: pointsCandidate,
+                Mode: options.ScannerMode));
         }
 
         string? reportPath = null;
@@ -141,7 +143,8 @@ public sealed class PaperScannerRunner : IDisposable
             preparations,
             candidates,
             CandidateReportPath: null,
-            warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            scannerSelection.HybridComparisonReportPath);
 
         if (candidates.Count > 0)
         {
@@ -153,39 +156,67 @@ public sealed class PaperScannerRunner : IDisposable
     }
 
 
-    private static IReadOnlyList<(ScannerCandidate Candidate, PointsScannerCandidate? PointsCandidate)> CreateScannerCandidates(
+    private static ScannerCandidateSelection CreateScannerCandidates(
         PaperScannerOptions options,
         CsvBacktestDataProvider csvProvider,
         SailorStrategyProfile profile,
         IReadOnlyList<string> preparedSymbols,
         List<string> warnings)
     {
+        var legacyScanner = new SailorScanner(csvProvider);
         if (options.ScannerMode == PointsScannerMode.PointsOnly)
         {
             var pointsScanner = new PointsScanner(csvProvider);
-            return pointsScanner.Scan(
-                    options.Timeframe,
-                    profile,
-                    options.TopCount,
-                    preparedSymbols)
-                .Select(candidate => (candidate.ToScannerCandidate(), (PointsScannerCandidate?)candidate))
-                .ToArray();
+            return new ScannerCandidateSelection(
+                pointsScanner.Scan(
+                        options.Timeframe,
+                        profile,
+                        options.TopCount,
+                        preparedSymbols)
+                    .Select(candidate => (candidate.ToScannerCandidate(), (PointsScannerCandidate?)candidate))
+                    .ToArray(),
+                HybridComparisonReportPath: null);
         }
 
         if (options.ScannerMode == PointsScannerMode.HybridCompare)
         {
-            warnings.Add("scanner-mode=hybrid-compare is parsed and recorded by SAILOR-045, but runtime routing still uses legacy-blocks until the hybrid comparison report is implemented in a later step.");
-        }
-
-        var scanner = new SailorScanner(csvProvider);
-        return scanner.Scan(
+            var pointsScanner = new PointsScanner(csvProvider);
+            IReadOnlyList<ScannerCandidate> legacyCandidates = legacyScanner.Scan(
                 options.Timeframe,
                 profile,
                 options.TopCount,
-                preparedSymbols)
-            .Select(candidate => (candidate, (PointsScannerCandidate?)null))
-            .ToArray();
+                preparedSymbols);
+            IReadOnlyList<PointsScannerCandidate> pointsCandidates = pointsScanner.Scan(
+                options.Timeframe,
+                profile,
+                options.TopCount,
+                preparedSymbols);
+            string reportPath = PaperScannerHybridComparisonReportWriter.Write(options, legacyCandidates, pointsCandidates);
+            warnings.Add($"scanner-mode=hybrid-compare wrote points-vs-legacy report: {reportPath}");
+            warnings.Add("scanner-mode=hybrid-compare routes selected symbols from legacy-blocks; points-only trading remains opt-in.");
+            return new ScannerCandidateSelection(
+                legacyCandidates.Select(candidate =>
+                {
+                    PointsScannerCandidate? points = pointsCandidates.FirstOrDefault(row => row.Symbol.Equals(candidate.Symbol, StringComparison.OrdinalIgnoreCase));
+                    return (candidate, points);
+                }).ToArray(),
+                reportPath);
+        }
+
+        return new ScannerCandidateSelection(
+            legacyScanner.Scan(
+                    options.Timeframe,
+                    profile,
+                    options.TopCount,
+                    preparedSymbols)
+                .Select(candidate => (candidate, (PointsScannerCandidate?)null))
+                .ToArray(),
+            HybridComparisonReportPath: null);
     }
+
+    private sealed record ScannerCandidateSelection(
+        IReadOnlyList<(ScannerCandidate Candidate, PointsScannerCandidate? PointsCandidate)> Candidates,
+        string? HybridComparisonReportPath);
 
     public void Dispose() => _snapshotProvider.Dispose();
 }

@@ -156,7 +156,7 @@ public sealed class PointsScanner
         ScorePrice(factors, legacyBlocks, latestBar.Close, profile);
         ScoreVolume(factors, legacyBlocks, latestBar, latestIndicators, volumeRatio, profile);
         ScoreDirectionalTrend(factors, legacyBlocks, latestBar, latestIndicators, profile, isShort, momentumPercent);
-        ScoreV18SilverFactors(factors, latestBar, previousBar, latestIndicators, profile, isShort, volumeRatio);
+        factors.AddRange(PointsScannerV18SilverScoring.Score(latestBar, previousBar, latestIndicators, profile, _settings, isShort, volumeRatio));
 
         decimal score = factors.Sum(factor => factor.Points);
         return new PointsScannerSideScore(
@@ -336,72 +336,6 @@ public sealed class PointsScanner
         else
         {
             Add(factors, "SMA200_MISSING", "SMA200 is missing", _settings.MissingSma200Penalty, "SMA200=n/a", "trend");
-        }
-    }
-
-    private void ScoreV18SilverFactors(
-        List<PointsScannerFactor> factors,
-        BacktestBar latestBar,
-        BacktestBar? previousBar,
-        BacktestIndicatorSnapshot latestIndicators,
-        SailorStrategyProfile profile,
-        bool isShort,
-        decimal volumeRatio)
-    {
-        if (!profile.Name.Equals("v18-silver", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        bool candleColorOk = isShort ? latestBar.Close < latestBar.Open : latestBar.Close > latestBar.Open;
-        Add(factors, candleColorOk ? "V18_CANDLE_COLOR" : "V18_CANDLE_COLOR_ADVERSE", candleColorOk ? "V18 candle color supports side" : "V18 candle color is opposite side", candleColorOk ? _settings.CandleColorPoints : _settings.OppositeCandleColorPenalty, $"open={latestBar.Open:F4} close={latestBar.Close:F4}", "v18");
-
-        if (previousBar is not null && previousBar.Close > 0m)
-        {
-            decimal barMomentum = (latestBar.Close - previousBar.Close) / previousBar.Close * 100m;
-            decimal directionalBarMomentum = isShort ? -barMomentum : barMomentum;
-            decimal entryThreshold = Math.Max(0m, profile.EntryMomentumPercent);
-            decimal points = entryThreshold <= 0m
-                ? 0m
-                : Math.Clamp(directionalBarMomentum / entryThreshold, -1m, 1m) * _settings.BarToBarMomentumPoints;
-            Add(factors, "V18_BAR_MOMENTUM", "V18 bar-to-bar directional momentum", points, $"directional={directionalBarMomentum:F3}% threshold={entryThreshold:F3}%", "v18");
-        }
-
-        if (latestIndicators.Vwap.HasValue && latestIndicators.Vwap.Value > 0m)
-        {
-            decimal distanceFromVwap = Math.Abs((latestBar.Close - latestIndicators.Vwap.Value) / latestIndicators.Vwap.Value * 100m);
-            if (distanceFromVwap <= 1m)
-            {
-                Add(factors, "V18_VWAP_REVERSION", "V18 close is within VWAP reversion band", _settings.VwapReversionPoints, $"distance={distanceFromVwap:F2}%", "v18");
-            }
-
-            if (distanceFromVwap <= 2m)
-            {
-                Add(factors, "V18_VWAP_EXTENSION_OK", "V18 VWAP extension is inside limit", _settings.VwapExtensionWithinLimitPoints, $"distance={distanceFromVwap:F2}%", "v18");
-            }
-            else
-            {
-                decimal penalty = Math.Max(_settings.VwapExtensionMaximumPenalty, -(distanceFromVwap - 2m) * 3m);
-                Add(factors, "V18_VWAP_EXTENSION_HIGH", "V18 VWAP extension is high", penalty, $"distance={distanceFromVwap:F2}%", "v18");
-            }
-        }
-
-        decimal bodyPercent = latestBar.Open > 0m
-            ? Math.Abs((latestBar.Close - latestBar.Open) / latestBar.Open * 100m)
-            : 0m;
-        if (bodyPercent <= 0.65m)
-        {
-            Add(factors, "V18_CHOPPY_SHIELD", "V18 choppy-shield body size is controlled", _settings.ChoppyShieldPoints, $"body={bodyPercent:F2}%", "v18");
-        }
-
-        if (volumeRatio >= profile.MinimumVolumeRatio)
-        {
-            Add(factors, "V18_VOL_RATIO_PROFILE", "V18 volume ratio meets selective-short profile", 8m, $"ratio={volumeRatio:F2} min={profile.MinimumVolumeRatio:F2}", "v18");
-        }
-        else
-        {
-            decimal penalty = -8m * Math.Clamp(profile.MinimumVolumeRatio - volumeRatio, 0m, profile.MinimumVolumeRatio) / Math.Max(profile.MinimumVolumeRatio, 0.01m);
-            Add(factors, "V18_VOL_RATIO_PROFILE_LOW", "V18 volume ratio is below selective-short profile", penalty, $"ratio={volumeRatio:F2} min={profile.MinimumVolumeRatio:F2}", "v18");
         }
     }
 

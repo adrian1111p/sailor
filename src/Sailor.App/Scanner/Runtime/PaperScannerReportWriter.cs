@@ -17,22 +17,23 @@ public static class PaperScannerReportWriter
         string path = Path.Combine(root, $"scanner_{result.Options.ProfileName}_{result.Options.Timeframe}_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
 
         using var writer = new StreamWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read));
-        writer.WriteLine("Rank,ScannerMode,Symbol,Side,CandidateStatus,Close,Score,LongScore,ShortScore,PositivePoints,NegativePoints,MomentumPercent,Volume,VolumeRatio,Ema9,Sma20,Sma200,Vwap,HasL1,HasL2,SpreadBps,BookImbalance,LiquidityScore,SnapshotSource,LegacyBlockReasons,TopPositiveFactors,TopNegativeFactors,Reason");
+        writer.WriteLine("Rank,ScannerMode,Status,Symbol,SelectedSide,FinalScore,LegacyCandidateScore,LongScore,ShortScore,PositivePoints,NegativePoints,Close,MomentumPercent,Volume,VolumeRatio,Ema9,Sma20,Sma200,Vwap,HasL1,HasL2,SpreadBps,BookImbalance,LiquidityScore,SnapshotSource,LegacyBlockReasons,TopPositiveFactors,TopNegativeFactors,Reason");
 
         foreach (PaperScannerCandidate row in result.Candidates)
         {
             writer.WriteLine(string.Join(',',
                 row.Rank.ToString(CultureInfo.InvariantCulture),
                 Escape(row.ScannerMode),
+                Escape(row.PointsCandidate is null ? string.Empty : row.PointsCandidate.Status.ToDisplayName()),
                 row.Candidate.Symbol,
                 row.Candidate.Side,
-                Escape(row.PointsCandidate is null ? string.Empty : row.PointsCandidate.Status.ToDisplayName()),
-                Format(row.Candidate.Close),
-                Format(row.Candidate.Score),
+                Format(row.PointsCandidate?.FinalScore ?? row.Candidate.Score),
+                Format(row.PointsCandidate is null ? row.Candidate.Score : null),
                 Format(row.PointsCandidate?.LongScore.Score),
                 Format(row.PointsCandidate?.ShortScore.Score),
                 Format(row.PointsCandidate?.PositivePoints),
                 Format(row.PointsCandidate?.NegativePoints),
+                Format(row.Candidate.Close),
                 Format(row.Candidate.MomentumPercent),
                 row.Candidate.Volume.ToString(CultureInfo.InvariantCulture),
                 Format(row.Candidate.VolumeRatio),

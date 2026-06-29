@@ -16,6 +16,8 @@ public sealed record ScanListSymbolState(
     DateTimeOffset? RemovedUtc,
     bool HasOpenPosition,
     bool IsRetainedTradeCandidate,
+    bool IsRetainedWatchCandidate,
+    string? LastPointsStatus,
     int? LastRank,
     decimal? LastScore,
     string Source,
@@ -30,11 +32,14 @@ public sealed record ScanListSymbolState(
 {
     public bool IsTradableCandidate => Status == ScanListSymbolStatus.Active && IsRetainedTradeCandidate;
 
+    public bool IsRetainedCandidate => IsRetainedTradeCandidate || IsRetainedWatchCandidate;
+
     public string ToDisplayLine()
     {
         string rank = LastRank?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a";
         string score = LastScore?.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture) ?? "n/a";
-        return $"{Symbol,-8} status={Status} openPosition={HasOpenPosition} retainedTrade={IsRetainedTradeCandidate} rank={rank} score={score} " +
+        string pointsStatus = string.IsNullOrWhiteSpace(LastPointsStatus) ? "n/a" : LastPointsStatus!;
+        return $"{Symbol,-8} status={Status} openPosition={HasOpenPosition} retainedTrade={IsRetainedTradeCandidate} retainedWatch={IsRetainedWatchCandidate} pointsStatus={pointsStatus} rank={rank} score={score} " +
                $"history={HistoryStatus} histBars={HistoricalBarCount} rtCandles={RealtimeCandleCount} mergedCandles={MergedCandleCount} " +
                $"firstSeen={FirstSeenUtc:O} lastSeen={LastSeenUtc:O}";
     }

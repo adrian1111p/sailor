@@ -9,7 +9,8 @@ public sealed record PaperScannerRunResult(
     IReadOnlyList<PaperScannerSymbolPreparation> Preparations,
     IReadOnlyList<PaperScannerCandidate> Candidates,
     string? CandidateReportPath,
-    IReadOnlyList<string> Warnings)
+    IReadOnlyList<string> Warnings,
+    string? HybridComparisonReportPath = null)
 {
     public int HistorySuccessCount => Preparations.Count(row => row.HistorySuccess);
 
@@ -23,11 +24,14 @@ public sealed record PaperScannerRunResult(
 
     public string ToSummaryString()
     {
-        string pointsSummary = Options.ScannerMode == PointsScannerMode.PointsOnly
+        string pointsSummary = Options.ScannerMode is PointsScannerMode.PointsOnly or PointsScannerMode.HybridCompare
             ? $" ready={ReadyPointsCandidates} weakReady={WeakReadyPointsCandidates} watchOnly={WatchOnlyPointsCandidates} notReady={NotReadyPointsCandidates}"
             : string.Empty;
+        string hybridSummary = string.IsNullOrWhiteSpace(HybridComparisonReportPath)
+            ? string.Empty
+            : $" hybridReport={HybridComparisonReportPath}";
 
         return $"resolved={ResolvedSymbols.Count} prepared={PreparedSymbols.Count} historyOk={HistorySuccessCount}/{Preparations.Count} " +
-               $"scannerMode={Options.ScannerMode.ToConfigValue()} candidates={Candidates.Count}{pointsSummary} report={CandidateReportPath ?? "n/a"}";
+               $"scannerMode={Options.ScannerMode.ToConfigValue()} candidates={Candidates.Count}{pointsSummary} report={CandidateReportPath ?? "n/a"}{hybridSummary}";
     }
 }
