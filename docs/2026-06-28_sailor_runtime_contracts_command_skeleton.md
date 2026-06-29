@@ -708,3 +708,39 @@ logs/Live/ScanList/
 ```
 
 Do not commit generated scan-list evidence.
+
+---
+
+## SAILOR-040 dynamic scan-list trading commands
+
+### Paper dynamic scan-list dry-run
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper run 1m v21-15minutes 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --dry-run --local-cache --no-quotes --iterations 10 --cadence-seconds 1 --max-symbols 45
+```
+
+This command runs the scan-list runtime first, retains the best scanner-rated symbols, and then starts the paper conduct loop using only those retained symbols. It sends no broker orders in dry-run mode.
+
+### Paper dynamic scan-list with broker order routing
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper run 1m v21-15minutes 5 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --send-orders --account DUN559573 --history-batch-size 45 --history-batch-interval-minutes 10 --wait-seconds 15
+```
+
+This remains blocked unless paper reconciliation is clean. Scan-list selection controls entries only; exits and force-flat remain allowed for managed positions.
+
+### Live scan-list pilot from the best retained symbol
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live run 1m v21-15minutes 1 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --max-notional 100 --confirm-live --operator-watching-tws --dry-run --local-cache --no-depth --iterations 5
+```
+
+SAILOR-040 uses the scan-list runtime to choose one symbol, then hands that symbol to the SAILOR-034 live pilot gate. Live trading is still blocked unless all live-readiness requirements pass.
+
+### Paper certification with scan-list evidence
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper report latest
+```
+
+The report now includes the latest `logs/Paper/ScanList/scanlist_latest.json` evidence when available.

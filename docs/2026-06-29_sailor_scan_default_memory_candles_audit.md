@@ -2044,3 +2044,111 @@ Recommended next milestone:
 ```text
 SAILOR-040 — Paper dynamic scan-list conduct loop with retained top-10 entry gate
 ```
+
+---
+
+## 2026-06-29 SAILOR-040 implementation update: Steps 10, 11, and 12
+
+SAILOR-040 implements the first safe trading-facing integration of the dynamic scan-list runtime.
+
+### Implemented Step 10: Paper command design
+
+`paper run` now supports scan-list input through `--scan-file` / `--scan-sheet`.
+Before the conduct loop starts, Sailor runs the dynamic `ScanListRuntime` once or for the requested `--scan-cycles`, then uses the retained scanner-rated symbols as the conduct-loop universe.
+
+Example dry-run command:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper run 1m v21-15minutes 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --dry-run --local-cache --no-quotes --iterations 10 --cadence-seconds 1 --max-symbols 45
+```
+
+Example broker-gated paper command:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper run 1m v21-15minutes 5 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --send-orders --account DUN559573 --history-batch-size 45 --history-batch-interval-minutes 10 --wait-seconds 15
+```
+
+Safety behavior:
+
+```text
+- scan-list selection controls entry eligibility only,
+- conduct loop trades only retained top scanner-rated symbols,
+- no retained trade-eligible symbol means no conduct loop and no orders,
+- paper --send-orders still requires clean broker reconciliation,
+- exits and force-flat remain controlled by the existing conduct safety model.
+```
+
+The paper certification report now reads the latest scan-list evidence from:
+
+```text
+logs/Paper/ScanList/scanlist_latest.json
+```
+
+and adds scan-list fields to the report markdown/JSON/CSV, including:
+
+```text
+scanListFile
+scanListSheet
+scanListSymbols
+historyBatchSize
+historyBatchIntervalMinutes
+tradeEligibleSymbols
+historyBatches
+preparedSymbols
+historySuccessCount
+memoryCandles
+mergedCandles
+scanListSafety
+```
+
+### Implemented Step 11: Live command design
+
+`live run` now supports scan-list input while keeping the SAILOR-034 pilot restriction that live trading starts with only one selected symbol.
+
+Example live dry-run / blocked pilot command:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live run 1m v21-15minutes 1 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --max-notional 100 --confirm-live --operator-watching-tws --dry-run --local-cache --no-depth --iterations 5
+```
+
+Example broker-enabled live pilot command, still fully gated:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- live run 1m v21-15minutes 1 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --max-notional 100 --confirm-live --operator-watching-tws --wait-seconds 15 --iterations 5
+```
+
+Safety behavior:
+
+```text
+- live scan-list selection is read-only until a single best symbol is retained,
+- the selected symbol becomes the explicit SAILOR-034 pilot symbol,
+- live-readiness gate must still pass,
+- Runtime.Live.AllowLiveTrading must still be true before real live orders,
+- latest paper certification must still be promotable,
+- account and max-notional checks still apply,
+- no selected scan-list symbol means no live pilot and no live order.
+```
+
+### Implemented Step 12: command option reference additions
+
+The active SAILOR-040 scan-list trading options are:
+
+| Option | Used by | Meaning |
+|---|---|---|
+| `--scan-file <path>` | `paper run`, `live run`, `scan-list` | Excel workbook path, default `scan/data/scan_default.xlsx`. |
+| `--scan-sheet <name>` | `paper run`, `live run`, `scan-list` | Workbook sheet, default `Candidates`. |
+| `--symbol-column <A>` | `paper run`, `live run`, `scan-list` | Column containing symbols, default `A`. |
+| `--scan-cycles <n>` | `paper run`, `live run`, `scan-list` | Number of scan-list runtime cycles to execute before selecting symbols. |
+| `--scan-refresh-seconds <n>` | all scan-list commands | Workbook reload/selection refresh cadence, default `300`. |
+| `--no-scan-cycle-wait` | all scan-list commands | Runs multiple scan cycles immediately for smoke tests. |
+| `--history-batch-size <n>` | all scan-list commands | Maximum symbols per history batch, default `45`. |
+| `--history-batch-interval-minutes <n>` | all scan-list commands | Delay between history batches, default `10`. |
+| `--trade-top <n>` / `--keep-trade-top <n>` | all scan-list commands | Retain at least the best `n` scanner-rated symbols for later entry eligibility. Minimum default is `10`. |
+| `--max-symbols <n>` | all scan-list commands | Limits prepared symbols per cycle; default is the history batch size for scan-list runtime. |
+| `--local-cache` | paper/live scan-list and run | Use local cache/backtest data and avoid broker history requests. |
+| `--no-quotes` | paper scan-list/run | Disable quote snapshot capture. |
+| `--no-depth` | live scan-list/run | Disable L2/depth requests. |
+
+### Next implementation recommendation
+
+SAILOR-041 should connect a real-time market event source to `ScanListCandleAccumulator` so memory candles are built from live paper/live events for all scan-list symbols, not only from local/historical merge evidence.

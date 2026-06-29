@@ -4,6 +4,7 @@ using Sailor.App.Broker.Orders;
 using Sailor.App.Broker.State;
 using Sailor.App.Logging;
 using Sailor.App.Runtime.Common;
+using Sailor.App.Scanner.ScanList;
 
 namespace Sailor.App.Reporting;
 
@@ -53,6 +54,7 @@ public sealed class PaperSessionReportWriter
             incidentReporter.IncidentDirectory,
             runtimeLog.SessionStartUtc,
             runtimeLog.SessionEndUtc);
+        PaperScanListEvidenceSummary? scanListEvidence = LoadLatestScanListEvidence();
 
         IReadOnlyList<OrderLedgerRecord> sessionOrders = SelectSessionOrders(ledger, runtimeLog);
         PositionAndPnlSummary positionSummary = CalculatePositionAndPnl(sessionOrders);
@@ -78,6 +80,11 @@ public sealed class PaperSessionReportWriter
         if (sessionOrders.Count == 0)
         {
             warnings.Add("No order ledger rows were mapped to the latest paper run.");
+        }
+
+        if (scanListEvidence is not null && !scanListEvidence.SafetyMode.Equals("Normal", StringComparison.OrdinalIgnoreCase))
+        {
+            warnings.Add($"Latest scan-list evidence is not clean: safety={scanListEvidence.SafetyMode}, reason={scanListEvidence.SafetyReason}");
         }
 
         if (!endExposureIsZero)
@@ -146,6 +153,7 @@ public sealed class PaperSessionReportWriter
             EndOpenExposureNotional: endExposure,
             EndExposureIsZero: endExposureIsZero,
             EndOpenPositions: endPositions,
+            ScanListEvidence: scanListEvidence,
             Warnings: warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
             Sources: new PaperCertificationReportSources(
                 runtimeLog.RuntimeLogPath,
@@ -153,6 +161,7 @@ public sealed class PaperSessionReportWriter
                 positionStore.Path,
                 reconciliation?.ReconciliationPath,
                 incidentReporter.IncidentDirectory,
+                scanListEvidence?.EvidencePath,
                 LatestJsonPath,
                 LatestMarkdownPath,
                 DailyCsvPath));
@@ -243,6 +252,48 @@ public sealed class PaperSessionReportWriter
         }
 
         return Array.Empty<OrderLedgerRecord>();
+    }
+
+    private PaperScanListEvidenceSummary? LoadLatestScanListEvidence()
+    {
+        string scanListPath = Path.Combine(_mode == SailorRuntimeMode.Live ? SailorLogPaths.Live : SailorLogPaths.Paper, "ScanList", "scanlist_latest.json");
+        if (!File.Exists(scanListPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            ScanListRuntimeEvidence? evidence = JsonSerializer.Deserialize<ScanListRuntimeEvidence>(File.ReadAllText(scanListPath), JsonOptions);
+            if (evidence is null)
+            {
+                return null;
+            }
+
+            return new PaperScanListEvidenceSummary(
+                evidence.EvidenceId,
+                evidence.File,
+                evidence.Sheet,
+                evidence.WorkbookSymbols,
+                evidence.ActiveSymbols,
+                evidence.TradeEligibleSymbols,
+                evidence.TradeEligiblePreview,
+                evidence.HistoryBatchSize,
+                evidence.HistoryBatchIntervalMinutes,
+                evidence.HistoryBatches,
+                evidence.DueHistoryBatch,
+                evidence.PreparedSymbols,
+                evidence.HistorySuccessCount,
+                evidence.MemoryCandles,
+                evidence.MergedCandles,
+                evidence.SafetyMode,
+                evidence.SafetyReason,
+                scanListPath);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private IReadOnlyList<RuntimeIncident> LoadDisconnectIncidents(
@@ -438,6 +489,28 @@ public sealed class PaperSessionReportWriter
         }
 
         writer.WriteLine();
+        writer.WriteLine("## Scan-list evidence");
+        writer.WriteLine();
+        if (report.ScanListEvidence is null)
+        {
+            writer.WriteLine("No scan-list evidence was found for the latest session.");
+        }
+        else
+        {
+            PaperScanListEvidenceSummary scan = report.ScanListEvidence;
+            writer.WriteLine($"- File: {scan.File}");
+            writer.WriteLine($"- Sheet: {scan.Sheet}");
+            writer.WriteLine($"- Workbook symbols: {scan.WorkbookSymbols}");
+            writer.WriteLine($"- Active symbols: {scan.ActiveSymbols}");
+            writer.WriteLine($"- Trade-eligible symbols: {scan.TradeEligibleSymbols} {(scan.TradeEligiblePreview.Count == 0 ? string.Empty : $"({string.Join(", ", scan.TradeEligiblePreview)})")}");
+            writer.WriteLine($"- History batching: size={scan.HistoryBatchSize}, intervalMinutes={scan.HistoryBatchIntervalMinutes}, batches={scan.HistoryBatches}, dueBatch={(scan.DueHistoryBatch <= 0 ? "none" : scan.DueHistoryBatch.ToString(CultureInfo.InvariantCulture))}");
+            writer.WriteLine($"- Prepared/history OK: {scan.PreparedSymbols}/{scan.HistorySuccessCount}");
+            writer.WriteLine($"- Memory/merged candles: {scan.MemoryCandles}/{scan.MergedCandles}");
+            writer.WriteLine($"- Safety: {scan.SafetyMode} - {scan.SafetyReason}");
+            writer.WriteLine($"- Evidence: {scan.EvidencePath}");
+        }
+
+        writer.WriteLine();
         writer.WriteLine("## End open positions");
         writer.WriteLine();
         if (report.EndOpenPositions.Count == 0)
@@ -475,6 +548,7 @@ public sealed class PaperSessionReportWriter
         writer.WriteLine($"- Positions: {report.Sources.PositionsPath}");
         writer.WriteLine($"- Reconciliation: {report.Sources.ReconciliationPath ?? "n/a"}");
         writer.WriteLine($"- Incidents: {report.Sources.IncidentDirectory}");
+        writer.WriteLine($"- Scan-list evidence: {report.Sources.ScanListEvidencePath ?? "n/a"}");
         writer.WriteLine($"- JSON report: {report.Sources.ReportJsonPath}");
         writer.WriteLine($"- Markdown report: {report.Sources.ReportMarkdownPath}");
         writer.WriteLine($"- CSV report: {report.Sources.ReportCsvPath}");
@@ -487,7 +561,7 @@ public sealed class PaperSessionReportWriter
         using var writer = new StreamWriter(new FileStream(DailyCsvPath, FileMode.Append, FileAccess.Write, FileShare.Read));
         if (writeHeader)
         {
-            writer.WriteLine("generatedUtc,reportId,mode,account,profile,symbols,status,canPromote,ordersSubmitted,ordersFilled,ordersRejected,positionsOpened,positionsClosed,forceFlatResult,disconnectIncidents,reconciliationStatus,reconciliationClean,l1l2Health,realizedPnl,strategyDecisions,endOpenQuantity,endExposureNotional,endExposureIsZero,promotionBlockReason,jsonPath,markdownPath");
+            writer.WriteLine("generatedUtc,reportId,mode,account,profile,symbols,status,canPromote,ordersSubmitted,ordersFilled,ordersRejected,positionsOpened,positionsClosed,forceFlatResult,disconnectIncidents,reconciliationStatus,reconciliationClean,l1l2Health,realizedPnl,strategyDecisions,endOpenQuantity,endExposureNotional,endExposureIsZero,scanListFile,scanListSheet,scanListTradeEligible,scanListMergedCandles,scanListSafety,promotionBlockReason,jsonPath,markdownPath");
         }
 
         writer.WriteLine(string.Join(',',
@@ -514,6 +588,11 @@ public sealed class PaperSessionReportWriter
             report.EndOpenQuantity.ToString(CultureInfo.InvariantCulture),
             report.EndOpenExposureNotional.ToString(CultureInfo.InvariantCulture),
             report.EndExposureIsZero.ToString(CultureInfo.InvariantCulture),
+            Csv(report.ScanListEvidence?.File ?? string.Empty),
+            Csv(report.ScanListEvidence?.Sheet ?? string.Empty),
+            (report.ScanListEvidence?.TradeEligibleSymbols ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.MergedCandles ?? 0).ToString(CultureInfo.InvariantCulture),
+            Csv(report.ScanListEvidence?.SafetyMode ?? string.Empty),
             Csv(report.PromotionBlockReason),
             Csv(report.Sources.ReportJsonPath),
             Csv(report.Sources.ReportMarkdownPath)));

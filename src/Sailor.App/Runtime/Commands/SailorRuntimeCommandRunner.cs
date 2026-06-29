@@ -824,6 +824,124 @@ public static class SailorRuntimeCommandRunner
         Log(writer, "No orders sent.");
     }
 
+
+    private static bool HasScanListInput(string[] args)
+        => args.Any(arg => arg.Equals("--scan-file", StringComparison.OrdinalIgnoreCase)
+            || arg.Equals("--file", StringComparison.OrdinalIgnoreCase)
+            || arg.Equals("--scan-sheet", StringComparison.OrdinalIgnoreCase)
+            || arg.Equals("--sheet", StringComparison.OrdinalIgnoreCase));
+
+    private static ScanListWorkbookOptions CreateScanListWorkbookOptions(string[] args, int requestedTopCount)
+    {
+        string file = ReadStringOption(args, "--scan-file", ReadStringOption(args, "--file", ScanListWorkbookOptions.DefaultFilePath));
+        string sheet = ReadStringOption(args, "--scan-sheet", ReadStringOption(args, "--sheet", ScanListWorkbookOptions.DefaultSheetName));
+        string symbolColumn = ReadStringOption(args, "--symbol-column", ScanListWorkbookOptions.DefaultSymbolColumn);
+        int scanRefreshSeconds = ReadIntOption(args, "--scan-refresh-seconds", ScanListWorkbookOptions.DefaultRefreshSeconds);
+        int historyBatchSize = ReadIntOption(args, "--history-batch-size", ScanListWorkbookOptions.DefaultHistoryBatchSize);
+        int historyBatchIntervalMinutes = ReadIntOption(args, "--history-batch-interval-minutes", ScanListWorkbookOptions.DefaultHistoryBatchIntervalMinutes);
+        int tradeTop = Math.Max(10, ReadIntOption(args, "--trade-top", ReadIntOption(args, "--keep-trade-top", Math.Max(10, requestedTopCount))));
+
+        return new ScanListWorkbookOptions(
+            file,
+            sheet,
+            symbolColumn,
+            scanRefreshSeconds,
+            tradeTop,
+            historyBatchSize,
+            historyBatchIntervalMinutes);
+    }
+
+    private static async Task<ScanListRunResult> RunScanListSelectionForConductAsync(
+        SailorRuntimeMode mode,
+        SailorAppSettings settings,
+        IbkrConnectionOptions connectionOptions,
+        PaperScannerOptions baseScannerOptions,
+        ScanListWorkbookOptions workbookOptions,
+        string[] args,
+        StreamWriter writer,
+        string commandName)
+    {
+        int scanCycles = Math.Max(1, ReadIntOption(args, "--scan-cycles", ReadIntOption(args, "--cycles", 1)));
+        bool waitBetweenCycles = scanCycles > 1
+            && !args.Any(arg => arg.Equals("--no-scan-cycle-wait", StringComparison.OrdinalIgnoreCase));
+        int maxSymbols = ReadIntOption(args, "--max-symbols", Math.Max(1, workbookOptions.HistoryBatchSize));
+
+        string workbookUniverse = SymbolUniverseProviderFactory.BuildXlsxUniverseArgument(
+            workbookOptions.FilePath,
+            workbookOptions.SheetName,
+            workbookOptions.SymbolColumn);
+
+        PaperScannerOptions scanListScannerOptions = baseScannerOptions with
+        {
+            Universe = workbookUniverse,
+            TopCount = workbookOptions.TradeTop,
+            MaxSymbolsToPrepare = maxSymbols
+        };
+
+        var request = new ScanListRunRequest(
+            mode,
+            workbookOptions,
+            scanListScannerOptions,
+            scanCycles,
+            workbookOptions.RefreshSeconds,
+            workbookOptions.TradeTop,
+            waitBetweenCycles);
+
+        Log(writer, "");
+        Log(writer, $"SAILOR-040 dynamic scan-list selection for {commandName}.");
+        Log(writer, workbookOptions.ToDisplayString());
+        Log(writer, $"scanCycles={request.SafeCycles} waitBetweenCycles={waitBetweenCycles} tradeTop={request.SafeTradeTop} maxSymbols={maxSymbols}");
+        Log(writer, "The scan-list runtime reloads the workbook, schedules due history batches, merges history/realtime candles, and retains the best scanner-rated symbols before the conduct loop.");
+        Log(writer, "Order routing remains controlled by the existing paper/live gates. Scan-list selection only controls entry eligibility; exits/flatten remain allowed for managed positions.");
+
+        using var scanListRuntime = new ScanListRuntime(settings, connectionOptions);
+        ScanListRunResult runResult = await scanListRuntime.RunAsync(request, CancellationToken.None).ConfigureAwait(false);
+        ScanListCycleResult? latest = runResult.Cycles.LastOrDefault();
+        Log(writer, runResult.ToSummaryString());
+        if (latest is not null)
+        {
+            Log(writer, $"latestScanListCycle={latest.ToSummaryString()}");
+            Log(writer, $"latestScanListEvidence={latest.Evidence.ToSummaryString()}");
+            Log(writer, $"Scan-list evidence JSON: {latest.EvidenceJsonPath}");
+            Log(writer, $"Scan-list evidence CSV:  {latest.EvidenceCsvPath}");
+            if (latest.TradeEligibleSymbols.Count > 0)
+            {
+                Log(writer, $"retainedTradeEligible={string.Join(", ", latest.TradeEligibleSymbols)}");
+            }
+        }
+
+        foreach (string warning in runResult.Warnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
+
+        return runResult;
+    }
+
+    private static IReadOnlyList<string> SelectScanListTradeSymbols(
+        ScanListRunResult runResult,
+        int requestedTopCount,
+        bool livePilot)
+    {
+        int take = livePilot ? 1 : Math.Max(1, requestedTopCount);
+        ScanListCycleResult? latest = runResult.Cycles.LastOrDefault();
+        if (latest is null)
+        {
+            return Array.Empty<string>();
+        }
+
+        IReadOnlyList<string> retained = latest.TradeEligibleSymbols.Count > 0
+            ? latest.TradeEligibleSymbols
+            : latest.ScannerResult.Candidates.Select(candidate => candidate.Symbol).ToArray();
+
+        return retained
+            .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
+            .Select(symbol => symbol.Trim().ToUpperInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(take)
+            .ToArray();
+    }
+
     private static async Task RunStrategySkeletonAsync(
         SailorRuntimeMode mode,
         string[] args,
@@ -922,6 +1040,45 @@ public static class SailorRuntimeCommandRunner
             marketDataType,
             primaryExchange,
             smartDepth);
+
+        if (mode == SailorRuntimeMode.Paper && HasScanListInput(args))
+        {
+            ScanListWorkbookOptions workbookOptions = CreateScanListWorkbookOptions(args, runtimeOptions.TopCount);
+            ScanListRunResult scanListResult = await RunScanListSelectionForConductAsync(
+                mode,
+                settings,
+                connectionOptions,
+                scannerOptions,
+                workbookOptions,
+                args,
+                writer,
+                "paper run").ConfigureAwait(false);
+
+            IReadOnlyList<string> selectedScanListSymbols = SelectScanListTradeSymbols(scanListResult, runtimeOptions.TopCount, livePilot: false);
+            if (selectedScanListSymbols.Count == 0)
+            {
+                Log(writer, "");
+                Log(writer, "SAILOR-040 blocked paper dynamic scan-list conduct because no trade-eligible symbols were retained. No orders sent.");
+                Log(writer, $"Runtime log: {logFilePath}");
+                return;
+            }
+
+            string selectedUniverse = string.Join(',', selectedScanListSymbols);
+            int selectedTopCount = Math.Min(runtimeOptions.TopCount, selectedScanListSymbols.Count);
+            runtimeOptions = runtimeOptions with
+            {
+                Universe = selectedUniverse,
+                TopCount = selectedTopCount
+            };
+            scannerOptions = scannerOptions with
+            {
+                Universe = selectedUniverse,
+                TopCount = selectedTopCount,
+                MaxSymbolsToPrepare = selectedScanListSymbols.Count
+            };
+
+            Log(writer, $"SAILOR-040 paper dynamic conduct selected symbols: {selectedUniverse}");
+        }
 
         Log(writer, connectionOptions.ToDisplayString());
         Log(writer, scannerOptions.ToDisplayString());
@@ -1073,6 +1230,72 @@ public static class SailorRuntimeCommandRunner
         bool requestIbkrMarketData = captureSnapshots && !localCache;
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
         bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
+
+        if (HasScanListInput(args))
+        {
+            ScanListWorkbookOptions workbookOptions = CreateScanListWorkbookOptions(args, initialOptions.TopCount);
+            int scanMaxSymbols = ReadIntOption(args, "--max-symbols", Math.Max(1, workbookOptions.HistoryBatchSize));
+            var scanListConnectionOptions = new IbkrConnectionOptions(
+                SailorRuntimeMode.Live,
+                initialOptions.Host,
+                initialOptions.Port,
+                initialOptions.ClientId,
+                account,
+                liveSettings.ConnectTimeoutSeconds,
+                initialOptions.UseL1,
+                initialOptions.UseL2,
+                SendOrders: false,
+                AllowShort: false);
+            var scanListBaseOptions = new PaperScannerOptions(
+                SailorRuntimeMode.Live,
+                initialOptions.Timeframe,
+                initialOptions.ProfileName,
+                initialOptions.Universe,
+                Math.Max(1, workbookOptions.TradeTop),
+                scanMaxSymbols,
+                days,
+                requestIbkrHistory,
+                mirrorHistoryToBacktest,
+                useRth,
+                captureSnapshots,
+                requestIbkrMarketData,
+                initialOptions.UseL1,
+                useL2,
+                snapshotSeconds,
+                depthLevels,
+                marketDataType,
+                primaryExchange,
+                smartDepth);
+
+            ScanListRunResult scanListResult = await RunScanListSelectionForConductAsync(
+                SailorRuntimeMode.Live,
+                settings,
+                scanListConnectionOptions,
+                scanListBaseOptions,
+                workbookOptions,
+                args,
+                writer,
+                "live run pilot").ConfigureAwait(false);
+
+            IReadOnlyList<string> selectedScanListSymbols = SelectScanListTradeSymbols(scanListResult, requestedTopCount: 1, livePilot: true);
+            if (selectedScanListSymbols.Count == 0)
+            {
+                Log(writer, "");
+                Log(writer, "SAILOR-040 blocked live dynamic scan-list pilot because no trade-eligible symbol was retained. No live order was sent.");
+                Log(writer, $"Runtime log: {logFilePath}");
+                return;
+            }
+
+            string selectedSymbol = selectedScanListSymbols[0];
+            initialOptions = initialOptions with
+            {
+                Universe = selectedSymbol,
+                TopCount = 1
+            };
+            Log(writer, $"SAILOR-040 live scan-list pilot selected symbol: {selectedSymbol}");
+            Log(writer, "Live trading remains limited to one selected symbol by SAILOR-034 pilot restrictions.");
+            Log(writer, "");
+        }
 
         LiveReadinessGateResult gate = EvaluateLiveReadiness(
             settings,
@@ -1661,6 +1884,15 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"L1/L2 health: {report.L1L2Health}");
         Log(writer, $"P&L: {report.RealizedPnl:F2}");
         Log(writer, $"strategy decisions: {report.StrategyDecisions}");
+        if (report.ScanListEvidence is null)
+        {
+            Log(writer, "scan-list evidence: none");
+        }
+        else
+        {
+            Log(writer, $"scan-list evidence: {report.ScanListEvidence.ToSummaryString()}");
+            Log(writer, $"scan-list retained symbols: {(report.ScanListEvidence.TradeEligiblePreview.Count == 0 ? "none" : string.Join(", ", report.ScanListEvidence.TradeEligiblePreview))}");
+        }
         Log(writer, $"all open exposure at end = zero: {report.EndExposureIsZero}");
         Log(writer, $"promotion result: {report.CertificationStatus} - {report.PromotionBlockReason}");
 

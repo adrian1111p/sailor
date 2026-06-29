@@ -34,11 +34,36 @@ public sealed record PaperCertificationReport(
     decimal EndOpenExposureNotional,
     bool EndExposureIsZero,
     IReadOnlyList<SailorPosition> EndOpenPositions,
+    PaperScanListEvidenceSummary? ScanListEvidence,
     IReadOnlyList<string> Warnings,
     PaperCertificationReportSources Sources)
 {
     public string ToSummaryString()
-        => $"reportId={ReportId} mode={Mode} status={CertificationStatus} canPromote={CanPromoteToLiveReadiness} account={(string.IsNullOrWhiteSpace(Account) ? "not-configured" : Account)} profile={Profile} symbols={Symbols.Count} submitted={OrdersSubmitted} filled={OrdersFilled} rejected={OrdersRejected} decisions={StrategyDecisions} pnl={RealizedPnl:F2} endExposure={EndOpenExposureNotional:F2} reconciliation={ReconciliationStatus} incidents={DisconnectIncidentCount}";
+        => $"reportId={ReportId} mode={Mode} status={CertificationStatus} canPromote={CanPromoteToLiveReadiness} account={(string.IsNullOrWhiteSpace(Account) ? "not-configured" : Account)} profile={Profile} symbols={Symbols.Count} submitted={OrdersSubmitted} filled={OrdersFilled} rejected={OrdersRejected} decisions={StrategyDecisions} pnl={RealizedPnl:F2} endExposure={EndOpenExposureNotional:F2} reconciliation={ReconciliationStatus} incidents={DisconnectIncidentCount} scanList={(ScanListEvidence is null ? "none" : ScanListEvidence.ToSummaryString())}";
+}
+
+public sealed record PaperScanListEvidenceSummary(
+    string EvidenceId,
+    string File,
+    string Sheet,
+    int WorkbookSymbols,
+    int ActiveSymbols,
+    int TradeEligibleSymbols,
+    IReadOnlyList<string> TradeEligiblePreview,
+    int HistoryBatchSize,
+    int HistoryBatchIntervalMinutes,
+    int HistoryBatches,
+    int DueHistoryBatch,
+    int PreparedSymbols,
+    int HistorySuccessCount,
+    int MemoryCandles,
+    int MergedCandles,
+    string SafetyMode,
+    string SafetyReason,
+    string EvidencePath)
+{
+    public string ToSummaryString()
+        => $"{File}#{Sheet} workbook={WorkbookSymbols} active={ActiveSymbols} tradeEligible={TradeEligibleSymbols} historyOk={HistorySuccessCount}/{PreparedSymbols} mergedCandles={MergedCandles} safety={SafetyMode}";
 }
 
 public sealed record PaperCertificationReportSources(
@@ -47,6 +72,7 @@ public sealed record PaperCertificationReportSources(
     string PositionsPath,
     string? ReconciliationPath,
     string IncidentDirectory,
+    string? ScanListEvidencePath,
     string ReportJsonPath,
     string ReportMarkdownPath,
     string ReportCsvPath);
