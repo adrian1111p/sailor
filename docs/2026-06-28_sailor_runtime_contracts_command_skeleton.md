@@ -791,3 +791,18 @@ dotnet run --project src\Sailor.App\Sailor.App.csproj -- live run 1m v21-15minut
 ```
 
 The live dynamic pilot selects the best one retained scan-list symbol and then applies all SAILOR-033 and SAILOR-034 gates. Live orders remain blocked unless the scan-list evidence is data-quality clean and all live-readiness, account, reconciliation, notional, and operator checks pass.
+
+---
+
+## Scan-list workbook open-file behavior
+
+`scan/data/scan_default.xlsx` may be kept open in Excel while Sailor reads it. The workbook reader copies the file into memory using shared read/write/delete access, then parses the in-memory copy.
+
+Operational guidance:
+
+```text
+- Keeping the workbook open for viewing/editing is supported.
+- Save the workbook before expecting Sailor to see new symbols.
+- Avoid running Sailor exactly while Excel is in the middle of saving the file.
+- If a save-time lock is hit, rerun the command after a few seconds.
+```

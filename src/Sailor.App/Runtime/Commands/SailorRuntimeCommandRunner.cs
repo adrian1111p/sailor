@@ -1217,6 +1217,9 @@ public static class SailorRuntimeCommandRunner
         int reconnectAttempts = ReadIntOption(args, "--reconnect-attempts", Math.Max(1, settings.Runtime.Safety.MaxReconnectAttempts));
         int reconnectBackoffSeconds = ReadIntOption(args, "--reconnect-backoff-seconds", Math.Max(1, settings.Runtime.Safety.ReconnectDelaySeconds));
         int simulateDisconnectAtIteration = ReadIntOption(args, "--simulate-disconnect-at", 0, allowZero: true);
+        int requestedPilotTopCount = Math.Max(1, initialOptions.TopCount);
+        decimal requestedPilotMaxNotional = ReadDecimalOption(args, "--max-notional", liveSettings.MaxOrderNotional <= 0m ? 100m : liveSettings.MaxOrderNotional);
+        LiveMultiSymbolPilotGateResult multiSymbolGate = LiveMultiSymbolPilotGate.Evaluate(settings, args, requestedPilotTopCount, requestedPilotMaxNotional);
 
         bool dryRunRequested = args.Any(arg => arg.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
         bool localCache = args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
@@ -1319,7 +1322,8 @@ public static class SailorRuntimeCommandRunner
         LivePilotRestrictionResult restrictions = EvaluateLivePilotRestrictions(initialOptions, args, settings);
         bool scanListDataQualityAllowsTrading = liveScanListEvidence is null
             || liveScanListEvidence.DataQualityStatus.Equals("Clean", StringComparison.OrdinalIgnoreCase);
-        bool sendOrders = !dryRunRequested && gate.LiveTradingAllowed && restrictions.Passed && scanListDataQualityAllowsTrading;
+        bool multiSymbolGateAllowsTrading = !multiSymbolGate.Requested || multiSymbolGate.Allowed;
+        bool sendOrders = !dryRunRequested && gate.LiveTradingAllowed && restrictions.Passed && scanListDataQualityAllowsTrading && multiSymbolGateAllowsTrading;
         bool dryRun = !sendOrders;
 
         var runtimeOptions = initialOptions with
@@ -1377,6 +1381,8 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"Readiness JSON: {gateOutput.JsonPath}");
         Log(writer, $"Readiness CSV:  {gateOutput.CsvPath}");
         Log(writer, "");
+        LogLiveMultiSymbolPilotGate(writer, multiSymbolGate);
+        Log(writer, "");
         Log(writer, restrictions.ToSummaryString());
         foreach (string check in restrictions.Checks)
         {
@@ -1387,7 +1393,7 @@ public static class SailorRuntimeCommandRunner
             Log(writer, $"WARN: {warning}");
         }
 
-        if (!gate.LiveTradingAllowed || !restrictions.Passed || !scanListDataQualityAllowsTrading)
+        if (!gate.LiveTradingAllowed || !restrictions.Passed || !scanListDataQualityAllowsTrading || !multiSymbolGateAllowsTrading)
         {
             var blockedReport = LivePilotReport.From(
                 gate,
@@ -1395,7 +1401,11 @@ public static class SailorRuntimeCommandRunner
                 preRunReconciliation: null,
                 finalReconciliation: null,
                 runtimeResult: null,
-                warnings: restrictions.Warnings.Concat(gate.Checks.Where(check => !check.Passed).Select(check => check.ToDisplayLine())).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                warnings: restrictions.Warnings
+                    .Concat(gate.Checks.Where(check => !check.Passed).Select(check => check.ToDisplayLine()))
+                    .Concat(multiSymbolGate.Requested ? multiSymbolGate.Checks.Where(check => check.StartsWith("FAIL", StringComparison.OrdinalIgnoreCase)) : Array.Empty<string>())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
                 scanListEvidence: liveScanListEvidence,
                 scanListEvidencePath: liveScanListEvidencePath);
             LivePilotReportOutput blockedOutput = new LivePilotReportWriter().Write(blockedReport);
@@ -1404,9 +1414,13 @@ public static class SailorRuntimeCommandRunner
                 ? gate.Reason
                 : !restrictions.Passed
                     ? restrictions.BlockReason
-                    : $"Scan-list data quality is {liveScanListEvidence?.DataQualityStatus}: {liveScanListEvidence?.DataQualityReason}";
+                    : !multiSymbolGateAllowsTrading
+                        ? multiSymbolGate.Reason
+                        : $"Scan-list data quality is {liveScanListEvidence?.DataQualityStatus}: {liveScanListEvidence?.DataQualityReason}";
             Log(writer, livePilotBlockReason);
-            Log(writer, "SAILOR-041 blocked live pilot before any broker order route could be created. No live order was sent.");
+            Log(writer, multiSymbolGate.Requested
+                ? "SAILOR-042 blocked the future multi-symbol live pilot before any broker order route could be created. No live order was sent."
+                : "SAILOR-041 blocked live pilot before any broker order route could be created. No live order was sent.");
             Log(writer, blockedReport.ToSummaryString());
             Log(writer, $"Live pilot JSON: {blockedOutput.JsonPath}");
             Log(writer, $"Live pilot CSV:  {blockedOutput.CsvPath}");
@@ -2272,6 +2286,17 @@ public static class SailorRuntimeCommandRunner
             requestedMaxNotional);
 
         return new LiveReadinessGate(settings).Evaluate(request);
+    }
+
+    private static void LogLiveMultiSymbolPilotGate(StreamWriter writer, LiveMultiSymbolPilotGateResult gate)
+    {
+        Log(writer, "SAILOR-042 future multi-symbol live-pilot gate");
+        Log(writer, gate.ToSummaryString());
+        Log(writer, gate.Reason);
+        foreach (string check in gate.Checks)
+        {
+            Log(writer, check);
+        }
     }
 
     private static void LogLiveReadinessGate(StreamWriter writer, LiveReadinessGateResult gate)

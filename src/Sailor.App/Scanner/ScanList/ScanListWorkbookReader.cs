@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO.Compression;
+using System.Threading;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
@@ -32,7 +33,8 @@ public sealed class ScanListWorkbookReader
             throw new FileNotFoundException($"Scan-list workbook was not found: {options.FilePath}", options.FilePath);
         }
 
-        using ZipArchive archive = ZipFile.OpenRead(workbookPath);
+        using MemoryStream workbookCopy = OpenWorkbookReadCopy(workbookPath);
+        using ZipArchive archive = new(workbookCopy, ZipArchiveMode.Read, leaveOpen: false);
         IReadOnlyList<string> sharedStrings = ReadSharedStrings(archive);
         string worksheetEntryName = ResolveWorksheetEntryName(archive, options.SheetName);
         ZipArchiveEntry worksheetEntry = archive.GetEntry(worksheetEntryName)
@@ -94,6 +96,49 @@ public sealed class ScanListWorkbookReader
             rejected.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
             warnings,
             DateTimeOffset.UtcNow);
+    }
+
+    private static MemoryStream OpenWorkbookReadCopy(string workbookPath)
+    {
+        const int maxAttempts = 6;
+        const int retryDelayMilliseconds = 150;
+        IOException? lastIoException = null;
+        UnauthorizedAccessException? lastAccessException = null;
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                using var fileStream = new FileStream(
+                    workbookPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete,
+                    bufferSize: 64 * 1024,
+                    FileOptions.SequentialScan);
+
+                var workbookCopy = new MemoryStream(fileStream.Length > 0 && fileStream.Length <= int.MaxValue ? (int)fileStream.Length : 0);
+                fileStream.CopyTo(workbookCopy);
+                workbookCopy.Position = 0;
+                return workbookCopy;
+            }
+            catch (IOException ex) when (attempt < maxAttempts)
+            {
+                lastIoException = ex;
+                Thread.Sleep(retryDelayMilliseconds);
+            }
+            catch (UnauthorizedAccessException ex) when (attempt < maxAttempts)
+            {
+                lastAccessException = ex;
+                Thread.Sleep(retryDelayMilliseconds);
+            }
+        }
+
+        Exception? inner = (Exception?)lastIoException ?? lastAccessException;
+        throw new IOException(
+            $"Scan-list workbook could not be copied for reading after {maxAttempts} attempts: {workbookPath}. " +
+            "The reader uses shared read/write access so the workbook may remain open in Excel, but it cannot be read while another process has an exclusive save/lock in progress.",
+            inner);
     }
 
     public static string NormalizeSymbol(string token)

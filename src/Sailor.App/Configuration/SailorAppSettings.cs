@@ -173,6 +173,14 @@ public sealed class SailorRuntimeModeSettings
 
     public bool AllowLiveTrading { get; set; } = false;
 
+    public bool AllowMultiSymbolPilot { get; set; } = false;
+
+    public int MaxConcurrentPositions { get; set; } = 1;
+
+    public decimal MaxTotalPilotNotional { get; set; } = 100.00m;
+
+    public decimal MaxPerSymbolNotional { get; set; } = 100.00m;
+
     public decimal MaxOrderNotional { get; set; } = 100.00m;
 
     public int CertificationMaxAgeHours { get; set; } = 24;

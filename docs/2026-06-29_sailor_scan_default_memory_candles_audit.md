@@ -2269,3 +2269,22 @@ dotnet build src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
 ### Next implementation recommendation
 
 SAILOR-042 should attach an actual real-time market data event source to the `ScanListCandleAccumulator` so that scan-list candles are built live for all workbook symbols, not only represented as historical/local merge evidence.
+
+---
+
+## SAILOR-042 correction — shared workbook read for intraday updates
+
+Market-open testing showed that `scan/data/scan_default.xlsx` can be open in Excel or another editor while Sailor is trying to read it. This is expected in the real workflow because the symbol list can change during the trading day.
+
+The scan-list workbook reader must therefore not use the default exclusive ZIP reader. It now copies the workbook into memory using shared read/write/delete access and then reads the `.xlsx` ZIP package from that memory copy.
+
+Behavior:
+
+```text
+- Excel may remain open while Sailor reads the workbook.
+- Intraday symbol-list updates can be saved and reloaded by later scan cycles.
+- If the workbook is momentarily exclusively locked during a save, Sailor retries before failing.
+- If the file is still exclusively locked after retries, the error message explains that the workbook could not be copied for reading.
+```
+
+This correction is mandatory before committing SAILOR-042 because the dynamic scan-list commands must not crash simply because the operator has the workbook open for updates.
