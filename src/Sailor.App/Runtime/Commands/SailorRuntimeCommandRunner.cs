@@ -50,6 +50,11 @@ public static class SailorRuntimeCommandRunner
                 await RunScanPointsDiagnosticsAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
+            case "scan-points-test":
+            case "points-test":
+                await RunScanPointsSelfTestAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
             case "history":
                 await RunHistoryAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
@@ -466,6 +471,136 @@ public static class SailorRuntimeCommandRunner
         await RunScanListSkeletonAsync(mode, effectiveArgs.ToArray(), settings).ConfigureAwait(false);
     }
 
+
+
+    private static async Task RunScanPointsSelfTestAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        SailorRuntimeOptions runtimeOptions = CreateOptions(mode, args, settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        string account = ReadStringOption(args, "--account", modeSettings.Account ?? string.Empty);
+        ScanListWorkbookOptions workbookOptions = CreateScanListWorkbookOptions(args, runtimeOptions.TopCount);
+        string logFilePath = CreateRuntimeLogFilePath(mode, "scan_points_test");
+
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, "SAILOR-048 points scanner self-test: legacy no-selection versus points ranked candidates.");
+        Log(writer, runtimeOptions.ToCompactString());
+        Log(writer, workbookOptions.ToDisplayString());
+        Log(writer, "This diagnostic starts no conduct loop and sends no orders. It runs legacy-blocks and points-only selection back to back and reports whether points-only makes the selection explainable.");
+
+        bool localCache = args.Any(arg => arg.Equals("--local-cache", StringComparison.OrdinalIgnoreCase));
+        bool requestIbkrHistory = !localCache && !args.Any(arg => arg.Equals("--no-history-refresh", StringComparison.OrdinalIgnoreCase));
+        bool mirrorHistoryToBacktest = !args.Any(arg => arg.Equals("--no-backtest-copy", StringComparison.OrdinalIgnoreCase));
+        bool useRth = !args.Any(arg => arg.Equals("--all-hours", StringComparison.OrdinalIgnoreCase));
+        bool captureSnapshots = !args.Any(arg => arg.Equals("--no-quotes", StringComparison.OrdinalIgnoreCase));
+        bool useL2 = runtimeOptions.UseL2 || args.Any(arg => arg.Equals("--with-depth", StringComparison.OrdinalIgnoreCase));
+        if (args.Any(arg => arg.Equals("--no-depth", StringComparison.OrdinalIgnoreCase)))
+        {
+            useL2 = false;
+        }
+
+        bool requestIbkrMarketData = captureSnapshots && !localCache;
+        int days = ReadIntOption(args, "--days", 5);
+        int marketDataType = ReadIntOption(args, "--market-data-type", 1);
+        int snapshotSeconds = ReadIntOption(args, "--seconds", 3);
+        int depthLevels = ReadIntOption(args, "--levels", settings.L1L2.DepthLevels <= 0 ? 5 : settings.L1L2.DepthLevels);
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+        bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
+        decimal pointsMinimumTradeScore = ReadDecimalOption(args, "--points-min-trade-score", settings.Scanner.PointsMinimumTradeScore);
+        bool pointsAllowWeakEntry = ReadBooleanOption(args, "--points-allow-weak-entry", settings.Scanner.PointsAllowWeakEntry);
+        bool pointsRetainWatchOnly = ReadBooleanOption(args, "--points-retain-watch-only", settings.Scanner.PointsRetainWatchOnly);
+        int maxSymbols = ReadIntOption(args, "--max-symbols", Math.Max(1, workbookOptions.HistoryBatchSize));
+
+        var connectionOptions = new IbkrConnectionOptions(
+            mode,
+            runtimeOptions.Host,
+            runtimeOptions.Port,
+            runtimeOptions.ClientId,
+            account,
+            modeSettings.ConnectTimeoutSeconds,
+            runtimeOptions.UseL1,
+            runtimeOptions.UseL2,
+            SendOrders: false,
+            runtimeOptions.AllowShort);
+
+        var legacyOptions = new PaperScannerOptions(
+            mode,
+            runtimeOptions.Timeframe,
+            runtimeOptions.ProfileName,
+            runtimeOptions.Universe,
+            runtimeOptions.TopCount,
+            maxSymbols,
+            days,
+            requestIbkrHistory,
+            mirrorHistoryToBacktest,
+            useRth,
+            captureSnapshots,
+            requestIbkrMarketData,
+            runtimeOptions.UseL1,
+            useL2,
+            snapshotSeconds,
+            depthLevels,
+            marketDataType,
+            primaryExchange,
+            smartDepth,
+            PointsScannerMode.LegacyBlocks,
+            pointsMinimumTradeScore,
+            pointsAllowWeakEntry,
+            pointsRetainWatchOnly);
+
+        var pointsOptions = legacyOptions with { ScannerMode = PointsScannerMode.PointsOnly };
+
+        Log(writer, "");
+        Log(writer, "Legacy-blocks pass");
+        Log(writer, "------------------");
+        ScanListRunResult legacyResult = await RunScanListSelectionForConductAsync(
+            mode,
+            settings,
+            connectionOptions,
+            legacyOptions,
+            workbookOptions,
+            args,
+            writer,
+            "scan-points-test legacy-blocks").ConfigureAwait(false);
+
+        Log(writer, "");
+        Log(writer, "Points-only pass");
+        Log(writer, "----------------");
+        ScanListRunResult pointsResult = await RunScanListSelectionForConductAsync(
+            mode,
+            settings,
+            connectionOptions,
+            pointsOptions,
+            workbookOptions,
+            args,
+            writer,
+            "scan-points-test points-only").ConfigureAwait(false);
+
+        ScanListCycleResult? legacyCycle = legacyResult.LatestCycle;
+        ScanListCycleResult? pointsCycle = pointsResult.LatestCycle;
+        int legacyCandidates = legacyCycle?.ScannerResult.Candidates.Count ?? 0;
+        int pointsCandidates = pointsCycle?.ScannerResult.Candidates.Count ?? 0;
+        int pointsTotal = pointsCycle?.ScannerResult.PointsCandidates ?? 0;
+        bool pointsHasRankedCandidates = pointsCandidates > 0 && pointsTotal > 0;
+        bool pointsNotWorseThanLegacy = pointsCandidates >= legacyCandidates;
+        bool pointsHasReport = !string.IsNullOrWhiteSpace(pointsCycle?.ScannerResult.CandidateReportPath);
+        bool strictLegacyZeroRequested = HasOption(args, "--expect-legacy-zero");
+        bool legacyZeroOk = !strictLegacyZeroRequested || legacyCandidates == 0;
+        bool passed = pointsHasRankedCandidates && pointsNotWorseThanLegacy && pointsHasReport && legacyZeroOk;
+
+        Log(writer, "");
+        Log(writer, "SAILOR-048 self-test result");
+        Log(writer, "---------------------------");
+        Log(writer, $"legacyCandidates={legacyCandidates} pointsCandidates={pointsCandidates} pointsTotal={pointsTotal} pointsReport={pointsCycle?.ScannerResult.CandidateReportPath ?? "n/a"}");
+        Log(writer, $"checks: pointsHasRankedCandidates={pointsHasRankedCandidates} pointsNotWorseThanLegacy={pointsNotWorseThanLegacy} pointsHasReport={pointsHasReport} legacyZeroCheck={(strictLegacyZeroRequested ? legacyZeroOk.ToString() : "not-requested")}");
+        Log(writer, passed
+            ? "Result: Passed - points-only mode produced ranked, reportable candidates without relying on legacy hard scanner blocks."
+            : "Result: Failed - points-only mode did not produce the expected ranked candidate evidence. Inspect the scanner reports above.");
+        Log(writer, $"Runtime log: {logFilePath}");
+        Log(writer, "No orders sent.");
+    }
 
     private static async Task RunScanListSkeletonAsync(
         SailorRuntimeMode mode,
@@ -1572,10 +1707,16 @@ public static class SailorRuntimeCommandRunner
         LiveReadinessGateOutput gateOutput = new LiveReadinessGate(settings).WriteResult(gate);
 
         LivePilotRestrictionResult restrictions = EvaluateLivePilotRestrictions(initialOptions, args, settings);
+        LivePointsPilotGateResult livePointsGate = LivePointsPilotGate.Evaluate(
+            scannerMode,
+            requiresTrading: !dryRunRequested,
+            selection: liveDynamicSelection,
+            minimumTradeScore: pointsMinimumTradeScore);
         bool scanListDataQualityAllowsTrading = liveScanListEvidence is null
             || liveScanListEvidence.DataQualityStatus.Equals("Clean", StringComparison.OrdinalIgnoreCase);
         bool multiSymbolGateAllowsTrading = !multiSymbolGate.Requested || multiSymbolGate.Allowed;
-        bool sendOrders = !dryRunRequested && gate.LiveTradingAllowed && restrictions.Passed && scanListDataQualityAllowsTrading && multiSymbolGateAllowsTrading;
+        bool livePointsGateAllowsTrading = !livePointsGate.Required || livePointsGate.Allowed;
+        bool sendOrders = !dryRunRequested && gate.LiveTradingAllowed && restrictions.Passed && scanListDataQualityAllowsTrading && multiSymbolGateAllowsTrading && livePointsGateAllowsTrading;
         bool dryRun = !sendOrders;
 
         var runtimeOptions = initialOptions with
@@ -1639,6 +1780,8 @@ public static class SailorRuntimeCommandRunner
         Log(writer, "");
         LogLiveMultiSymbolPilotGate(writer, multiSymbolGate);
         Log(writer, "");
+        LogLivePointsPilotGate(writer, livePointsGate);
+        Log(writer, "");
         Log(writer, restrictions.ToSummaryString());
         foreach (string check in restrictions.Checks)
         {
@@ -1649,7 +1792,7 @@ public static class SailorRuntimeCommandRunner
             Log(writer, $"WARN: {warning}");
         }
 
-        if (!gate.LiveTradingAllowed || !restrictions.Passed || !scanListDataQualityAllowsTrading || !multiSymbolGateAllowsTrading)
+        if (!gate.LiveTradingAllowed || !restrictions.Passed || !scanListDataQualityAllowsTrading || !multiSymbolGateAllowsTrading || !livePointsGateAllowsTrading)
         {
             var blockedReport = LivePilotReport.From(
                 gate,
@@ -1660,10 +1803,12 @@ public static class SailorRuntimeCommandRunner
                 warnings: restrictions.Warnings
                     .Concat(gate.Checks.Where(check => !check.Passed).Select(check => check.ToDisplayLine()))
                     .Concat(multiSymbolGate.Requested ? multiSymbolGate.Checks.Where(check => check.StartsWith("FAIL", StringComparison.OrdinalIgnoreCase)) : Array.Empty<string>())
+                    .Concat(livePointsGate.Required && !livePointsGate.Allowed ? livePointsGate.Checks.Where(check => check.StartsWith("FAIL", StringComparison.OrdinalIgnoreCase)) : Array.Empty<string>())
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray(),
                 scanListEvidence: liveScanListEvidence,
-                scanListEvidencePath: liveScanListEvidencePath);
+                scanListEvidencePath: liveScanListEvidencePath,
+                livePointsGate: livePointsGate);
             LivePilotReportOutput blockedOutput = new LivePilotReportWriter().Write(blockedReport);
             Log(writer, "");
             string livePilotBlockReason = !gate.LiveTradingAllowed
@@ -1672,7 +1817,9 @@ public static class SailorRuntimeCommandRunner
                     ? restrictions.BlockReason
                     : !multiSymbolGateAllowsTrading
                         ? multiSymbolGate.Reason
-                        : $"Scan-list data quality is {liveScanListEvidence?.DataQualityStatus}: {liveScanListEvidence?.DataQualityReason}";
+                        : !livePointsGateAllowsTrading
+                            ? livePointsGate.Reason
+                            : $"Scan-list data quality is {liveScanListEvidence?.DataQualityStatus}: {liveScanListEvidence?.DataQualityReason}";
             Log(writer, livePilotBlockReason);
             Log(writer, multiSymbolGate.Requested
                 ? "SAILOR-042 blocked the future multi-symbol live pilot before any broker order route could be created. No live order was sent."
@@ -1722,7 +1869,8 @@ public static class SailorRuntimeCommandRunner
                 runtimeResult: null,
                 warnings: preRunReconciliation.Warnings,
                 scanListEvidence: liveScanListEvidence,
-                scanListEvidencePath: liveScanListEvidencePath);
+                scanListEvidencePath: liveScanListEvidencePath,
+                livePointsGate: livePointsGate);
             LivePilotReportOutput blockedOutput = new LivePilotReportWriter().Write(blockedReport);
             Log(writer, "");
             Log(writer, "SAILOR-034 blocked live pilot because pre-run live reconciliation did not match. No live order was sent.");
@@ -1805,7 +1953,8 @@ public static class SailorRuntimeCommandRunner
             runtimeResult,
             allWarnings,
             scanListEvidence: liveScanListEvidence,
-            scanListEvidencePath: liveScanListEvidencePath);
+            scanListEvidencePath: liveScanListEvidencePath,
+            livePointsGate: livePointsGate);
         LivePilotReportOutput output = new LivePilotReportWriter().Write(report);
 
         Log(writer, "");
@@ -2561,6 +2710,18 @@ public static class SailorRuntimeCommandRunner
         }
     }
 
+
+    private static void LogLivePointsPilotGate(StreamWriter writer, LivePointsPilotGateResult gate)
+    {
+        Log(writer, "SAILOR-048 live points pilot gate");
+        Log(writer, gate.ToSummaryString());
+        Log(writer, gate.Reason);
+        foreach (string check in gate.Checks)
+        {
+            Log(writer, check);
+        }
+    }
+
     private static void LogLiveReadinessGate(StreamWriter writer, LiveReadinessGateResult gate)
     {
         Log(writer, "SAILOR-033 live-readiness gate");
@@ -2994,6 +3155,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} scan");
         Console.WriteLine($"  sailor {name} scan-list 1m v21-15minutes 10 --file scan/data/scan_default.xlsx --sheet Candidates --local-cache --no-quotes");
         Console.WriteLine($"  sailor {name} scan-points 1m v18-silver 10 --file scan/data/scan_default.xlsx --sheet Candidates --scanner-mode points-only --no-depth");
+        Console.WriteLine($"  sailor {name} scan-points-test 1m v18-silver 10 --file scan/data/scan_default.xlsx --sheet Candidates --scanner-mode points-only --no-depth --max-symbols 45");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --local-cache");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --days 5 --market-data-type 2");
         Console.WriteLine($"  sailor {name} scan 1m v21-15minutes 1 TSLA --local-cache --no-depth");
@@ -3046,6 +3208,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - SAILOR-037 can read scan/data/scan_default.xlsx and feed workbook symbols into backtest/paper/live scan-list ranking");
         Console.WriteLine("  - SAILOR-038 adds scan-list memory evidence, removed-symbol retention, history batch planning, and the in-memory candle merge foundation");
         Console.WriteLine("  - SAILOR-047 adds paper scan-points diagnostics for points-only scanner audit without starting conduct or routing orders");
+        Console.WriteLine("  - SAILOR-048 adds live points-pilot gating, scan-points-test regression diagnostics, and final points-scanner operator commands");
         Console.WriteLine("  - scan-list inputs support 5-minute refresh, daily list changes, intraday additions, and top-N trade eligibility contracts for the next dynamic runtime milestone");
         Console.WriteLine("  - SAILOR-034 consumes the live-readiness gate for a one-symbol live pilot");
         Console.WriteLine("  - live pilot enforces one explicit symbol, small max notional, operator-watching-TWS acknowledgement, long-only default, pre-run reconciliation, and final zero exposure");

@@ -858,3 +858,47 @@ dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- p
 ```
 
 For SAILOR-045, use `points-only` in dry-run/observation mode first. Trade-eligibility status handling for Ready/WeakReady/WatchOnly/NotReady is planned for the later scan-list retention step.
+
+---
+
+## SAILOR-048 — Final points-scanner operator commands and live gate
+
+SAILOR-048 completes the scanner-side points migration from the audit design source:
+
+```text
+docs/2026-06-29_sailor_scanner_points_based_audit.md
+```
+
+The final implementation keeps broker safety hard-gated while making scanner selection points-based and explainable.
+
+### Paper points self-test
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points-test 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --no-depth --wait-seconds 15
+```
+
+This command runs `legacy-blocks` and `points-only` back to back, starts no conduct loop, and sends no orders. It verifies that points-only produces ranked, reportable candidates instead of silently disappearing all weak symbols.
+
+### Paper wait-for-entry with points-only scanner
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper run 1m v18-silver 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --send-orders --iterations 2700 --cadence-seconds 1 --max-symbols 45 --wait-seconds 15 --quantity 1 --no-depth --wait-for-scan-entry --scan-entry-target 10 --scan-entry-wait-seconds 2700 --scan-refresh-seconds 300 --scanner-mode points-only --points-min-trade-score 45
+```
+
+### Live read-only points ranking
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- live scan-points 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --max-symbols 45 --scanner-mode points-only --no-depth --read-only --wait-seconds 15
+```
+
+### Live points pilot gate
+
+Live send-orders now has an additional SAILOR-048 gate. For live orders, the selected scan-list candidate must be:
+
+```text
+scannerMode=points-only
+pointsStatus=Ready
+pointsScore >= --points-min-trade-score
+```
+
+This does not weaken existing live safety. Live orders still require explicit live confirmation, operator watching TWS, paper certification, account match, clean live reconciliation, max-notional gates, and data-quality clean evidence.

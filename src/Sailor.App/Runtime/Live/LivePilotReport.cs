@@ -31,7 +31,7 @@ public sealed class LivePilotReportWriter
         using var writer = new StreamWriter(new FileStream(DailyCsvPath, FileMode.Append, FileAccess.Write, FileShare.Read));
         if (writeHeader)
         {
-            writer.WriteLine("generatedUtc,reportId,status,canPromote,account,symbol,profile,maxNotional,operatorWatchedTws,forceFlatRequired,readinessStatus,preReconciliationStatus,finalReconciliationStatus,endExposureZero,activeSymbols,decisions,intents,routedOrders,fills,scanListEvidenceId,scanListDataQuality,scanListTradeEligible,scanListMergedCandles,reason");
+            writer.WriteLine("generatedUtc,reportId,status,canPromote,account,symbol,profile,maxNotional,operatorWatchedTws,forceFlatRequired,readinessStatus,preReconciliationStatus,finalReconciliationStatus,endExposureZero,activeSymbols,decisions,intents,routedOrders,fills,scanListEvidenceId,scanListDataQuality,scanListTradeEligible,scanListMergedCandles,scannerMode,pointsReady,pointsWeakReady,pointsWatchOnly,livePointsGateStatus,selectedPointsStatus,selectedPointsScore,reason");
         }
 
         writer.WriteLine(string.Join(',',
@@ -58,6 +58,13 @@ public sealed class LivePilotReportWriter
             Csv(report.ScanListDataQualityStatus ?? string.Empty),
             report.ScanListTradeEligibleSymbols.ToString(CultureInfo.InvariantCulture),
             report.ScanListMergedCandles.ToString(CultureInfo.InvariantCulture),
+            Csv(report.ScannerMode),
+            report.ReadyPointsCandidates.ToString(CultureInfo.InvariantCulture),
+            report.WeakReadyPointsCandidates.ToString(CultureInfo.InvariantCulture),
+            report.WatchOnlyPointsCandidates.ToString(CultureInfo.InvariantCulture),
+            Csv(report.LivePointsGateStatus),
+            Csv(report.SelectedPointsStatus),
+            report.SelectedPointsScore?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
             Csv(report.Reason)));
 
         return new LivePilotReportOutput(LatestJsonPath, DailyCsvPath, report);
@@ -111,7 +118,21 @@ public sealed record LivePilotReport(
     string? ScanListDataQualityReason = null,
     int ScanListTradeEligibleSymbols = 0,
     int ScanListMergedCandles = 0,
-    IReadOnlyList<string>? ScanListRetainedSymbols = null)
+    IReadOnlyList<string>? ScanListRetainedSymbols = null,
+    string ScannerMode = "legacy-blocks",
+    int PointsCandidates = 0,
+    int ReadyPointsCandidates = 0,
+    int WeakReadyPointsCandidates = 0,
+    int WatchOnlyPointsCandidates = 0,
+    int NotReadyPointsCandidates = 0,
+    decimal MinimumTradeScore = 0m,
+    string? PointsReportPath = null,
+    string? LegacyComparisonReportPath = null,
+    string? LegacyComparisonMarkdownReportPath = null,
+    string LivePointsGateStatus = "n/a",
+    string LivePointsGateReason = "n/a",
+    string SelectedPointsStatus = "n/a",
+    decimal? SelectedPointsScore = null)
 {
     public static LivePilotReport From(
         LiveReadinessGateResult gate,
@@ -121,7 +142,8 @@ public sealed record LivePilotReport(
         PaperRuntimeHostResult? runtimeResult,
         IReadOnlyList<string> warnings,
         ScanListRuntimeEvidence? scanListEvidence = null,
-        string? scanListEvidencePath = null)
+        string? scanListEvidencePath = null,
+        LivePointsPilotGateResult? livePointsGate = null)
     {
         bool endExposureZero = finalReconciliation is not null
             && finalReconciliation.BrokerPositions.All(position => position.IsFlat)
@@ -129,9 +151,11 @@ public sealed record LivePilotReport(
 
         bool scanListClean = scanListEvidence is null
                              || scanListEvidence.DataQualityStatus.Equals("Clean", StringComparison.OrdinalIgnoreCase);
+        bool livePointsGateClean = livePointsGate is null || !livePointsGate.Required || livePointsGate.Allowed;
         bool canPromote = gate.LiveTradingAllowed
                           && restrictions.Passed
                           && scanListClean
+                          && livePointsGateClean
                           && runtimeResult is not null
                           && finalReconciliation is not null
                           && finalReconciliation.Status == ReconciliationStatus.Matched
@@ -150,6 +174,10 @@ public sealed record LivePilotReport(
         else if (!scanListClean && scanListEvidence is not null)
         {
             reason = $"Scan-list data quality is {scanListEvidence.DataQualityStatus}: {scanListEvidence.DataQualityReason}";
+        }
+        else if (!livePointsGateClean && livePointsGate is not null)
+        {
+            reason = livePointsGate.Reason;
         }
         else if (runtimeResult is null)
         {
@@ -204,11 +232,25 @@ public sealed record LivePilotReport(
             scanListEvidence?.DataQualityReason,
             scanListEvidence?.TradeEligibleSymbols ?? 0,
             scanListEvidence?.MergedCandles ?? 0,
-            scanListEvidence?.TradeEligiblePreview ?? Array.Empty<string>());
+            scanListEvidence?.TradeEligiblePreview ?? Array.Empty<string>(),
+            scanListEvidence?.ScannerMode ?? "legacy-blocks",
+            scanListEvidence?.PointsCandidates ?? 0,
+            scanListEvidence?.ReadyCandidates ?? 0,
+            scanListEvidence?.WeakReadyCandidates ?? 0,
+            scanListEvidence?.WatchOnlyCandidates ?? 0,
+            scanListEvidence?.NotReadyCandidates ?? 0,
+            scanListEvidence?.MinimumTradeScore ?? 0m,
+            scanListEvidence?.PointsReportPath,
+            scanListEvidence?.LegacyComparisonReportPath,
+            scanListEvidence?.LegacyComparisonMarkdownReportPath,
+            livePointsGate is null ? "n/a" : (livePointsGate.Allowed ? "Passed" : "Blocked"),
+            livePointsGate?.Reason ?? "n/a",
+            livePointsGate?.SelectedPointsStatus ?? "n/a",
+            livePointsGate?.SelectedPointsScore);
     }
 
     public string ToSummaryString()
-        => $"reportId={ReportId} status={Status} canPromote={CanPromote} account={(string.IsNullOrWhiteSpace(Account) ? "not-configured" : Account)} symbol={Symbol} profile={ProfileName} maxNotional={MaxNotional:F2} readiness={ReadinessStatus} finalReconciliation={FinalReconciliationStatus} endExposureZero={EndExposureZero} decisions={DecisionCount} intents={OrderIntentCount} routedOrders={RoutedOrderCount} scanListDataQuality={ScanListDataQualityStatus ?? "n/a"} scanListTradeEligible={ScanListTradeEligibleSymbols}";
+        => $"reportId={ReportId} status={Status} canPromote={CanPromote} account={(string.IsNullOrWhiteSpace(Account) ? "not-configured" : Account)} symbol={Symbol} profile={ProfileName} maxNotional={MaxNotional:F2} readiness={ReadinessStatus} finalReconciliation={FinalReconciliationStatus} endExposureZero={EndExposureZero} decisions={DecisionCount} intents={OrderIntentCount} routedOrders={RoutedOrderCount} scanListDataQuality={ScanListDataQualityStatus ?? "n/a"} scanListTradeEligible={ScanListTradeEligibleSymbols} scannerMode={ScannerMode} pointsReady={ReadyPointsCandidates} livePointsGate={LivePointsGateStatus}";
 }
 
 public sealed record LivePilotReportOutput(

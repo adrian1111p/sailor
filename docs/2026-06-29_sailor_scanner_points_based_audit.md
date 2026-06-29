@@ -1385,3 +1385,85 @@ dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- p
 ```
 
 Paper send-orders with `points-only` should wait until later steps complete the trade-eligibility/status controls. Use dry-run for SAILOR-045 validation.
+
+---
+
+## 17. SAILOR-048 implementation — Steps 15 to 18 completion
+
+Date: 2026-06-29  
+Status: implemented final scanner-side points workflow and live safety hardening.
+
+### 17.1 Step 15 — Live pilot gate
+
+SAILOR-048 adds a dedicated live points pilot gate. The gate is advisory for live read-only and live dry-run, but mandatory for live send-orders.
+
+For live send-orders, all existing SAILOR live gates still apply, plus:
+
+```text
+scannerMode=points-only
+selected scan-list symbol exists
+selected points status=Ready
+selected points score >= --points-min-trade-score
+```
+
+This means points selection can improve live pilot symbol selection, but it cannot weaken broker safety. Live orders remain blocked unless the paper certification, account match, max notional, operator confirmation, scan-list data quality, and live reconciliation gates also pass.
+
+### 17.2 Step 16 — Regression/self-test command
+
+SAILOR-048 adds:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points-test 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --no-depth --wait-seconds 15
+```
+
+The command runs a legacy-blocks pass and a points-only pass, starts no conduct loop, and sends no orders. It reports whether points-only produced ranked candidate evidence where legacy blocks would otherwise remove or reduce the candidate set.
+
+Optional strict historical check:
+
+```powershell
+--expect-legacy-zero
+```
+
+### 17.3 Step 17 — Final operator commands
+
+Paper diagnostics:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --scanner-mode points-only --points-min-trade-score 45 --no-depth --wait-seconds 15
+```
+
+Paper wait-for-entry:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper run 1m v18-silver 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --send-orders --iterations 2700 --cadence-seconds 1 --max-symbols 45 --wait-seconds 15 --quantity 1 --no-depth --wait-for-scan-entry --scan-entry-target 10 --scan-entry-wait-seconds 2700 --scan-refresh-seconds 300 --scanner-mode points-only --points-min-trade-score 45
+```
+
+Hybrid comparison:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --scanner-mode hybrid-compare --no-depth --wait-seconds 15
+```
+
+Live read-only points ranking:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- live scan-points 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --max-symbols 45 --scanner-mode points-only --no-depth --read-only --wait-seconds 15
+```
+
+Live dry-run one-symbol pilot:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- live run 1m v18-silver 1 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --max-notional 100 --confirm-live --operator-watching-tws --dry-run --local-cache --no-depth --iterations 5 --scanner-mode points-only --points-min-trade-score 45
+```
+
+### 17.4 Step 18 — Documentation
+
+SAILOR-048 updates:
+
+```text
+docs/2026-06-28_sailor_runtime_contracts_command_skeleton.md
+docs/2026-06-29_sailor_scan_default_memory_candles_audit.md
+docs/2026-06-29_sailor_points_scanner_steps_15_18_notes.md
+```
+
+The audit remains the design source for the scanner migration.

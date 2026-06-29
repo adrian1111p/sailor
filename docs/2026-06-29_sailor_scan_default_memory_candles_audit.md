@@ -2315,3 +2315,30 @@ Safety contract:
 - If one or more candidates appear, the run uses those symbols, up to the requested top count.
 - Existing reconciliation, close-only, degraded-state, and order-router gates still apply.
 - The fallback order size remains `--quantity 1` unless a later sizing milestone overrides it.
+
+---
+
+## SAILOR-048 — Points scanner completion for scan-list runtime
+
+SAILOR-048 completes Steps 15 to 18 from the points scanner audit.
+
+Scan-list runtime now supports the final points workflow:
+
+```text
+paper scan-points        -> scanner-only points diagnostics
+paper scan-points-test   -> legacy versus points regression/self-test
+paper run --scanner-mode points-only --wait-for-scan-entry -> waits for Ready points candidates
+live scan-points         -> read-only live points ranking
+live run --scanner-mode points-only -> live dry-run can use points selected symbol; live send-orders is additionally gated
+```
+
+The live points gate remains conservative. Live send-orders requires a scan-list-selected points candidate with:
+
+```text
+status=Ready
+score >= --points-min-trade-score
+```
+
+WatchOnly and WeakReady candidates remain visible in evidence, but they do not open live orders by default.
+
+The scanner is now explainable even when legacy blocks would have hidden all symbols. Conduct entry rules can still hold after selection; that is intentionally separate from scanner selection and must be refactored in a later conduct-entry milestone if we want the complete order-entry stack to become 100% points-aware.
