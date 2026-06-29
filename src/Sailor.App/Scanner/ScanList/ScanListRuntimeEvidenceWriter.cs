@@ -29,7 +29,7 @@ public static class ScanListRuntimeEvidenceWriter
         using var writer = new StreamWriter(datedCsv, append: true, Encoding.UTF8);
         if (writeHeader)
         {
-            writer.WriteLine("observedUtc,evidenceId,mode,file,sheet,symbolColumn,refreshSeconds,tradeTop,historyBatchSize,historyBatchIntervalMinutes,workbookSymbols,activeSymbols,addedSymbols,removedSymbols,retainedRemovedSymbols,tradeEligibleSymbols,historyBatches,safetyMode,safetyReason");
+            writer.WriteLine("observedUtc,evidenceId,mode,file,sheet,symbolColumn,cycleIndex,totalCycles,refreshSeconds,tradeTop,historyBatchSize,historyBatchIntervalMinutes,workbookSymbols,activeSymbols,addedSymbols,removedSymbols,retainedRemovedSymbols,tradeEligibleSymbols,historyBatches,dueHistoryBatch,dueHistorySymbols,preparedSymbols,historySuccessCount,memoryCandleSymbols,memoryCandles,mergedSymbols,mergedCandles,safetyMode,safetyReason");
         }
 
         writer.WriteLine(string.Join(',',
@@ -39,6 +39,8 @@ public static class ScanListRuntimeEvidenceWriter
             Csv(evidence.File),
             Csv(evidence.Sheet),
             Csv(evidence.SymbolColumn),
+            evidence.CycleIndex.ToString(CultureInfo.InvariantCulture),
+            evidence.TotalCycles.ToString(CultureInfo.InvariantCulture),
             evidence.RefreshSeconds.ToString(CultureInfo.InvariantCulture),
             evidence.TradeTop.ToString(CultureInfo.InvariantCulture),
             evidence.HistoryBatchSize.ToString(CultureInfo.InvariantCulture),
@@ -50,6 +52,14 @@ public static class ScanListRuntimeEvidenceWriter
             evidence.RetainedRemovedSymbols.ToString(CultureInfo.InvariantCulture),
             evidence.TradeEligibleSymbols.ToString(CultureInfo.InvariantCulture),
             evidence.HistoryBatches.ToString(CultureInfo.InvariantCulture),
+            evidence.DueHistoryBatch.ToString(CultureInfo.InvariantCulture),
+            evidence.DueHistorySymbols.ToString(CultureInfo.InvariantCulture),
+            evidence.PreparedSymbols.ToString(CultureInfo.InvariantCulture),
+            evidence.HistorySuccessCount.ToString(CultureInfo.InvariantCulture),
+            evidence.MemoryCandleSymbols.ToString(CultureInfo.InvariantCulture),
+            evidence.MemoryCandles.ToString(CultureInfo.InvariantCulture),
+            evidence.MergedSymbols.ToString(CultureInfo.InvariantCulture),
+            evidence.MergedCandles.ToString(CultureInfo.InvariantCulture),
             Csv(evidence.SafetyMode),
             Csv(evidence.SafetyReason)));
 
@@ -64,7 +74,16 @@ public static class ScanListRuntimeEvidenceWriter
         IReadOnlyList<string> tradeEligibleSymbols,
         IReadOnlyList<ScanListHistoryBatch> batches,
         RuntimeSafetyState safetyState,
-        IReadOnlyList<string> warnings)
+        IReadOnlyList<string> warnings,
+        int cycleIndex = 1,
+        int totalCycles = 1,
+        ScanListHistoryBatch? dueHistoryBatch = null,
+        int preparedSymbols = 0,
+        int historySuccessCount = 0,
+        int memoryCandleSymbols = 0,
+        int memoryCandles = 0,
+        int mergedSymbols = 0,
+        int mergedCandles = 0)
     {
         string id = $"SLR-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}"[..31];
         return new ScanListRuntimeEvidence(
@@ -90,7 +109,17 @@ public static class ScanListRuntimeEvidenceWriter
             tradeEligibleSymbols.Take(20).ToArray(),
             reload.AddedSymbols.Take(20).ToArray(),
             reload.RemovedSymbols.Take(20).ToArray(),
-            warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            cycleIndex,
+            totalCycles,
+            dueHistoryBatch?.BatchNumber ?? 0,
+            dueHistoryBatch?.Symbols.Count ?? 0,
+            preparedSymbols,
+            historySuccessCount,
+            memoryCandleSymbols,
+            memoryCandles,
+            mergedSymbols,
+            mergedCandles);
     }
 
     private static string Csv(string? value)

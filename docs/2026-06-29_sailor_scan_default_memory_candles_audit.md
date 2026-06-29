@@ -1752,3 +1752,295 @@ Recommended implementation sequence:
 9. Expose only retained top-10 symbols as entry-eligible for paper conduct.
 10. Keep exits/flatten enabled for all open symbols even if removed from the workbook.
 ```
+
+---
+
+## 20. SAILOR-039 implementation update — Steps 7, 8, and 9
+
+Commit baseline before this milestone:
+
+```text
+SAILOR-038 Add scan-list memory and history scheduler
+```
+
+SAILOR-039 implements the first dynamic scan-list runtime host for audit Steps 7, 8, and 9. It keeps order routing disabled, but it moves the scan-list command from a one-cycle contract printout to a reusable runtime that can keep state across cycles.
+
+### 20.1 Implemented scope
+
+Implemented files:
+
+```text
+src/Sailor.App/Scanner/ScanList/ScanListRunRequest.cs
+src/Sailor.App/Scanner/ScanList/ScanListCycleResult.cs
+src/Sailor.App/Scanner/ScanList/ScanListRunResult.cs
+src/Sailor.App/Scanner/ScanList/ScanListRuntime.cs
+```
+
+Updated files:
+
+```text
+src/Sailor.App/Scanner/ScanList/ScanListHistoryBatchScheduler.cs
+src/Sailor.App/Scanner/ScanList/ScanListMemoryStore.cs
+src/Sailor.App/Scanner/ScanList/ScanListSymbolState.cs
+src/Sailor.App/Scanner/ScanList/ScanListRuntimeEvidence.cs
+src/Sailor.App/Scanner/ScanList/ScanListRuntimeEvidenceWriter.cs
+src/Sailor.App/Runtime/Commands/SailorRuntimeCommandRunner.cs
+src/Sailor.App/Program.cs
+docs/2026-06-29_sailor_scan_default_memory_candles_audit.md
+```
+
+### 20.2 Step 7 — Runtime history batch scheduler
+
+SAILOR-039 extends the existing batch planner into a runtime scheduler:
+
+```text
+ScanListHistoryBatchScheduler.SelectDueBatch(...)
+ScanListHistoryBatchScheduler.MarkBatchRequested(...)
+ScanListHistoryBatchScheduler.MarkSymbolSucceeded(...)
+ScanListHistoryBatchScheduler.MarkSymbolFailed(...)
+```
+
+Behavior:
+
+```text
+- plans batches from the active scan-list snapshot,
+- selects only a due batch for the current runtime cycle,
+- avoids duplicate already-requested batches inside the same runtime session,
+- tracks failed symbols with a simple retry backoff,
+- preserves the default 45-symbol / 10-minute pacing rule.
+```
+
+For the uploaded `Candidates` sheet with 131 symbols, the expected batch plan remains:
+
+```text
+batch 1: 45 symbols
+batch 2: 45 symbols
+batch 3: 41 symbols
+```
+
+For one safe smoke-test cycle, only the first due batch is executed. Later long-running runs can use multiple cycles and the default 5-minute workbook reload interval.
+
+### 20.3 Step 8 — Stateful ScanListMemoryStore
+
+SAILOR-039 extends each symbol state with history and candle/merge tracking:
+
+```text
+HistoryStatus
+LastHistoryRequestUtc
+LastHistorySuccessUtc
+LastHistoryFailureUtc
+HistoryRequestCount
+HistoricalBarCount
+RealtimeCandleCount
+MergedCandleCount
+```
+
+New store methods:
+
+```text
+MarkHistoryRequested(...)
+MarkHistoryResult(...)
+UpdateCandleCounts(...)
+```
+
+Behavior:
+
+```text
+- remembers workbook additions/removals across scan cycles,
+- keeps removed symbols retained when they have open position state or recent top selection,
+- marks history status per symbol,
+- stores latest scanner rank/score for retained top symbols,
+- tracks candle/merge evidence per prepared symbol.
+```
+
+Important safety boundary:
+
+```text
+ScanListMemoryStore is not broker position state.
+Broker position truth remains in reconciliation and broker state modules.
+```
+
+### 20.4 Step 9 — ScanListRuntime
+
+SAILOR-039 adds `ScanListRuntime` as the host that owns the scan-list memory for a session.
+
+The runtime does this per cycle:
+
+```text
+1. Reload scan/data/scan_default.xlsx.
+2. Apply the workbook snapshot to ScanListMemoryStore.
+3. Detect added and removed symbols.
+4. Plan 45-symbol / 10-minute history batches.
+5. Select the due batch for the current cycle.
+6. Run the existing Sailor scanner over the due batch only.
+7. Mark per-symbol history success/failure.
+8. Retain the best scanner-rated symbols using --trade-top / --keep-trade-top.
+9. Merge historical bars with any in-memory realtime candles.
+10. Write JSON/CSV evidence.
+11. Keep runtime safety CloseOnly when history/data/server state is not clean.
+```
+
+The command remains non-trading:
+
+```text
+No paper order router is created.
+No live order router is created.
+No broker order is sent.
+```
+
+### 20.5 Runtime evidence extensions
+
+The scan-list evidence JSON/CSV now includes cycle and candle/merge fields:
+
+```text
+cycleIndex
+totalCycles
+dueHistoryBatch
+dueHistorySymbols
+preparedSymbols
+historySuccessCount
+memoryCandleSymbols
+memoryCandles
+mergedSymbols
+mergedCandles
+```
+
+Evidence paths remain:
+
+```text
+logs/Paper/ScanList/scanlist_latest.json
+logs/Paper/ScanList/scanlist_YYYYMMDD.csv
+logs/Live/ScanList/scanlist_latest.json
+logs/Live/ScanList/scanlist_YYYYMMDD.csv
+```
+
+These files are generated evidence and must not be committed.
+
+### 20.6 Commands added/updated for SAILOR-039
+
+Single-cycle paper runtime smoke test:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --max-symbols 45
+```
+
+Single-cycle live read-only runtime smoke test:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45
+```
+
+Multi-cycle runtime smoke test without waiting 5 minutes:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --max-symbols 45 --scan-cycles 2 --scan-refresh-seconds 1 --no-scan-cycle-wait
+```
+
+Realistic long-running behavior uses the default refresh interval:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --max-symbols 45 --scan-cycles 3 --scan-refresh-seconds 300
+```
+
+IBApi build check:
+
+```powershell
+dotnet restore src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
+dotnet build src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
+```
+
+### 20.7 New command options
+
+```text
+--scan-cycles N
+```
+
+Number of scan-list runtime cycles to execute. Default is `1` for safe smoke tests.
+
+```text
+--cycles N
+```
+
+Alias for `--scan-cycles`.
+
+```text
+--no-scan-cycle-wait
+```
+
+Runs multiple scan cycles without sleeping between them. This is useful for smoke tests and CI-like local validation.
+
+```text
+--scan-refresh-seconds N
+```
+
+Workbook reload / selection refresh interval. Default is `300` seconds.
+
+```text
+--history-batch-size N
+```
+
+Maximum symbols in one due history batch. Default is `45`.
+
+```text
+--history-batch-interval-minutes N
+```
+
+Minimum planned spacing between history batches. Default is `10` minutes.
+
+```text
+--trade-top N
+--keep-trade-top N
+```
+
+Number of best scanner-rated symbols retained for later paper/live entry eligibility. The runtime currently enforces at least `10` for the requested workflow.
+
+### 20.8 Connection interruption / degraded state behavior
+
+SAILOR-039 keeps the SAILOR-031 safety principle:
+
+```text
+If history, market data, or server/broker state is degraded, the scan-list runtime state is CloseOnly.
+```
+
+This means:
+
+```text
+- new entries are blocked,
+- exits/flatten remain the only allowed future trading operation,
+- the last clean workbook snapshot remains in memory,
+- removed symbols are not dropped when they are still position-relevant or recently selected.
+```
+
+
+### 20.10 SAILOR-039 v3 correction: retain top symbols when no batch is due
+
+A follow-up correction was added after the multi-cycle smoke test. When cycle 2 has no due history batch, this is a normal waiting state, not a reason to clear the previously retained top scanner symbols.
+
+Required behavior:
+
+```text
+- If a new due history batch produces scanner candidates, refresh the retained top-N list from those candidates.
+- If no history batch is due, keep the previous retained top-N list in memory.
+- If no history batch is due and no degraded connection/server signal exists, keep the scan-list safety state Normal for evidence purposes.
+- Future trading integration must still combine this retained-symbol gate with broker reconciliation and the paper/live order safety gates.
+```
+
+This preserves the requested workflow where the scanner/rating is checked every 5 minutes, while the 45-symbol history request cadence can remain spaced at 10 minutes.
+
+### 20.9 Remaining work after SAILOR-039
+
+Still not enabled:
+
+```text
+- actual broker realtime trade/quote event source for all workbook symbols,
+- streaming candle updates from IBKR ticks,
+- paper conduct-loop entry gating from retained top-10 symbols,
+- paper certification report extension for scan-list runtime evidence,
+- live best-1/top-N dynamic pilot using the retained scan-list selection.
+```
+
+Recommended next milestone:
+
+```text
+SAILOR-040 — Paper dynamic scan-list conduct loop with retained top-10 entry gate
+```

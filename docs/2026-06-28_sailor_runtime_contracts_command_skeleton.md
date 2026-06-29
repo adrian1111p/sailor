@@ -662,3 +662,49 @@ SailorOrderIntent
 ```
 
 This keeps strategy logic independent from IBKR and allows the same conduct strategy adapter to be used by backtest, paper, and guarded live pilot mode.
+
+---
+
+## SAILOR-039 scan-list runtime cycles and memory options
+
+SAILOR-039 extends `paper scan-list` and `live scan-list` from a one-cycle scanner check into a non-trading dynamic scan-list runtime host. It still sends no orders.
+
+### Paper scan-list runtime
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --max-symbols 45
+```
+
+### Live read-only scan-list runtime
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45
+```
+
+### Multi-cycle smoke test without waiting
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-quotes --max-symbols 45 --scan-cycles 2 --scan-refresh-seconds 1 --no-scan-cycle-wait
+```
+
+### Options
+
+| Option | Meaning |
+|---|---|
+| `--scan-cycles N` | Run N scan-list cycles. Default is `1`. |
+| `--cycles N` | Alias for `--scan-cycles`. |
+| `--no-scan-cycle-wait` | Do not sleep between scan cycles. Use for local smoke tests. |
+| `--scan-refresh-seconds N` | Workbook reload / selection refresh interval. Default is `300`. |
+| `--history-batch-size N` | Maximum symbols in one history batch. Default is `45`. |
+| `--history-batch-interval-minutes N` | Planned spacing between history batches. Default is `10`. |
+| `--trade-top N` | Retain at least the best N scanner-rated symbols for later paper/live trade eligibility. The runtime keeps minimum `10`. |
+| `--keep-trade-top N` | Alias for `--trade-top`. |
+
+Generated evidence is written under:
+
+```text
+logs/Paper/ScanList/
+logs/Live/ScanList/
+```
+
+Do not commit generated scan-list evidence.

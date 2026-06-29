@@ -251,7 +251,7 @@ static Task RunScanListInspectAsync(string[] args)
     var reader = new ScanListWorkbookReader();
     ScanListWorkbookResult result = reader.Read(options);
 
-    Console.WriteLine("SAILOR-038 scan-list inspect");
+    Console.WriteLine("SAILOR-039 scan-list inspect");
     Console.WriteLine(result.ToSummaryString());
     Console.WriteLine(options.ToDisplayString());
     Console.WriteLine($"historyBatches={Math.Max(1, (int)Math.Ceiling(result.SymbolCount / (double)Math.Max(1, historyBatchSize)))}");
@@ -259,7 +259,7 @@ static Task RunScanListInspectAsync(string[] args)
     Console.WriteLine($"intradaySymbolAdditions=enabled add/drop detection will be evaluated every {refreshSeconds}s by the runtime host");
     Console.WriteLine($"tradeSelection=best {tradeTop} scanner-rated symbols retained for paper/live entry eligibility every {refreshSeconds}s");
     Console.WriteLine("removedSymbolRetention=enabled symbols removed from workbook stay managed when they have open positions or recent top selection");
-    Console.WriteLine("historyScheduler=enabled max 45 symbols per batch by default and 10 minutes between batches");
+    Console.WriteLine("historyScheduler=enabled max 45 symbols per batch by default and 10 minutes between batches; SAILOR-039 runtime selects the due batch per scan cycle");
     Console.WriteLine("connectionInterruptionPolicy=runtime must keep the last clean scan-list snapshot in memory and move trading to CloseOnly when broker/server state is degraded");
     Console.WriteLine();
 

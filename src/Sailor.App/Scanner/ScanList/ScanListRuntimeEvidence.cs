@@ -23,8 +23,21 @@ public sealed record ScanListRuntimeEvidence(
     IReadOnlyList<string> TradeEligiblePreview,
     IReadOnlyList<string> AddedPreview,
     IReadOnlyList<string> RemovedPreview,
-    IReadOnlyList<string> Warnings)
+    IReadOnlyList<string> Warnings,
+    int CycleIndex = 1,
+    int TotalCycles = 1,
+    int DueHistoryBatch = 0,
+    int DueHistorySymbols = 0,
+    int PreparedSymbols = 0,
+    int HistorySuccessCount = 0,
+    int MemoryCandleSymbols = 0,
+    int MemoryCandles = 0,
+    int MergedSymbols = 0,
+    int MergedCandles = 0)
 {
     public string ToSummaryString()
-        => $"evidenceId={EvidenceId} mode={Mode} workbookSymbols={WorkbookSymbols} active={ActiveSymbols} added={AddedSymbols} removed={RemovedSymbols} retainedRemoved={RetainedRemovedSymbols} tradeEligible={TradeEligibleSymbols} historyBatches={HistoryBatches} safety={SafetyMode}";
+        => $"evidenceId={EvidenceId} mode={Mode} cycle={CycleIndex}/{TotalCycles} workbookSymbols={WorkbookSymbols} active={ActiveSymbols} " +
+           $"added={AddedSymbols} removed={RemovedSymbols} retainedRemoved={RetainedRemovedSymbols} tradeEligible={TradeEligibleSymbols} " +
+           $"historyBatches={HistoryBatches} dueBatch={(DueHistoryBatch <= 0 ? "none" : DueHistoryBatch.ToString(System.Globalization.CultureInfo.InvariantCulture))} dueSymbols={DueHistorySymbols} " +
+           $"prepared={PreparedSymbols} historyOk={HistorySuccessCount} memoryCandles={MemoryCandles} mergedCandles={MergedCandles} safety={SafetyMode}";
 }
