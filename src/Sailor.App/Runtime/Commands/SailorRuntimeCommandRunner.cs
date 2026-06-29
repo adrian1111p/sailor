@@ -563,7 +563,7 @@ public static class SailorRuntimeCommandRunner
         Log(writer, workbookOptions.ToDisplayString());
         Log(writer, $"scanCycles={runRequest.SafeCycles} waitBetweenCycles={waitBetweenCycles} scanRefreshSeconds={runRequest.SafeScanRefreshSeconds} tradeTop={runRequest.SafeTradeTop}");
         Log(writer, "");
-        Log(writer, "SAILOR-039 implementation: dynamic scan-list runtime host for audit Steps 7, 8, and 9.");
+        Log(writer, "SAILOR-041 scan-list observation/runtime evidence for audit Steps 13, 14, and 15.");
         Log(writer, "The command keeps a ScanListMemoryStore alive across scan cycles, reloads the workbook, detects intraday additions/removals, selects the due history batch, and retains the best scanner-rated symbols for later paper/live entry eligibility.");
         Log(writer, "The runtime still sends no orders. It writes scan-list runtime evidence and keeps the safety state CloseOnly whenever history, market data, or broker/server state is not clean.");
         Log(writer, "History scheduler default: 45 symbols per batch and 10 minutes between batches. Workbook refresh default: 300 seconds. Trade retention default: at least top 10 symbols.");
@@ -580,7 +580,7 @@ public static class SailorRuntimeCommandRunner
                 readOnly: true,
                 account: account);
             LogLiveReadinessGate(writer, gate);
-            Log(writer, "SAILOR-039 live scan-list is read-only. No live order router is created.");
+            Log(writer, "SAILOR-041 live scan-list observation is read-only. No live order router is created and no live trading gate is required.");
             Log(writer, "");
         }
 
@@ -605,6 +605,8 @@ public static class SailorRuntimeCommandRunner
             Log(writer, $"dueHistoryBatch={(cycle.DueHistoryBatch?.ToDisplayLine() ?? "none due")}");
             Log(writer, $"scanner={cycle.ScannerResult.ToSummaryString()}");
             Log(writer, $"memoryEvidence={cycle.Evidence.ToSummaryString()}");
+            Log(writer, $"dataQuality={cycle.Evidence.DataQualityStatus} reason={cycle.Evidence.DataQualityReason}");
+            Log(writer, $"notReadySelected={(cycle.Evidence.SafeNotReadySelectedSymbols.Count == 0 ? "none" : string.Join(",", cycle.Evidence.SafeNotReadySelectedSymbols))}");
             Log(writer, $"safety={cycle.SafetyState.ToDisplayString()}");
             Log(writer, $"Scan-list evidence JSON: {cycle.EvidenceJsonPath}");
             Log(writer, $"Scan-list evidence CSV:  {cycle.EvidenceCsvPath}");
@@ -902,6 +904,7 @@ public static class SailorRuntimeCommandRunner
         {
             Log(writer, $"latestScanListCycle={latest.ToSummaryString()}");
             Log(writer, $"latestScanListEvidence={latest.Evidence.ToSummaryString()}");
+            Log(writer, $"latestScanListDataQuality={latest.Evidence.DataQualityStatus} reason={latest.Evidence.DataQualityReason}");
             Log(writer, $"Scan-list evidence JSON: {latest.EvidenceJsonPath}");
             Log(writer, $"Scan-list evidence CSV:  {latest.EvidenceCsvPath}");
             if (latest.TradeEligibleSymbols.Count > 0)
@@ -1230,6 +1233,9 @@ public static class SailorRuntimeCommandRunner
         bool requestIbkrMarketData = captureSnapshots && !localCache;
         bool smartDepth = args.Any(arg => arg.Equals("--smart-depth", StringComparison.OrdinalIgnoreCase));
         bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
+        ScanListRuntimeEvidence? liveScanListEvidence = null;
+        string? liveScanListEvidencePath = null;
+        LiveDynamicScanPilotSelection? liveDynamicSelection = null;
 
         if (HasScanListInput(args))
         {
@@ -1277,22 +1283,26 @@ public static class SailorRuntimeCommandRunner
                 writer,
                 "live run pilot").ConfigureAwait(false);
 
-            IReadOnlyList<string> selectedScanListSymbols = SelectScanListTradeSymbols(scanListResult, requestedTopCount: 1, livePilot: true);
-            if (selectedScanListSymbols.Count == 0)
+            liveDynamicSelection = new LiveDynamicScanPilotHost().SelectBestOne(scanListResult);
+            liveScanListEvidence = liveDynamicSelection.Evidence;
+            liveScanListEvidencePath = liveDynamicSelection.EvidencePath;
+            Log(writer, liveDynamicSelection.ToSummaryString());
+            if (!liveDynamicSelection.Passed)
             {
                 Log(writer, "");
-                Log(writer, "SAILOR-040 blocked live dynamic scan-list pilot because no trade-eligible symbol was retained. No live order was sent.");
+                Log(writer, liveDynamicSelection.Reason);
+                Log(writer, "SAILOR-041 blocked live dynamic scan-list pilot because no trade-eligible symbol was retained. No live order was sent.");
                 Log(writer, $"Runtime log: {logFilePath}");
                 return;
             }
 
-            string selectedSymbol = selectedScanListSymbols[0];
+            string selectedSymbol = liveDynamicSelection.Symbol;
             initialOptions = initialOptions with
             {
                 Universe = selectedSymbol,
                 TopCount = 1
             };
-            Log(writer, $"SAILOR-040 live scan-list pilot selected symbol: {selectedSymbol}");
+            Log(writer, $"SAILOR-041 live scan-list pilot selected symbol: {selectedSymbol}");
             Log(writer, "Live trading remains limited to one selected symbol by SAILOR-034 pilot restrictions.");
             Log(writer, "");
         }
@@ -1307,7 +1317,9 @@ public static class SailorRuntimeCommandRunner
         LiveReadinessGateOutput gateOutput = new LiveReadinessGate(settings).WriteResult(gate);
 
         LivePilotRestrictionResult restrictions = EvaluateLivePilotRestrictions(initialOptions, args, settings);
-        bool sendOrders = !dryRunRequested && gate.LiveTradingAllowed && restrictions.Passed;
+        bool scanListDataQualityAllowsTrading = liveScanListEvidence is null
+            || liveScanListEvidence.DataQualityStatus.Equals("Clean", StringComparison.OrdinalIgnoreCase);
+        bool sendOrders = !dryRunRequested && gate.LiveTradingAllowed && restrictions.Passed && scanListDataQualityAllowsTrading;
         bool dryRun = !sendOrders;
 
         var runtimeOptions = initialOptions with
@@ -1375,7 +1387,7 @@ public static class SailorRuntimeCommandRunner
             Log(writer, $"WARN: {warning}");
         }
 
-        if (!gate.LiveTradingAllowed || !restrictions.Passed)
+        if (!gate.LiveTradingAllowed || !restrictions.Passed || !scanListDataQualityAllowsTrading)
         {
             var blockedReport = LivePilotReport.From(
                 gate,
@@ -1383,11 +1395,18 @@ public static class SailorRuntimeCommandRunner
                 preRunReconciliation: null,
                 finalReconciliation: null,
                 runtimeResult: null,
-                warnings: restrictions.Warnings.Concat(gate.Checks.Where(check => !check.Passed).Select(check => check.ToDisplayLine())).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+                warnings: restrictions.Warnings.Concat(gate.Checks.Where(check => !check.Passed).Select(check => check.ToDisplayLine())).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                scanListEvidence: liveScanListEvidence,
+                scanListEvidencePath: liveScanListEvidencePath);
             LivePilotReportOutput blockedOutput = new LivePilotReportWriter().Write(blockedReport);
             Log(writer, "");
-            Log(writer, gate.LiveTradingAllowed ? restrictions.BlockReason : gate.Reason);
-            Log(writer, "SAILOR-034 blocked live pilot before any broker order route could be created. No live order was sent.");
+            string livePilotBlockReason = !gate.LiveTradingAllowed
+                ? gate.Reason
+                : !restrictions.Passed
+                    ? restrictions.BlockReason
+                    : $"Scan-list data quality is {liveScanListEvidence?.DataQualityStatus}: {liveScanListEvidence?.DataQualityReason}";
+            Log(writer, livePilotBlockReason);
+            Log(writer, "SAILOR-041 blocked live pilot before any broker order route could be created. No live order was sent.");
             Log(writer, blockedReport.ToSummaryString());
             Log(writer, $"Live pilot JSON: {blockedOutput.JsonPath}");
             Log(writer, $"Live pilot CSV:  {blockedOutput.CsvPath}");
@@ -1431,7 +1450,9 @@ public static class SailorRuntimeCommandRunner
                 preRunReconciliation,
                 finalReconciliation: preRunReconciliation,
                 runtimeResult: null,
-                warnings: preRunReconciliation.Warnings);
+                warnings: preRunReconciliation.Warnings,
+                scanListEvidence: liveScanListEvidence,
+                scanListEvidencePath: liveScanListEvidencePath);
             LivePilotReportOutput blockedOutput = new LivePilotReportWriter().Write(blockedReport);
             Log(writer, "");
             Log(writer, "SAILOR-034 blocked live pilot because pre-run live reconciliation did not match. No live order was sent.");
@@ -1512,7 +1533,9 @@ public static class SailorRuntimeCommandRunner
             preRunReconciliation,
             finalReconciliation,
             runtimeResult,
-            allWarnings);
+            allWarnings,
+            scanListEvidence: liveScanListEvidence,
+            scanListEvidencePath: liveScanListEvidencePath);
         LivePilotReportOutput output = new LivePilotReportWriter().Write(report);
 
         Log(writer, "");
@@ -1891,6 +1914,8 @@ public static class SailorRuntimeCommandRunner
         else
         {
             Log(writer, $"scan-list evidence: {report.ScanListEvidence.ToSummaryString()}");
+            Log(writer, $"scan-list data quality: {report.ScanListEvidence.DataQualityStatus} - {report.ScanListEvidence.DataQualityReason}");
+            Log(writer, $"scan-list certification blockers: criticalGaps={report.ScanListEvidence.CriticalDataGaps} mergeConflicts={report.ScanListEvidence.MergeConflictCount} staleSelected={report.ScanListEvidence.StaleSelectedSymbols} notReady={(report.ScanListEvidence.NotReadySelectedSymbols.Count == 0 ? "none" : string.Join(",", report.ScanListEvidence.NotReadySelectedSymbols))}");
             Log(writer, $"scan-list retained symbols: {(report.ScanListEvidence.TradeEligiblePreview.Count == 0 ? "none" : string.Join(", ", report.ScanListEvidence.TradeEligiblePreview))}");
         }
         Log(writer, $"all open exposure at end = zero: {report.EndExposureIsZero}");

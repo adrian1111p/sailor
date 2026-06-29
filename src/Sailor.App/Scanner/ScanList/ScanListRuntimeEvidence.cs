@@ -33,11 +33,23 @@ public sealed record ScanListRuntimeEvidence(
     int MemoryCandleSymbols = 0,
     int MemoryCandles = 0,
     int MergedSymbols = 0,
-    int MergedCandles = 0)
+    int MergedCandles = 0,
+    string DataQualityStatus = "Unknown",
+    string DataQualityReason = "Data quality was not evaluated.",
+    int DataReadySymbols = 0,
+    int CriticalDataGaps = 0,
+    int MergeConflictCount = 0,
+    int StaleSelectedSymbols = 0,
+    DateTimeOffset? LatestSelectedCandleUtc = null,
+    double? LatestSelectedCandleAgeMinutes = null,
+    IReadOnlyList<string>? NotReadySelectedSymbols = null)
 {
+    public IReadOnlyList<string> SafeNotReadySelectedSymbols => NotReadySelectedSymbols ?? Array.Empty<string>();
+
     public string ToSummaryString()
         => $"evidenceId={EvidenceId} mode={Mode} cycle={CycleIndex}/{TotalCycles} workbookSymbols={WorkbookSymbols} active={ActiveSymbols} " +
            $"added={AddedSymbols} removed={RemovedSymbols} retainedRemoved={RetainedRemovedSymbols} tradeEligible={TradeEligibleSymbols} " +
            $"historyBatches={HistoryBatches} dueBatch={(DueHistoryBatch <= 0 ? "none" : DueHistoryBatch.ToString(System.Globalization.CultureInfo.InvariantCulture))} dueSymbols={DueHistorySymbols} " +
-           $"prepared={PreparedSymbols} historyOk={HistorySuccessCount} memoryCandles={MemoryCandles} mergedCandles={MergedCandles} safety={SafetyMode}";
+           $"prepared={PreparedSymbols} historyOk={HistorySuccessCount} memoryCandles={MemoryCandles} mergedCandles={MergedCandles} " +
+           $"dataQuality={DataQualityStatus} criticalGaps={CriticalDataGaps} conflicts={MergeConflictCount} stale={StaleSelectedSymbols} safety={SafetyMode}";
 }

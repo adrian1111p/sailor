@@ -14,10 +14,18 @@ public sealed class ScanListCandleMergeEngine
         ScanListMemoryCandle[] realtime = realtimeCandles.OrderBy(candle => candle.MinuteUtc).ToArray();
         var warnings = new List<string>();
         var merged = new SortedDictionary<DateTimeOffset, ScanListMemoryCandle>();
+        var historicalMinutes = new HashSet<DateTimeOffset>();
+        int mergeConflictCount = 0;
 
         foreach (BacktestBar bar in historical)
         {
             DateTimeOffset minute = ScanListCandleAccumulator.FloorToMinute(bar.Time);
+            if (!historicalMinutes.Add(minute))
+            {
+                mergeConflictCount++;
+                warnings.Add($"{normalizedSymbol}: duplicate historical bar minute {minute:O}; latest historical row replaced the earlier one.");
+            }
+
             merged[minute] = new ScanListMemoryCandle(
                 normalizedSymbol,
                 minute,
@@ -40,6 +48,15 @@ public sealed class ScanListCandleMergeEngine
             if (merged.TryGetValue(minute, out ScanListMemoryCandle? existing))
             {
                 realtimeOverlapped++;
+                if (existing.Open != realtimeCandle.Open
+                    || existing.High != realtimeCandle.High
+                    || existing.Low != realtimeCandle.Low
+                    || existing.Close != realtimeCandle.Close)
+                {
+                    mergeConflictCount++;
+                    warnings.Add($"{normalizedSymbol}: realtime candle overlaps historical minute {minute:O} with different OHLC values; candle was merged and flagged.");
+                }
+
                 merged[minute] = existing with
                 {
                     High = Math.Max(existing.High, realtimeCandle.High),
@@ -70,6 +87,7 @@ public sealed class ScanListCandleMergeEngine
             warnings.Add($"No historical or realtime memory candles were available for {normalizedSymbol}.");
         }
 
+        ScanListMemoryCandle? latest = merged.Count == 0 ? null : merged.Values.Last();
         return new ScanListCandleMergeResult(
             normalizedSymbol,
             historical.Length,
@@ -77,6 +95,9 @@ public sealed class ScanListCandleMergeEngine
             merged.Count,
             realtimeAppended,
             realtimeOverlapped,
+            mergeConflictCount,
+            latest?.MinuteUtc,
+            latest?.UpdatedUtc,
             merged.Values.ToArray(),
             warnings);
     }

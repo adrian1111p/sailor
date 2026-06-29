@@ -29,7 +29,7 @@ public static class ScanListRuntimeEvidenceWriter
         using var writer = new StreamWriter(datedCsv, append: true, Encoding.UTF8);
         if (writeHeader)
         {
-            writer.WriteLine("observedUtc,evidenceId,mode,file,sheet,symbolColumn,cycleIndex,totalCycles,refreshSeconds,tradeTop,historyBatchSize,historyBatchIntervalMinutes,workbookSymbols,activeSymbols,addedSymbols,removedSymbols,retainedRemovedSymbols,tradeEligibleSymbols,historyBatches,dueHistoryBatch,dueHistorySymbols,preparedSymbols,historySuccessCount,memoryCandleSymbols,memoryCandles,mergedSymbols,mergedCandles,safetyMode,safetyReason");
+            writer.WriteLine("observedUtc,evidenceId,mode,file,sheet,symbolColumn,cycleIndex,totalCycles,refreshSeconds,tradeTop,historyBatchSize,historyBatchIntervalMinutes,workbookSymbols,activeSymbols,addedSymbols,removedSymbols,retainedRemovedSymbols,tradeEligibleSymbols,historyBatches,dueHistoryBatch,dueHistorySymbols,preparedSymbols,historySuccessCount,memoryCandleSymbols,memoryCandles,mergedSymbols,mergedCandles,dataQualityStatus,dataReadySymbols,criticalDataGaps,mergeConflictCount,staleSelectedSymbols,latestSelectedCandleUtc,latestSelectedCandleAgeMinutes,notReadySelectedSymbols,safetyMode,safetyReason,dataQualityReason");
         }
 
         writer.WriteLine(string.Join(',',
@@ -60,8 +60,17 @@ public static class ScanListRuntimeEvidenceWriter
             evidence.MemoryCandles.ToString(CultureInfo.InvariantCulture),
             evidence.MergedSymbols.ToString(CultureInfo.InvariantCulture),
             evidence.MergedCandles.ToString(CultureInfo.InvariantCulture),
+            Csv(evidence.DataQualityStatus),
+            evidence.DataReadySymbols.ToString(CultureInfo.InvariantCulture),
+            evidence.CriticalDataGaps.ToString(CultureInfo.InvariantCulture),
+            evidence.MergeConflictCount.ToString(CultureInfo.InvariantCulture),
+            evidence.StaleSelectedSymbols.ToString(CultureInfo.InvariantCulture),
+            Csv(evidence.LatestSelectedCandleUtc?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty),
+            Csv(evidence.LatestSelectedCandleAgeMinutes?.ToString("0.##", CultureInfo.InvariantCulture) ?? string.Empty),
+            Csv(string.Join(';', evidence.SafeNotReadySelectedSymbols)),
             Csv(evidence.SafetyMode),
-            Csv(evidence.SafetyReason)));
+            Csv(evidence.SafetyReason),
+            Csv(evidence.DataQualityReason)));
 
         return (latestJson, datedCsv);
     }
@@ -83,7 +92,16 @@ public static class ScanListRuntimeEvidenceWriter
         int memoryCandleSymbols = 0,
         int memoryCandles = 0,
         int mergedSymbols = 0,
-        int mergedCandles = 0)
+        int mergedCandles = 0,
+        string dataQualityStatus = "Unknown",
+        string dataQualityReason = "Data quality was not evaluated.",
+        int dataReadySymbols = 0,
+        int criticalDataGaps = 0,
+        int mergeConflictCount = 0,
+        int staleSelectedSymbols = 0,
+        DateTimeOffset? latestSelectedCandleUtc = null,
+        double? latestSelectedCandleAgeMinutes = null,
+        IReadOnlyList<string>? notReadySelectedSymbols = null)
     {
         string id = $"SLR-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}"[..31];
         return new ScanListRuntimeEvidence(
@@ -119,7 +137,16 @@ public static class ScanListRuntimeEvidenceWriter
             memoryCandleSymbols,
             memoryCandles,
             mergedSymbols,
-            mergedCandles);
+            mergedCandles,
+            dataQualityStatus,
+            dataQualityReason,
+            dataReadySymbols,
+            criticalDataGaps,
+            mergeConflictCount,
+            staleSelectedSymbols,
+            latestSelectedCandleUtc,
+            latestSelectedCandleAgeMinutes,
+            notReadySelectedSymbols ?? Array.Empty<string>());
     }
 
     private static string Csv(string? value)

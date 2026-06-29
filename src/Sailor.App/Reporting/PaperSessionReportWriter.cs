@@ -69,6 +69,7 @@ public sealed class PaperSessionReportWriter
             && reconciliation.Status == ReconciliationStatus.Matched
             && reconciliation.Rows.All(row => !row.IsCritical)
             && reconciliation.BrokerOpenOrders.Count == 0;
+        bool scanListCertificationClean = scanListEvidence is null || scanListEvidence.DataQualityClean;
 
         var warnings = new List<string>();
         warnings.AddRange(runtimeLog.Warnings);
@@ -85,6 +86,11 @@ public sealed class PaperSessionReportWriter
         if (scanListEvidence is not null && !scanListEvidence.SafetyMode.Equals("Normal", StringComparison.OrdinalIgnoreCase))
         {
             warnings.Add($"Latest scan-list evidence is not clean: safety={scanListEvidence.SafetyMode}, reason={scanListEvidence.SafetyReason}");
+        }
+
+        if (scanListEvidence is not null && !scanListEvidence.DataQualityClean)
+        {
+            warnings.Add($"Latest scan-list data quality blocks certification: status={scanListEvidence.DataQualityStatus}, reason={scanListEvidence.DataQualityReason}");
         }
 
         if (!endExposureIsZero)
@@ -110,6 +116,10 @@ public sealed class PaperSessionReportWriter
                 ? "Blocked: no broker-verified reconciliation report is available."
                 : $"Blocked: latest broker reconciliation status is {reconciliation.Status}.";
         }
+        else if (!scanListCertificationClean && scanListEvidence is not null)
+        {
+            promotionBlockReason = $"Blocked: scan-list data quality is {scanListEvidence.DataQualityStatus}: {scanListEvidence.DataQualityReason}";
+        }
         else if (disconnectIncidents.Any(incident => incident.SafetyState.IsDegraded))
         {
             promotionBlockReason = "Review required: degraded/disconnect incidents were observed during the latest paper session.";
@@ -119,7 +129,7 @@ public sealed class PaperSessionReportWriter
             promotionBlockReason = "Paper certification criteria passed for live-readiness gate consumption.";
         }
 
-        bool canPromote = endExposureIsZero && reconciliationClean && !disconnectIncidents.Any(incident => incident.SafetyState.IsDegraded);
+        bool canPromote = endExposureIsZero && reconciliationClean && scanListCertificationClean && !disconnectIncidents.Any(incident => incident.SafetyState.IsDegraded);
         string status = canPromote ? "Passed" : "Blocked";
 
         return new PaperCertificationReport(
@@ -288,7 +298,16 @@ public sealed class PaperSessionReportWriter
                 evidence.MergedCandles,
                 evidence.SafetyMode,
                 evidence.SafetyReason,
-                scanListPath);
+                scanListPath,
+                evidence.DataQualityStatus,
+                evidence.DataQualityReason,
+                evidence.DataReadySymbols,
+                evidence.CriticalDataGaps,
+                evidence.MergeConflictCount,
+                evidence.StaleSelectedSymbols,
+                evidence.LatestSelectedCandleUtc,
+                evidence.LatestSelectedCandleAgeMinutes,
+                evidence.SafeNotReadySelectedSymbols);
         }
         catch
         {
@@ -506,6 +525,14 @@ public sealed class PaperSessionReportWriter
             writer.WriteLine($"- History batching: size={scan.HistoryBatchSize}, intervalMinutes={scan.HistoryBatchIntervalMinutes}, batches={scan.HistoryBatches}, dueBatch={(scan.DueHistoryBatch <= 0 ? "none" : scan.DueHistoryBatch.ToString(CultureInfo.InvariantCulture))}");
             writer.WriteLine($"- Prepared/history OK: {scan.PreparedSymbols}/{scan.HistorySuccessCount}");
             writer.WriteLine($"- Memory/merged candles: {scan.MemoryCandles}/{scan.MergedCandles}");
+            writer.WriteLine($"- Data quality: {scan.DataQualityStatus} - {scan.DataQualityReason}");
+            writer.WriteLine($"- Data-ready selected symbols: {scan.DataReadySymbols}/{scan.TradeEligibleSymbols}");
+            writer.WriteLine($"- Critical data gaps: {scan.CriticalDataGaps}");
+            writer.WriteLine($"- Merge conflicts: {scan.MergeConflictCount}");
+            writer.WriteLine($"- Stale selected symbols: {scan.StaleSelectedSymbols}");
+            writer.WriteLine($"- Latest selected candle UTC: {scan.LatestSelectedCandleUtc?.ToString("O", CultureInfo.InvariantCulture) ?? "n/a"}");
+            writer.WriteLine($"- Latest selected candle age minutes: {scan.LatestSelectedCandleAgeMinutes?.ToString("0.##", CultureInfo.InvariantCulture) ?? "n/a"}");
+            writer.WriteLine($"- Not-ready selected symbols: {(scan.NotReadySelectedSymbols.Count == 0 ? "none" : string.Join(", ", scan.NotReadySelectedSymbols))}");
             writer.WriteLine($"- Safety: {scan.SafetyMode} - {scan.SafetyReason}");
             writer.WriteLine($"- Evidence: {scan.EvidencePath}");
         }
@@ -561,7 +588,7 @@ public sealed class PaperSessionReportWriter
         using var writer = new StreamWriter(new FileStream(DailyCsvPath, FileMode.Append, FileAccess.Write, FileShare.Read));
         if (writeHeader)
         {
-            writer.WriteLine("generatedUtc,reportId,mode,account,profile,symbols,status,canPromote,ordersSubmitted,ordersFilled,ordersRejected,positionsOpened,positionsClosed,forceFlatResult,disconnectIncidents,reconciliationStatus,reconciliationClean,l1l2Health,realizedPnl,strategyDecisions,endOpenQuantity,endExposureNotional,endExposureIsZero,scanListFile,scanListSheet,scanListTradeEligible,scanListMergedCandles,scanListSafety,promotionBlockReason,jsonPath,markdownPath");
+            writer.WriteLine("generatedUtc,reportId,mode,account,profile,symbols,status,canPromote,ordersSubmitted,ordersFilled,ordersRejected,positionsOpened,positionsClosed,forceFlatResult,disconnectIncidents,reconciliationStatus,reconciliationClean,l1l2Health,realizedPnl,strategyDecisions,endOpenQuantity,endExposureNotional,endExposureIsZero,scanListFile,scanListSheet,scanListTradeEligible,scanListMergedCandles,scanListSafety,scanListDataQuality,scanListDataReady,scanListCriticalDataGaps,scanListMergeConflicts,scanListStaleSelected,promotionBlockReason,jsonPath,markdownPath");
         }
 
         writer.WriteLine(string.Join(',',
@@ -593,6 +620,11 @@ public sealed class PaperSessionReportWriter
             (report.ScanListEvidence?.TradeEligibleSymbols ?? 0).ToString(CultureInfo.InvariantCulture),
             (report.ScanListEvidence?.MergedCandles ?? 0).ToString(CultureInfo.InvariantCulture),
             Csv(report.ScanListEvidence?.SafetyMode ?? string.Empty),
+            Csv(report.ScanListEvidence?.DataQualityStatus ?? string.Empty),
+            (report.ScanListEvidence?.DataReadySymbols ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.CriticalDataGaps ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.MergeConflictCount ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.StaleSelectedSymbols ?? 0).ToString(CultureInfo.InvariantCulture),
             Csv(report.PromotionBlockReason),
             Csv(report.Sources.ReportJsonPath),
             Csv(report.Sources.ReportMarkdownPath)));

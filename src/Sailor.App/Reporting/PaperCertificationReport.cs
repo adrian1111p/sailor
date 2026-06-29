@@ -60,10 +60,22 @@ public sealed record PaperScanListEvidenceSummary(
     int MergedCandles,
     string SafetyMode,
     string SafetyReason,
-    string EvidencePath)
+    string EvidencePath,
+    string DataQualityStatus,
+    string DataQualityReason,
+    int DataReadySymbols,
+    int CriticalDataGaps,
+    int MergeConflictCount,
+    int StaleSelectedSymbols,
+    DateTimeOffset? LatestSelectedCandleUtc,
+    double? LatestSelectedCandleAgeMinutes,
+    IReadOnlyList<string> NotReadySelectedSymbols)
 {
+    public bool DataQualityClean => TradeEligibleSymbols == 0
+        || string.Equals(DataQualityStatus, "Clean", StringComparison.OrdinalIgnoreCase);
+
     public string ToSummaryString()
-        => $"{File}#{Sheet} workbook={WorkbookSymbols} active={ActiveSymbols} tradeEligible={TradeEligibleSymbols} historyOk={HistorySuccessCount}/{PreparedSymbols} mergedCandles={MergedCandles} safety={SafetyMode}";
+        => $"{File}#{Sheet} workbook={WorkbookSymbols} active={ActiveSymbols} tradeEligible={TradeEligibleSymbols} historyOk={HistorySuccessCount}/{PreparedSymbols} mergedCandles={MergedCandles} dataQuality={DataQualityStatus} safety={SafetyMode}";
 }
 
 public sealed record PaperCertificationReportSources(

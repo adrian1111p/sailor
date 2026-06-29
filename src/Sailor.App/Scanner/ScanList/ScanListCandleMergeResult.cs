@@ -7,9 +7,12 @@ public sealed record ScanListCandleMergeResult(
     int MergedCount,
     int RealtimeAppended,
     int RealtimeOverlapped,
+    int MergeConflictCount,
+    DateTimeOffset? LatestCandleUtc,
+    DateTimeOffset? LatestCandleUpdatedUtc,
     IReadOnlyList<ScanListMemoryCandle> Candles,
     IReadOnlyList<string> Warnings)
 {
     public string ToSummaryString()
-        => $"{Symbol}: historical={HistoricalCount} realtime={RealtimeCount} merged={MergedCount} realtimeAppended={RealtimeAppended} realtimeOverlapped={RealtimeOverlapped}";
+        => $"{Symbol}: historical={HistoricalCount} realtime={RealtimeCount} merged={MergedCount} realtimeAppended={RealtimeAppended} realtimeOverlapped={RealtimeOverlapped} conflicts={MergeConflictCount} latest={LatestCandleUtc?.ToString("O") ?? "n/a"}";
 }

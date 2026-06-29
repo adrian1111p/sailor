@@ -744,3 +744,50 @@ dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper report latest
 ```
 
 The report now includes the latest `logs/Paper/ScanList/scanlist_latest.json` evidence when available.
+
+---
+
+## SAILOR-041 scan-list certification and live pilot commands
+
+### Paper dynamic scan-list run
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper run 1m v21-15minutes 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --dry-run --local-cache --no-quotes --iterations 10 --cadence-seconds 1 --max-symbols 45
+```
+
+This command selects retained scan-rated symbols from the workbook before starting the conduct loop. It is safe in dry-run mode and sends no broker orders.
+
+### Paper certification report with scan-list data quality
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper report latest
+```
+
+The report now includes scan-list data-quality fields:
+
+```text
+scan-list data quality
+critical data gaps
+merge conflicts
+stale selected symbols
+not-ready selected symbols
+latest selected candle age
+```
+
+Promotion is blocked if the latest selected scan-list symbols are not data-quality clean.
+
+### Live read-only scan-list observation
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45
+```
+
+This command is read-only. It creates live scan-list evidence under `logs/Live/ScanList` and never creates a live order router.
+
+### Live dynamic one-symbol pilot
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live run 1m v21-15minutes 1 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --max-notional 100 --confirm-live --operator-watching-tws --dry-run --local-cache --no-depth --iterations 5
+```
+
+The live dynamic pilot selects the best one retained scan-list symbol and then applies all SAILOR-033 and SAILOR-034 gates. Live orders remain blocked unless the scan-list evidence is data-quality clean and all live-readiness, account, reconciliation, notional, and operator checks pass.

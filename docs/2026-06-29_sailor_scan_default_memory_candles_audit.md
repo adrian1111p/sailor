@@ -2152,3 +2152,120 @@ The active SAILOR-040 scan-list trading options are:
 ### Next implementation recommendation
 
 SAILOR-041 should connect a real-time market event source to `ScanListCandleAccumulator` so memory candles are built from live paper/live events for all scan-list symbols, not only from local/historical merge evidence.
+
+---
+
+## SAILOR-041 implementation update — Steps 13, 14, and 15
+
+Date: 2026-06-29
+
+SAILOR-041 extends the SAILOR-040 scan-list trading path with certification-grade evidence and live pilot audit linkage.
+
+### Implemented Step 13 — Paper certification report data-quality gate
+
+The paper certification report now reads the latest `logs/Paper/ScanList/scanlist_latest.json` evidence and includes the following scan-list certification fields:
+
+```text
+scanListEvidencePath
+scanListSymbolCount
+scanListSelectedSymbols
+scanListDataQualityStatus
+scanListDataQualityReason
+scanListHistoryBatchStatus
+scanListRealtimeCandleStatus
+scanListCriticalDataGaps
+scanListMergeConflictCount
+scanListStaleSelectedSymbols
+scanListNotReadySelectedSymbols
+```
+
+Promotion to live-readiness is blocked when scan-list evidence exists and the selected retained symbols are not data-quality clean. Blocking conditions include:
+
+```text
+- a selected/traded symbol has no merged candle evidence,
+- a selected/traded symbol was not part of the prepared/history-success set,
+- the historical/realtime merge detects duplicate or conflicting bars,
+- the latest selected candle is stale and no real-time candle source is attached,
+- the selected scan-list symbol is not data-ready.
+```
+
+This intentionally allows local dry-run smoke tests to execute, but prevents certification promotion unless the evidence is clean.
+
+### Implemented Step 14 — Live read-only scan-list observation
+
+`live scan-list` remains read-only:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45
+```
+
+Behavior:
+
+```text
+- evaluates the read-only live gate,
+- creates no live order router,
+- sends no live orders,
+- writes scan-list evidence under logs/Live/ScanList,
+- records data-quality status and certification blockers for the observed selection.
+```
+
+### Implemented Step 15 — Live one-symbol dynamic pilot audit linkage
+
+A new `LiveDynamicScanPilotHost` selects the best one retained scan-list symbol for the SAILOR-034 one-symbol live pilot path.
+
+Behavior:
+
+```text
+- scan-list runtime ranks/retains candidate symbols,
+- live pilot selects exactly one symbol from the retained list,
+- all SAILOR-033 and SAILOR-034 gates still apply,
+- live trading remains blocked unless Runtime.Live.AllowLiveTrading=true, --confirm-live, --operator-watching-tws, paper certification, account, notional, and reconciliation all pass,
+- scan-list data-quality must be Clean before live orders may be routed,
+- live pilot JSON/CSV reports include scan-list evidence id, data-quality status, trade-eligible count, and merged-candle count.
+```
+
+Command:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live run 1m v21-15minutes 1 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --max-notional 100 --confirm-live --operator-watching-tws --dry-run --local-cache --no-depth --iterations 5
+```
+
+Expected safe default:
+
+```text
+- one symbol is selected for the pilot if scan-list ranking produces a retained symbol,
+- live pilot remains read-only/dry-run unless the full live trading gate passes,
+- no live broker route is created in blocked/read-only mode.
+```
+
+### New acceptance commands
+
+```powershell
+dotnet clean
+dotnet build
+```
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper run 1m v21-15minutes 10 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --dry-run --local-cache --no-quotes --iterations 10 --cadence-seconds 1 --max-symbols 45
+```
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- paper report latest
+```
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live scan-list 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --local-cache --no-depth --max-symbols 45
+```
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -- live run 1m v21-15minutes 1 --scan-file scan\data\scan_default.xlsx --scan-sheet Candidates --account DUN559573 --max-notional 100 --confirm-live --operator-watching-tws --dry-run --local-cache --no-depth --iterations 5
+```
+
+```powershell
+dotnet restore src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
+dotnet build src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true
+```
+
+### Next implementation recommendation
+
+SAILOR-042 should attach an actual real-time market data event source to the `ScanListCandleAccumulator` so that scan-list candles are built live for all workbook symbols, not only represented as historical/local merge evidence.

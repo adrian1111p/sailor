@@ -134,8 +134,9 @@ public sealed class ScanListRuntime : IDisposable
         _memoryStore.RetainTradeCandidates(scannerResult.Candidates, request.SafeTradeTop, observedUtc);
         IReadOnlyList<string> tradeEligibleSymbols = _memoryStore.TradeEligibleSymbols();
 
-        (int memoryCandleSymbols, int memoryCandles, int mergedSymbols, int mergedCandles) = MergePreparedSymbols(
+        ScanListMergeSummary mergeSummary = MergePreparedSymbols(
             scannerResult,
+            tradeEligibleSymbols,
             request.ScannerOptions.Timeframe,
             observedUtc,
             warnings);
@@ -155,10 +156,19 @@ public sealed class ScanListRuntime : IDisposable
             dueBatch,
             scannerResult.PreparedSymbols.Count,
             scannerResult.HistorySuccessCount,
-            memoryCandleSymbols,
-            memoryCandles,
-            mergedSymbols,
-            mergedCandles);
+            mergeSummary.MemoryCandleSymbols,
+            mergeSummary.MemoryCandles,
+            mergeSummary.MergedSymbols,
+            mergeSummary.MergedCandles,
+            mergeSummary.DataQualityStatus,
+            mergeSummary.DataQualityReason,
+            mergeSummary.DataReadySymbols,
+            mergeSummary.CriticalDataGaps,
+            mergeSummary.MergeConflictCount,
+            mergeSummary.StaleSelectedSymbols,
+            mergeSummary.LatestSelectedCandleUtc,
+            mergeSummary.LatestSelectedCandleAgeMinutes,
+            mergeSummary.NotReadySelectedSymbols);
         (string evidenceJson, string evidenceCsv) = ScanListRuntimeEvidenceWriter.Write(evidence);
 
         return new ScanListCycleResult(
@@ -175,15 +185,16 @@ public sealed class ScanListRuntime : IDisposable
             evidence,
             evidenceJson,
             evidenceCsv,
-            memoryCandleSymbols,
-            memoryCandles,
-            mergedSymbols,
-            mergedCandles,
+            mergeSummary.MemoryCandleSymbols,
+            mergeSummary.MemoryCandles,
+            mergeSummary.MergedSymbols,
+            mergeSummary.MergedCandles,
             workbook.Warnings.Concat(scannerResult.Warnings).Concat(warnings).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
     }
 
-    private (int MemoryCandleSymbols, int MemoryCandles, int MergedSymbols, int MergedCandles) MergePreparedSymbols(
+    private ScanListMergeSummary MergePreparedSymbols(
         PaperScannerRunResult scannerResult,
+        IReadOnlyList<string> tradeEligibleSymbols,
         string timeframe,
         DateTimeOffset observedUtc,
         List<string> warnings)
@@ -191,6 +202,14 @@ public sealed class ScanListRuntime : IDisposable
         var csvProvider = new CsvBacktestDataProvider();
         int mergedSymbols = 0;
         int mergedCandles = 0;
+        int dataReadySymbols = 0;
+        int criticalDataGaps = 0;
+        int mergeConflictCount = 0;
+        int staleSelectedSymbols = 0;
+        DateTimeOffset? latestSelectedCandleUtc = null;
+        double? latestSelectedCandleAgeMinutes = null;
+        var notReadySelectedSymbols = new List<string>();
+        var mergeBySymbol = new Dictionary<string, ScanListCandleMergeResult>(StringComparer.OrdinalIgnoreCase);
 
         foreach (string symbol in scannerResult.PreparedSymbols)
         {
@@ -207,16 +226,96 @@ public sealed class ScanListRuntime : IDisposable
 
             IReadOnlyList<ScanListMemoryCandle> realtimeCandles = _candleAccumulator.GetCandles(symbol);
             ScanListCandleMergeResult mergeResult = _mergeEngine.Merge(symbol, historicalBars, realtimeCandles);
+            mergeBySymbol[symbol] = mergeResult;
             _memoryStore.UpdateCandleCounts(symbol, realtimeCandles.Count, mergeResult.MergedCount, observedUtc);
             mergedSymbols++;
             mergedCandles += mergeResult.MergedCount;
+            mergeConflictCount += mergeResult.MergeConflictCount;
             foreach (string warning in mergeResult.Warnings)
             {
                 warnings.Add(warning);
             }
         }
 
-        return (_candleAccumulator.SymbolCount, _candleAccumulator.CandleCount, mergedSymbols, mergedCandles);
+        HashSet<string> prepared = scannerResult.PreparedSymbols.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (string symbol in tradeEligibleSymbols)
+        {
+            if (!prepared.Contains(symbol) || !mergeBySymbol.TryGetValue(symbol, out ScanListCandleMergeResult? mergeResult) || mergeResult.MergedCount == 0)
+            {
+                criticalDataGaps++;
+                notReadySelectedSymbols.Add(symbol);
+                continue;
+            }
+
+            if (mergeResult.MergeConflictCount > 0)
+            {
+                notReadySelectedSymbols.Add(symbol);
+                continue;
+            }
+
+            latestSelectedCandleUtc = ChooseLatest(latestSelectedCandleUtc, mergeResult.LatestCandleUtc);
+            if (mergeResult.LatestCandleUtc is not null)
+            {
+                double age = Math.Max(0d, (observedUtc - mergeResult.LatestCandleUtc.Value).TotalMinutes);
+                latestSelectedCandleAgeMinutes = latestSelectedCandleAgeMinutes is null ? age : Math.Min(latestSelectedCandleAgeMinutes.Value, age);
+                if (age > 15d && mergeResult.RealtimeCount == 0)
+                {
+                    staleSelectedSymbols++;
+                    notReadySelectedSymbols.Add(symbol);
+                    continue;
+                }
+            }
+
+            dataReadySymbols++;
+        }
+
+        string dataQualityStatus;
+        string dataQualityReason;
+        if (tradeEligibleSymbols.Count == 0)
+        {
+            dataQualityStatus = "NoSelection";
+            dataQualityReason = "No scan-rated trade-eligible symbols were retained in this cycle.";
+        }
+        else if (criticalDataGaps > 0 || mergeConflictCount > 0 || staleSelectedSymbols > 0 || notReadySelectedSymbols.Count > 0)
+        {
+            dataQualityStatus = "Blocked";
+            dataQualityReason = $"Selected scan-list symbols have certification blockers: criticalGaps={criticalDataGaps}, mergeConflicts={mergeConflictCount}, staleSelected={staleSelectedSymbols}, notReady={string.Join(';', notReadySelectedSymbols.Distinct(StringComparer.OrdinalIgnoreCase))}.";
+        }
+        else
+        {
+            dataQualityStatus = "Clean";
+            dataQualityReason = "All retained selected symbols had usable merged candle evidence in this scan-list cycle.";
+        }
+
+        return new ScanListMergeSummary(
+            _candleAccumulator.SymbolCount,
+            _candleAccumulator.CandleCount,
+            mergedSymbols,
+            mergedCandles,
+            dataQualityStatus,
+            dataQualityReason,
+            dataReadySymbols,
+            criticalDataGaps,
+            mergeConflictCount,
+            staleSelectedSymbols,
+            latestSelectedCandleUtc,
+            latestSelectedCandleAgeMinutes,
+            notReadySelectedSymbols.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    private static DateTimeOffset? ChooseLatest(DateTimeOffset? current, DateTimeOffset? candidate)
+    {
+        if (candidate is null)
+        {
+            return current;
+        }
+
+        if (current is null || candidate.Value > current.Value)
+        {
+            return candidate.Value;
+        }
+
+        return current;
     }
 
     private static RuntimeSafetyState BuildSafetyState(
@@ -258,6 +357,21 @@ public sealed class ScanListRuntime : IDisposable
            || warning.Contains("disabled", StringComparison.OrdinalIgnoreCase)
            || warning.Contains("not available", StringComparison.OrdinalIgnoreCase)
            || warning.Contains("failed", StringComparison.OrdinalIgnoreCase);
+
+    private sealed record ScanListMergeSummary(
+        int MemoryCandleSymbols,
+        int MemoryCandles,
+        int MergedSymbols,
+        int MergedCandles,
+        string DataQualityStatus,
+        string DataQualityReason,
+        int DataReadySymbols,
+        int CriticalDataGaps,
+        int MergeConflictCount,
+        int StaleSelectedSymbols,
+        DateTimeOffset? LatestSelectedCandleUtc,
+        double? LatestSelectedCandleAgeMinutes,
+        IReadOnlyList<string> NotReadySelectedSymbols);
 
     public void Dispose()
     {
