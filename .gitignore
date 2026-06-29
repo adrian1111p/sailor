@@ -7,11 +7,6 @@ obj/
 *.log
 
 # Sailor logs
-logs/**/*.log
-logs/**/*.txt
-logs/**/*.md
-logs/**/*.html
-!logs/**/.gitkeep
-logs/**/*.csv
+logs/
 state/
 cache/
