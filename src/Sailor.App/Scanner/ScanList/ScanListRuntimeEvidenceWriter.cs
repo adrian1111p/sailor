@@ -29,7 +29,7 @@ public static class ScanListRuntimeEvidenceWriter
         using var writer = new StreamWriter(datedCsv, append: true, Encoding.UTF8);
         if (writeHeader)
         {
-            writer.WriteLine("observedUtc,evidenceId,mode,file,sheet,symbolColumn,cycleIndex,totalCycles,refreshSeconds,tradeTop,historyBatchSize,historyBatchIntervalMinutes,workbookSymbols,activeSymbols,addedSymbols,removedSymbols,retainedRemovedSymbols,tradeEligibleSymbols,historyBatches,dueHistoryBatch,dueHistorySymbols,preparedSymbols,historySuccessCount,memoryCandleSymbols,memoryCandles,mergedSymbols,mergedCandles,dataQualityStatus,dataReadySymbols,criticalDataGaps,mergeConflictCount,staleSelectedSymbols,latestSelectedCandleUtc,latestSelectedCandleAgeMinutes,notReadySelectedSymbols,safetyMode,safetyReason,dataQualityReason");
+            writer.WriteLine("observedUtc,evidenceId,mode,file,sheet,symbolColumn,cycleIndex,totalCycles,refreshSeconds,tradeTop,historyBatchSize,historyBatchIntervalMinutes,workbookSymbols,activeSymbols,addedSymbols,removedSymbols,retainedRemovedSymbols,tradeEligibleSymbols,watchCandidateSymbols,historyBatches,dueHistoryBatch,dueHistorySymbols,preparedSymbols,historySuccessCount,memoryCandleSymbols,memoryCandles,mergedSymbols,mergedCandles,dataQualityStatus,dataReadySymbols,criticalDataGaps,mergeConflictCount,staleSelectedSymbols,latestSelectedCandleUtc,latestSelectedCandleAgeMinutes,notReadySelectedSymbols,scannerMode,pointsCandidates,readyCandidates,weakReadyCandidates,watchOnlyCandidates,notReadyCandidates,minimumTradeScore,pointsReportPath,legacyComparisonReportPath,legacyComparisonMarkdownReportPath,watchCandidatePreview,safetyMode,safetyReason,dataQualityReason");
         }
 
         writer.WriteLine(string.Join(',',
@@ -51,6 +51,7 @@ public static class ScanListRuntimeEvidenceWriter
             evidence.RemovedSymbols.ToString(CultureInfo.InvariantCulture),
             evidence.RetainedRemovedSymbols.ToString(CultureInfo.InvariantCulture),
             evidence.TradeEligibleSymbols.ToString(CultureInfo.InvariantCulture),
+            evidence.WatchCandidateSymbols.ToString(CultureInfo.InvariantCulture),
             evidence.HistoryBatches.ToString(CultureInfo.InvariantCulture),
             evidence.DueHistoryBatch.ToString(CultureInfo.InvariantCulture),
             evidence.DueHistorySymbols.ToString(CultureInfo.InvariantCulture),
@@ -68,6 +69,17 @@ public static class ScanListRuntimeEvidenceWriter
             Csv(evidence.LatestSelectedCandleUtc?.ToString("O", CultureInfo.InvariantCulture) ?? string.Empty),
             Csv(evidence.LatestSelectedCandleAgeMinutes?.ToString("0.##", CultureInfo.InvariantCulture) ?? string.Empty),
             Csv(string.Join(';', evidence.SafeNotReadySelectedSymbols)),
+            Csv(evidence.ScannerMode),
+            evidence.PointsCandidates.ToString(CultureInfo.InvariantCulture),
+            evidence.ReadyCandidates.ToString(CultureInfo.InvariantCulture),
+            evidence.WeakReadyCandidates.ToString(CultureInfo.InvariantCulture),
+            evidence.WatchOnlyCandidates.ToString(CultureInfo.InvariantCulture),
+            evidence.NotReadyCandidates.ToString(CultureInfo.InvariantCulture),
+            evidence.MinimumTradeScore.ToString(CultureInfo.InvariantCulture),
+            Csv(evidence.PointsReportPath ?? string.Empty),
+            Csv(evidence.LegacyComparisonReportPath ?? string.Empty),
+            Csv(evidence.LegacyComparisonMarkdownReportPath ?? string.Empty),
+            Csv(string.Join(';', evidence.SafeWatchCandidatePreview)),
             Csv(evidence.SafetyMode),
             Csv(evidence.SafetyReason),
             Csv(evidence.DataQualityReason)));
@@ -101,7 +113,18 @@ public static class ScanListRuntimeEvidenceWriter
         int staleSelectedSymbols = 0,
         DateTimeOffset? latestSelectedCandleUtc = null,
         double? latestSelectedCandleAgeMinutes = null,
-        IReadOnlyList<string>? notReadySelectedSymbols = null)
+        IReadOnlyList<string>? notReadySelectedSymbols = null,
+        string scannerMode = "legacy-blocks",
+        int pointsCandidates = 0,
+        int readyCandidates = 0,
+        int weakReadyCandidates = 0,
+        int watchOnlyCandidates = 0,
+        int notReadyCandidates = 0,
+        decimal minimumTradeScore = 0m,
+        string? pointsReportPath = null,
+        string? legacyComparisonReportPath = null,
+        string? legacyComparisonMarkdownReportPath = null,
+        IReadOnlyList<string>? watchCandidateSymbols = null)
     {
         string id = $"SLR-{DateTimeOffset.UtcNow:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}"[..31];
         return new ScanListRuntimeEvidence(
@@ -146,7 +169,19 @@ public static class ScanListRuntimeEvidenceWriter
             staleSelectedSymbols,
             latestSelectedCandleUtc,
             latestSelectedCandleAgeMinutes,
-            notReadySelectedSymbols ?? Array.Empty<string>());
+            notReadySelectedSymbols ?? Array.Empty<string>(),
+            scannerMode,
+            pointsCandidates,
+            readyCandidates,
+            weakReadyCandidates,
+            watchOnlyCandidates,
+            notReadyCandidates,
+            minimumTradeScore,
+            pointsReportPath,
+            legacyComparisonReportPath,
+            legacyComparisonMarkdownReportPath,
+            watchCandidateSymbols?.Count ?? 0,
+            watchCandidateSymbols?.Take(20).ToArray() ?? Array.Empty<string>());
     }
 
     private static string Csv(string? value)

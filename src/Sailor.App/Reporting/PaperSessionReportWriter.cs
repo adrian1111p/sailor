@@ -307,7 +307,19 @@ public sealed class PaperSessionReportWriter
                 evidence.StaleSelectedSymbols,
                 evidence.LatestSelectedCandleUtc,
                 evidence.LatestSelectedCandleAgeMinutes,
-                evidence.SafeNotReadySelectedSymbols);
+                evidence.SafeNotReadySelectedSymbols,
+                evidence.ScannerMode,
+                evidence.PointsCandidates,
+                evidence.ReadyCandidates,
+                evidence.WeakReadyCandidates,
+                evidence.WatchOnlyCandidates,
+                evidence.NotReadyCandidates,
+                evidence.MinimumTradeScore,
+                evidence.PointsReportPath,
+                evidence.LegacyComparisonReportPath,
+                evidence.LegacyComparisonMarkdownReportPath,
+                evidence.WatchCandidateSymbols,
+                evidence.SafeWatchCandidatePreview);
         }
         catch
         {
@@ -522,6 +534,13 @@ public sealed class PaperSessionReportWriter
             writer.WriteLine($"- Workbook symbols: {scan.WorkbookSymbols}");
             writer.WriteLine($"- Active symbols: {scan.ActiveSymbols}");
             writer.WriteLine($"- Trade-eligible symbols: {scan.TradeEligibleSymbols} {(scan.TradeEligiblePreview.Count == 0 ? string.Empty : $"({string.Join(", ", scan.TradeEligiblePreview)})")}");
+            writer.WriteLine($"- Watch-only retained symbols: {scan.WatchCandidateSymbols} {(scan.SafeWatchCandidatePreview.Count == 0 ? string.Empty : $"({string.Join(", ", scan.SafeWatchCandidatePreview)})")}");
+            writer.WriteLine($"- Scanner mode: {scan.ScannerMode}");
+            writer.WriteLine($"- Points candidates: total={scan.PointsCandidates}, ready={scan.ReadyCandidates}, weakReady={scan.WeakReadyCandidates}, watchOnly={scan.WatchOnlyCandidates}, notReady={scan.NotReadyCandidates}");
+            writer.WriteLine($"- Minimum trade score: {scan.MinimumTradeScore:F2}");
+            writer.WriteLine($"- Points CSV report: {scan.PointsReportPath ?? "n/a"}");
+            writer.WriteLine($"- Legacy comparison CSV report: {scan.LegacyComparisonReportPath ?? "n/a"}");
+            writer.WriteLine($"- Legacy comparison Markdown report: {scan.LegacyComparisonMarkdownReportPath ?? "n/a"}");
             writer.WriteLine($"- History batching: size={scan.HistoryBatchSize}, intervalMinutes={scan.HistoryBatchIntervalMinutes}, batches={scan.HistoryBatches}, dueBatch={(scan.DueHistoryBatch <= 0 ? "none" : scan.DueHistoryBatch.ToString(CultureInfo.InvariantCulture))}");
             writer.WriteLine($"- Prepared/history OK: {scan.PreparedSymbols}/{scan.HistorySuccessCount}");
             writer.WriteLine($"- Memory/merged candles: {scan.MemoryCandles}/{scan.MergedCandles}");
@@ -588,7 +607,7 @@ public sealed class PaperSessionReportWriter
         using var writer = new StreamWriter(new FileStream(DailyCsvPath, FileMode.Append, FileAccess.Write, FileShare.Read));
         if (writeHeader)
         {
-            writer.WriteLine("generatedUtc,reportId,mode,account,profile,symbols,status,canPromote,ordersSubmitted,ordersFilled,ordersRejected,positionsOpened,positionsClosed,forceFlatResult,disconnectIncidents,reconciliationStatus,reconciliationClean,l1l2Health,realizedPnl,strategyDecisions,endOpenQuantity,endExposureNotional,endExposureIsZero,scanListFile,scanListSheet,scanListTradeEligible,scanListMergedCandles,scanListSafety,scanListDataQuality,scanListDataReady,scanListCriticalDataGaps,scanListMergeConflicts,scanListStaleSelected,promotionBlockReason,jsonPath,markdownPath");
+            writer.WriteLine("generatedUtc,reportId,mode,account,profile,symbols,status,canPromote,ordersSubmitted,ordersFilled,ordersRejected,positionsOpened,positionsClosed,forceFlatResult,disconnectIncidents,reconciliationStatus,reconciliationClean,l1l2Health,realizedPnl,strategyDecisions,endOpenQuantity,endExposureNotional,endExposureIsZero,scanListFile,scanListSheet,scanListTradeEligible,scanListMergedCandles,scanListSafety,scanListDataQuality,scanListDataReady,scanListCriticalDataGaps,scanListMergeConflicts,scanListStaleSelected,scannerMode,pointsCandidates,readyCandidates,weakReadyCandidates,watchOnlyCandidates,notReadyCandidates,minimumTradeScore,pointsReportPath,legacyComparisonReportPath,legacyComparisonMarkdownReportPath,watchCandidateSymbols,promotionBlockReason,jsonPath,markdownPath");
         }
 
         writer.WriteLine(string.Join(',',
@@ -625,6 +644,17 @@ public sealed class PaperSessionReportWriter
             (report.ScanListEvidence?.CriticalDataGaps ?? 0).ToString(CultureInfo.InvariantCulture),
             (report.ScanListEvidence?.MergeConflictCount ?? 0).ToString(CultureInfo.InvariantCulture),
             (report.ScanListEvidence?.StaleSelectedSymbols ?? 0).ToString(CultureInfo.InvariantCulture),
+            Csv(report.ScanListEvidence?.ScannerMode ?? string.Empty),
+            (report.ScanListEvidence?.PointsCandidates ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.ReadyCandidates ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.WeakReadyCandidates ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.WatchOnlyCandidates ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.NotReadyCandidates ?? 0).ToString(CultureInfo.InvariantCulture),
+            (report.ScanListEvidence?.MinimumTradeScore ?? 0m).ToString(CultureInfo.InvariantCulture),
+            Csv(report.ScanListEvidence?.PointsReportPath ?? string.Empty),
+            Csv(report.ScanListEvidence?.LegacyComparisonReportPath ?? string.Empty),
+            Csv(report.ScanListEvidence?.LegacyComparisonMarkdownReportPath ?? string.Empty),
+            (report.ScanListEvidence?.WatchCandidateSymbols ?? 0).ToString(CultureInfo.InvariantCulture),
             Csv(report.PromotionBlockReason),
             Csv(report.Sources.ReportJsonPath),
             Csv(report.Sources.ReportMarkdownPath)));

@@ -17,7 +17,7 @@ public static class PaperScannerReportWriter
         string path = Path.Combine(root, $"scanner_{result.Options.ProfileName}_{result.Options.Timeframe}_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
 
         using var writer = new StreamWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read));
-        writer.WriteLine("Rank,ScannerMode,Status,Symbol,SelectedSide,FinalScore,LegacyCandidateScore,LongScore,ShortScore,PositivePoints,NegativePoints,Close,MomentumPercent,Volume,VolumeRatio,Ema9,Sma20,Sma200,Vwap,HasL1,HasL2,SpreadBps,BookImbalance,LiquidityScore,SnapshotSource,LegacyBlockReasons,TopPositiveFactors,TopNegativeFactors,Reason");
+        writer.WriteLine("Rank,ScannerMode,Status,Symbol,SelectedSide,FinalScore,LegacyCandidateScore,LongScore,ShortScore,PositivePoints,NegativePoints,Close,MomentumPercent,Volume,VolumeRatio,Ema9,Sma20,Sma200,Vwap,HasL1,HasL2,SpreadBps,BookImbalance,LiquidityScore,SnapshotSource,LegacyBlockReasons,TopPositiveFactors,TopNegativeFactors,AllPositiveFactors,AllNegativeFactors,AllFactors,Reason");
 
         foreach (PaperScannerCandidate row in result.Candidates)
         {
@@ -50,11 +50,30 @@ public static class PaperScannerReportWriter
                 Escape(row.PointsCandidate is null ? string.Empty : string.Join(" | ", row.PointsCandidate.LegacyBlockReasons)),
                 Escape(row.PointsCandidate?.SelectedScore.TopPositiveFactors() ?? string.Empty),
                 Escape(row.PointsCandidate?.SelectedScore.TopNegativeFactors() ?? string.Empty),
+                Escape(AllPositiveFactors(row.PointsCandidate)),
+                Escape(AllNegativeFactors(row.PointsCandidate)),
+                Escape(AllFactors(row.PointsCandidate)),
                 Escape(row.Candidate.Reason)));
         }
 
         return path;
     }
+
+
+    private static string AllPositiveFactors(PointsScannerCandidate? candidate)
+        => candidate is null
+            ? string.Empty
+            : string.Join(" | ", candidate.SelectedScore.PositiveFactors.Select(factor => factor.ToDisplayString()));
+
+    private static string AllNegativeFactors(PointsScannerCandidate? candidate)
+        => candidate is null
+            ? string.Empty
+            : string.Join(" | ", candidate.SelectedScore.NegativeFactors.Select(factor => factor.ToDisplayString()));
+
+    private static string AllFactors(PointsScannerCandidate? candidate)
+        => candidate is null
+            ? string.Empty
+            : string.Join(" | ", candidate.SelectedScore.Factors.Select(factor => factor.ToDisplayString()));
 
     private static string Format(decimal? value)
         => value.HasValue ? value.Value.ToString("0.####", CultureInfo.InvariantCulture) : string.Empty;

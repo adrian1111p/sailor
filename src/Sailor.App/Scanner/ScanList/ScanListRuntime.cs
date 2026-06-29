@@ -1,5 +1,6 @@
 using Sailor.App.Backtest.Data;
 using Sailor.App.Backtest.Models;
+using Sailor.App.Backtest.Scanner.Points;
 using Sailor.App.Broker.Ibkr;
 using Sailor.App.Configuration;
 using Sailor.App.Runtime.Common;
@@ -137,6 +138,7 @@ public sealed class ScanListRuntime : IDisposable
             ScanListCandidateRetentionOptions.FromScannerOptions(request.ScannerOptions),
             observedUtc);
         IReadOnlyList<string> tradeEligibleSymbols = _memoryStore.TradeEligibleSymbols();
+        IReadOnlyList<string> watchCandidateSymbols = _memoryStore.WatchCandidateSymbols();
 
         ScanListMergeSummary mergeSummary = MergePreparedSymbols(
             scannerResult,
@@ -172,7 +174,18 @@ public sealed class ScanListRuntime : IDisposable
             mergeSummary.StaleSelectedSymbols,
             mergeSummary.LatestSelectedCandleUtc,
             mergeSummary.LatestSelectedCandleAgeMinutes,
-            mergeSummary.NotReadySelectedSymbols);
+            mergeSummary.NotReadySelectedSymbols,
+            scannerResult.Options.ScannerMode.ToConfigValue(),
+            scannerResult.PointsCandidates,
+            scannerResult.ReadyPointsCandidates,
+            scannerResult.WeakReadyPointsCandidates,
+            scannerResult.WatchOnlyPointsCandidates,
+            scannerResult.NotReadyPointsCandidates,
+            scannerResult.Options.PointsMinimumTradeScore,
+            scannerResult.CandidateReportPath,
+            scannerResult.HybridComparisonReportPath,
+            scannerResult.HybridComparisonMarkdownReportPath,
+            watchCandidateSymbols);
         (string evidenceJson, string evidenceCsv) = ScanListRuntimeEvidenceWriter.Write(evidence);
 
         return new ScanListCycleResult(
@@ -185,6 +198,7 @@ public sealed class ScanListRuntime : IDisposable
             dueBatch,
             scannerResult,
             tradeEligibleSymbols,
+            watchCandidateSymbols,
             safetyState,
             evidence,
             evidenceJson,

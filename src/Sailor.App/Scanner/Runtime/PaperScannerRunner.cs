@@ -144,7 +144,13 @@ public sealed class PaperScannerRunner : IDisposable
             candidates,
             CandidateReportPath: null,
             warnings.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-            scannerSelection.HybridComparisonReportPath);
+            scannerSelection.HybridComparisonReportPath,
+            scannerSelection.HybridComparisonMarkdownReportPath,
+            scannerSelection.PointsCandidateCount,
+            scannerSelection.ReadyPointsCandidateCount,
+            scannerSelection.WeakReadyPointsCandidateCount,
+            scannerSelection.WatchOnlyPointsCandidateCount,
+            scannerSelection.NotReadyPointsCandidateCount);
 
         if (candidates.Count > 0)
         {
@@ -167,15 +173,22 @@ public sealed class PaperScannerRunner : IDisposable
         if (options.ScannerMode == PointsScannerMode.PointsOnly)
         {
             var pointsScanner = new PointsScanner(csvProvider);
+            IReadOnlyList<PointsScannerCandidate> pointsCandidates = pointsScanner.Scan(
+                options.Timeframe,
+                profile,
+                options.TopCount,
+                preparedSymbols);
             return new ScannerCandidateSelection(
-                pointsScanner.Scan(
-                        options.Timeframe,
-                        profile,
-                        options.TopCount,
-                        preparedSymbols)
+                pointsCandidates
                     .Select(candidate => (candidate.ToScannerCandidate(), (PointsScannerCandidate?)candidate))
                     .ToArray(),
-                HybridComparisonReportPath: null);
+                HybridComparisonReportPath: null,
+                HybridComparisonMarkdownReportPath: null,
+                PointsCandidateCount: pointsCandidates.Count,
+                ReadyPointsCandidateCount: CountStatus(pointsCandidates, PointsScannerStatus.Ready),
+                WeakReadyPointsCandidateCount: CountStatus(pointsCandidates, PointsScannerStatus.WeakReady),
+                WatchOnlyPointsCandidateCount: CountStatus(pointsCandidates, PointsScannerStatus.WatchOnly),
+                NotReadyPointsCandidateCount: CountStatus(pointsCandidates, PointsScannerStatus.NotReady));
         }
 
         if (options.ScannerMode == PointsScannerMode.HybridCompare)
@@ -191,8 +204,9 @@ public sealed class PaperScannerRunner : IDisposable
                 profile,
                 options.TopCount,
                 preparedSymbols);
-            string reportPath = PaperScannerHybridComparisonReportWriter.Write(options, legacyCandidates, pointsCandidates);
-            warnings.Add($"scanner-mode=hybrid-compare wrote points-vs-legacy report: {reportPath}");
+            PaperScannerHybridComparisonReportPaths reportPaths = PaperScannerHybridComparisonReportWriter.Write(options, legacyCandidates, pointsCandidates);
+            warnings.Add($"scanner-mode=hybrid-compare wrote points-vs-legacy CSV report: {reportPaths.CsvPath}");
+            warnings.Add($"scanner-mode=hybrid-compare wrote points-vs-legacy Markdown report: {reportPaths.MarkdownPath}");
             warnings.Add("scanner-mode=hybrid-compare routes selected symbols from legacy-blocks; points-only trading remains opt-in.");
             return new ScannerCandidateSelection(
                 legacyCandidates.Select(candidate =>
@@ -200,7 +214,13 @@ public sealed class PaperScannerRunner : IDisposable
                     PointsScannerCandidate? points = pointsCandidates.FirstOrDefault(row => row.Symbol.Equals(candidate.Symbol, StringComparison.OrdinalIgnoreCase));
                     return (candidate, points);
                 }).ToArray(),
-                reportPath);
+                reportPaths.CsvPath,
+                reportPaths.MarkdownPath,
+                PointsCandidateCount: pointsCandidates.Count,
+                ReadyPointsCandidateCount: CountStatus(pointsCandidates, PointsScannerStatus.Ready),
+                WeakReadyPointsCandidateCount: CountStatus(pointsCandidates, PointsScannerStatus.WeakReady),
+                WatchOnlyPointsCandidateCount: CountStatus(pointsCandidates, PointsScannerStatus.WatchOnly),
+                NotReadyPointsCandidateCount: CountStatus(pointsCandidates, PointsScannerStatus.NotReady));
         }
 
         return new ScannerCandidateSelection(
@@ -211,12 +231,27 @@ public sealed class PaperScannerRunner : IDisposable
                     preparedSymbols)
                 .Select(candidate => (candidate, (PointsScannerCandidate?)null))
                 .ToArray(),
-            HybridComparisonReportPath: null);
+            HybridComparisonReportPath: null,
+            HybridComparisonMarkdownReportPath: null,
+            PointsCandidateCount: 0,
+            ReadyPointsCandidateCount: 0,
+            WeakReadyPointsCandidateCount: 0,
+            WatchOnlyPointsCandidateCount: 0,
+            NotReadyPointsCandidateCount: 0);
     }
+
+    private static int CountStatus(IReadOnlyList<PointsScannerCandidate> candidates, PointsScannerStatus status)
+        => candidates.Count(candidate => candidate.Status == status);
 
     private sealed record ScannerCandidateSelection(
         IReadOnlyList<(ScannerCandidate Candidate, PointsScannerCandidate? PointsCandidate)> Candidates,
-        string? HybridComparisonReportPath);
+        string? HybridComparisonReportPath,
+        string? HybridComparisonMarkdownReportPath,
+        int PointsCandidateCount,
+        int ReadyPointsCandidateCount,
+        int WeakReadyPointsCandidateCount,
+        int WatchOnlyPointsCandidateCount,
+        int NotReadyPointsCandidateCount);
 
     public void Dispose() => _snapshotProvider.Dispose();
 }

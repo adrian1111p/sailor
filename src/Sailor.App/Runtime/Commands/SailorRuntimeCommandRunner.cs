@@ -46,6 +46,10 @@ public static class SailorRuntimeCommandRunner
                 await RunScanListSkeletonAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
+            case "scan-points":
+                await RunScanPointsDiagnosticsAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
             case "history":
                 await RunHistoryAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
@@ -441,6 +445,28 @@ public static class SailorRuntimeCommandRunner
     }
 
 
+    private static async Task RunScanPointsDiagnosticsAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        var effectiveArgs = new List<string>(args);
+        if (!HasOption(effectiveArgs.ToArray(), "--scanner-mode"))
+        {
+            effectiveArgs.Add("--scanner-mode");
+            effectiveArgs.Add("points-only");
+        }
+
+        if (!HasOption(effectiveArgs.ToArray(), "--no-depth") && !HasOption(effectiveArgs.ToArray(), "--with-depth"))
+        {
+            effectiveArgs.Add("--no-depth");
+        }
+
+        Console.WriteLine("SAILOR-047 scan-points diagnostics: scanner-only points audit. No conduct loop and no orders are started.");
+        await RunScanListSkeletonAsync(mode, effectiveArgs.ToArray(), settings).ConfigureAwait(false);
+    }
+
+
     private static async Task RunScanListSkeletonAsync(
         SailorRuntimeMode mode,
         string[] args,
@@ -661,6 +687,12 @@ public static class SailorRuntimeCommandRunner
                 Log(writer, $"Trade-eligible retained symbols: {FormatSymbols(cycle.TradeEligibleSymbols, 80)}");
             }
 
+            if (cycle.WatchCandidateSymbols.Count > 0)
+            {
+                Log(writer, "");
+                Log(writer, $"Watch-only retained symbols: {FormatSymbols(cycle.WatchCandidateSymbols, 80)}");
+            }
+
             if (!string.IsNullOrWhiteSpace(cycle.ScannerResult.CandidateReportPath))
             {
                 Log(writer, "");
@@ -670,6 +702,11 @@ public static class SailorRuntimeCommandRunner
             if (!string.IsNullOrWhiteSpace(cycle.ScannerResult.HybridComparisonReportPath))
             {
                 Log(writer, $"Hybrid comparison CSV report: {cycle.ScannerResult.HybridComparisonReportPath}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(cycle.ScannerResult.HybridComparisonMarkdownReportPath))
+            {
+                Log(writer, $"Hybrid comparison Markdown report: {cycle.ScannerResult.HybridComparisonMarkdownReportPath}");
             }
 
             if (cycle.Warnings.Count > 0)
@@ -936,9 +973,19 @@ public static class SailorRuntimeCommandRunner
                 Log(writer, $"retainedTradeEligible={string.Join(", ", latest.TradeEligibleSymbols)}");
             }
 
+            if (latest.WatchCandidateSymbols.Count > 0)
+            {
+                Log(writer, $"retainedWatchOnly={string.Join(", ", latest.WatchCandidateSymbols)}");
+            }
+
             if (!string.IsNullOrWhiteSpace(latest.ScannerResult.HybridComparisonReportPath))
             {
                 Log(writer, $"hybridComparisonReport={latest.ScannerResult.HybridComparisonReportPath}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(latest.ScannerResult.HybridComparisonMarkdownReportPath))
+            {
+                Log(writer, $"hybridComparisonMarkdownReport={latest.ScannerResult.HybridComparisonMarkdownReportPath}");
             }
         }
 
@@ -975,6 +1022,72 @@ public static class SailorRuntimeCommandRunner
             .Take(take)
             .ToArray();
     }
+
+    private static void LogScanListEntryWaitDiagnostics(
+        StreamWriter writer,
+        ScanListRunResult runResult,
+        string context)
+    {
+        ScanListCycleResult? latest = runResult.Cycles.LastOrDefault();
+        if (latest is null)
+        {
+            Log(writer, $"SAILOR-047 wait diagnostics ({context}): no scan-list cycle is available yet.");
+            return;
+        }
+
+        PaperScannerRunResult scanner = latest.ScannerResult;
+        if (scanner.Options.ScannerMode == PointsScannerMode.LegacyBlocks)
+        {
+            Log(writer, $"SAILOR-047 wait diagnostics ({context}): legacy-blocks mode is active; waiting still depends on legacy tradeEligible symbols.");
+            return;
+        }
+
+        var ready = scanner.Candidates.Where(candidate => candidate.PointsCandidate?.Status == PointsScannerStatus.Ready).ToArray();
+        var weakReady = scanner.Candidates.Where(candidate => candidate.PointsCandidate?.Status == PointsScannerStatus.WeakReady).ToArray();
+        var watchOnly = scanner.Candidates.Where(candidate => candidate.PointsCandidate?.Status == PointsScannerStatus.WatchOnly).ToArray();
+        var notReady = scanner.Candidates.Where(candidate => candidate.PointsCandidate?.Status == PointsScannerStatus.NotReady).ToArray();
+
+        Log(writer, $"SAILOR-047 wait diagnostics ({context}): scannerMode={scanner.Options.ScannerMode.ToConfigValue()} tradeEligible={latest.TradeEligibleSymbols.Count} ready={ready.Length} weakReady={weakReady.Length} watchOnly={watchOnly.Length} notReady={notReady.Length} minScore={scanner.Options.PointsMinimumTradeScore:F2} weakEntryAllowed={scanner.Options.PointsAllowWeakEntry}.");
+
+        if (latest.TradeEligibleSymbols.Count > 0)
+        {
+            Log(writer, $"SAILOR-047 wait diagnostics: Ready trade symbols available: {FormatSymbols(latest.TradeEligibleSymbols, 20)}.");
+            return;
+        }
+
+        if (ready.Length > 0)
+        {
+            Log(writer, "SAILOR-047 wait diagnostics: Ready points candidates exist, but scan-list retention/data-quality did not expose a trade-eligible symbol yet. Rechecking on the next cycle.");
+        }
+        else if (weakReady.Length > 0 && !scanner.Options.PointsAllowWeakEntry)
+        {
+            Log(writer, "SAILOR-047 wait diagnostics: only WeakReady points candidates are available and weak entry is disabled, so Sailor keeps waiting.");
+        }
+        else if (watchOnly.Length > 0)
+        {
+            Log(writer, "SAILOR-047 wait diagnostics: only WatchOnly candidates are available, so Sailor keeps rescanning.");
+        }
+        else
+        {
+            Log(writer, "SAILOR-047 wait diagnostics: no points candidates are ready for entry yet.");
+        }
+
+        IReadOnlyList<PaperScannerCandidate> displayCandidates = scanner.Candidates
+            .Where(candidate => candidate.PointsCandidate is not null)
+            .Take(10)
+            .ToArray();
+        if (displayCandidates.Count == 0)
+        {
+            return;
+        }
+
+        Log(writer, "SAILOR-047 top points candidates while waiting");
+        foreach (PaperScannerCandidate candidate in displayCandidates)
+        {
+            Log(writer, candidate.ToDisplayLine());
+        }
+    }
+
 
     private static async Task<(ScanListRunResult RunResult, IReadOnlyList<string> SelectedSymbols, int RemainingIterations)> WaitForScanListEntrySelectionAsync(
         SailorRuntimeMode mode,
@@ -1031,6 +1144,8 @@ public static class SailorRuntimeCommandRunner
                 Log(writer, $"SAILOR-043 found trade-eligible scan-list symbols: {string.Join(", ", selectedSymbols)}");
                 break;
             }
+
+            LogScanListEntryWaitDiagnostics(writer, latestResult, "wait-for-scan-entry rescan");
         }
 
         int totalElapsedSeconds = (int)Math.Max(0, Math.Round((DateTimeOffset.UtcNow - startedUtc).TotalSeconds, MidpointRounding.AwayFromZero));
@@ -1169,6 +1284,7 @@ public static class SailorRuntimeCommandRunner
             IReadOnlyList<string> selectedScanListSymbols = SelectScanListTradeSymbols(scanListResult, runtimeOptions.TopCount, livePilot: false);
             if (selectedScanListSymbols.Count == 0 && HasOption(args, "--wait-for-scan-entry"))
             {
+                LogScanListEntryWaitDiagnostics(writer, scanListResult, "initial scan before wait");
                 (scanListResult, selectedScanListSymbols, iterations) = await WaitForScanListEntrySelectionAsync(
                     mode,
                     settings,
@@ -2071,6 +2187,12 @@ public static class SailorRuntimeCommandRunner
             Log(writer, $"scan-list data quality: {report.ScanListEvidence.DataQualityStatus} - {report.ScanListEvidence.DataQualityReason}");
             Log(writer, $"scan-list certification blockers: criticalGaps={report.ScanListEvidence.CriticalDataGaps} mergeConflicts={report.ScanListEvidence.MergeConflictCount} staleSelected={report.ScanListEvidence.StaleSelectedSymbols} notReady={(report.ScanListEvidence.NotReadySelectedSymbols.Count == 0 ? "none" : string.Join(",", report.ScanListEvidence.NotReadySelectedSymbols))}");
             Log(writer, $"scan-list retained symbols: {(report.ScanListEvidence.TradeEligiblePreview.Count == 0 ? "none" : string.Join(", ", report.ScanListEvidence.TradeEligiblePreview))}");
+            Log(writer, $"scan-list watch symbols: {(report.ScanListEvidence.SafeWatchCandidatePreview.Count == 0 ? "none" : string.Join(", ", report.ScanListEvidence.SafeWatchCandidatePreview))}");
+            Log(writer, $"scanner mode: {report.ScanListEvidence.ScannerMode}");
+            Log(writer, $"points candidates: total={report.ScanListEvidence.PointsCandidates} ready={report.ScanListEvidence.ReadyCandidates} weakReady={report.ScanListEvidence.WeakReadyCandidates} watchOnly={report.ScanListEvidence.WatchOnlyCandidates} notReady={report.ScanListEvidence.NotReadyCandidates} minScore={report.ScanListEvidence.MinimumTradeScore:F2}");
+            Log(writer, $"points report: {report.ScanListEvidence.PointsReportPath ?? "n/a"}");
+            Log(writer, $"legacy comparison report: {report.ScanListEvidence.LegacyComparisonReportPath ?? "n/a"}");
+            Log(writer, $"legacy comparison markdown: {report.ScanListEvidence.LegacyComparisonMarkdownReportPath ?? "n/a"}");
         }
         Log(writer, $"all open exposure at end = zero: {report.EndExposureIsZero}");
         Log(writer, $"promotion result: {report.CertificationStatus} - {report.PromotionBlockReason}");
@@ -2871,6 +2993,7 @@ public static class SailorRuntimeCommandRunner
         }
         Console.WriteLine($"  sailor {name} scan");
         Console.WriteLine($"  sailor {name} scan-list 1m v21-15minutes 10 --file scan/data/scan_default.xlsx --sheet Candidates --local-cache --no-quotes");
+        Console.WriteLine($"  sailor {name} scan-points 1m v18-silver 10 --file scan/data/scan_default.xlsx --sheet Candidates --scanner-mode points-only --no-depth");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --local-cache");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --days 5 --market-data-type 2");
         Console.WriteLine($"  sailor {name} scan 1m v21-15minutes 1 TSLA --local-cache --no-depth");
@@ -2922,6 +3045,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - live readiness/gate evaluates config, --confirm-live, paper certification age/status, account match, and max notional");
         Console.WriteLine("  - SAILOR-037 can read scan/data/scan_default.xlsx and feed workbook symbols into backtest/paper/live scan-list ranking");
         Console.WriteLine("  - SAILOR-038 adds scan-list memory evidence, removed-symbol retention, history batch planning, and the in-memory candle merge foundation");
+        Console.WriteLine("  - SAILOR-047 adds paper scan-points diagnostics for points-only scanner audit without starting conduct or routing orders");
         Console.WriteLine("  - scan-list inputs support 5-minute refresh, daily list changes, intraday additions, and top-N trade eligibility contracts for the next dynamic runtime milestone");
         Console.WriteLine("  - SAILOR-034 consumes the live-readiness gate for a one-symbol live pilot");
         Console.WriteLine("  - live pilot enforces one explicit symbol, small max notional, operator-watching-TWS acknowledgement, long-only default, pre-run reconciliation, and final zero exposure");

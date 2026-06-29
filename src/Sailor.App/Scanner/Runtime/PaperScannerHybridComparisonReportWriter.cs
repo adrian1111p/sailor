@@ -8,7 +8,7 @@ namespace Sailor.App.Scanner.Runtime;
 
 public static class PaperScannerHybridComparisonReportWriter
 {
-    public static string Write(
+    public static PaperScannerHybridComparisonReportPaths Write(
         PaperScannerOptions options,
         IReadOnlyList<ScannerCandidate> legacyCandidates,
         IReadOnlyList<PointsScannerCandidate> pointsCandidates)
@@ -80,7 +80,7 @@ public static class PaperScannerHybridComparisonReportWriter
             }
         }
 
-        return csvPath;
+        return new PaperScannerHybridComparisonReportPaths(csvPath, mdPath);
     }
 
     private static bool IsTradeEligibleByPoints(PaperScannerOptions options, PointsScannerCandidate candidate)
@@ -114,3 +114,5 @@ public static class PaperScannerHybridComparisonReportWriter
     private static string EscapeMarkdown(string value)
         => value.Replace("|", "\\|", StringComparison.Ordinal);
 }
+
+public sealed record PaperScannerHybridComparisonReportPaths(string CsvPath, string MarkdownPath);

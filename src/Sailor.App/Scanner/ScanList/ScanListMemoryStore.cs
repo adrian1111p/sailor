@@ -294,6 +294,14 @@ public sealed class ScanListMemoryStore
             .Select(state => state.Symbol)
             .ToArray();
 
+    public IReadOnlyList<string> WatchCandidateSymbols()
+        => _states.Values
+            .Where(state => state.Status == ScanListSymbolStatus.Active && state.IsRetainedWatchCandidate)
+            .OrderBy(state => state.LastRank ?? int.MaxValue)
+            .ThenBy(state => state.Symbol, StringComparer.OrdinalIgnoreCase)
+            .Select(state => state.Symbol)
+            .ToArray();
+
     private static string SourceDescription(ScanListWorkbookResult workbook)
         => $"{workbook.Options.FilePath}#{workbook.Options.SheetName}#{workbook.Options.SymbolColumn}";
 

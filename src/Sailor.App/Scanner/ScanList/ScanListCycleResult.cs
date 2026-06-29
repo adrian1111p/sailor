@@ -13,6 +13,7 @@ public sealed record ScanListCycleResult(
     ScanListHistoryBatch? DueHistoryBatch,
     PaperScannerRunResult ScannerResult,
     IReadOnlyList<string> TradeEligibleSymbols,
+    IReadOnlyList<string> WatchCandidateSymbols,
     RuntimeSafetyState SafetyState,
     ScanListRuntimeEvidence Evidence,
     string EvidenceJsonPath,
@@ -28,6 +29,6 @@ public sealed record ScanListCycleResult(
     public string ToSummaryString()
         => $"cycle={CycleIndex}/{TotalCycles} workbookSymbols={Workbook.SymbolCount} active={Reload.ActiveSymbols.Count} " +
            $"added={Reload.AddedSymbols.Count} removed={Reload.RemovedSymbols.Count} dueBatch={(DueHistoryBatch?.BatchNumber.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none")} " +
-           $"prepared={ScannerResult.PreparedSymbols.Count} candidates={ScannerResult.Candidates.Count} tradeEligible={TradeEligibleSymbols.Count} " +
+           $"prepared={ScannerResult.PreparedSymbols.Count} candidates={ScannerResult.Candidates.Count} tradeEligible={TradeEligibleSymbols.Count} watch={WatchCandidateSymbols.Count} " +
            $"memoryCandles={MemoryCandleCount} mergedCandles={MergedCandleCount} safety={SafetyState.Mode}";
 }

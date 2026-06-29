@@ -69,13 +69,27 @@ public sealed record PaperScanListEvidenceSummary(
     int StaleSelectedSymbols,
     DateTimeOffset? LatestSelectedCandleUtc,
     double? LatestSelectedCandleAgeMinutes,
-    IReadOnlyList<string> NotReadySelectedSymbols)
+    IReadOnlyList<string> NotReadySelectedSymbols,
+    string ScannerMode = "legacy-blocks",
+    int PointsCandidates = 0,
+    int ReadyCandidates = 0,
+    int WeakReadyCandidates = 0,
+    int WatchOnlyCandidates = 0,
+    int NotReadyCandidates = 0,
+    decimal MinimumTradeScore = 0m,
+    string? PointsReportPath = null,
+    string? LegacyComparisonReportPath = null,
+    string? LegacyComparisonMarkdownReportPath = null,
+    int WatchCandidateSymbols = 0,
+    IReadOnlyList<string>? WatchCandidatePreview = null)
 {
     public bool DataQualityClean => TradeEligibleSymbols == 0
         || string.Equals(DataQualityStatus, "Clean", StringComparison.OrdinalIgnoreCase);
 
+    public IReadOnlyList<string> SafeWatchCandidatePreview => WatchCandidatePreview ?? Array.Empty<string>();
+
     public string ToSummaryString()
-        => $"{File}#{Sheet} workbook={WorkbookSymbols} active={ActiveSymbols} tradeEligible={TradeEligibleSymbols} historyOk={HistorySuccessCount}/{PreparedSymbols} mergedCandles={MergedCandles} dataQuality={DataQualityStatus} safety={SafetyMode}";
+        => $"{File}#{Sheet} workbook={WorkbookSymbols} active={ActiveSymbols} tradeEligible={TradeEligibleSymbols} historyOk={HistorySuccessCount}/{PreparedSymbols} mergedCandles={MergedCandles} dataQuality={DataQualityStatus} safety={SafetyMode} scannerMode={ScannerMode} pointsCandidates={PointsCandidates} ready={ReadyCandidates} weakReady={WeakReadyCandidates} watchOnly={WatchOnlyCandidates} notReady={NotReadyCandidates} minScore={MinimumTradeScore:F2}";
 }
 
 public sealed record PaperCertificationReportSources(
