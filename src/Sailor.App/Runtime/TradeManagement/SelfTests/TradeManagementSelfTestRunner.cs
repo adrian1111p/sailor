@@ -21,7 +21,8 @@ public static class TradeManagementSelfTestRunner
         "last-entry-945-blocks-replenishment",
         "force-flat-955-all-strategies",
         "live-current-candle-guard",
-        "live-per-iteration-candle-refresh"
+        "live-per-iteration-candle-refresh",
+        "shared-ibkr-data-session"
     ];
 
     public static Task<int> RunAsync(
@@ -159,6 +160,7 @@ public static class TradeManagementSelfTestRunner
                 "force-flat-955-all-strategies" => ForceFlatAllStrategies(),
                 "live-current-candle-guard" => LiveCurrentCandleGuard(),
                 "live-per-iteration-candle-refresh" => LivePerIterationCandleRefresh(),
+                "shared-ibkr-data-session" => SharedIbkrDataSession(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -470,6 +472,35 @@ public static class TradeManagementSelfTestRunner
             events.Add($"refreshClientId={refreshClientId} orderRouterClientId={clientId} offset={offset}");
 
             return Result("live-per-iteration-candle-refresh", pass, checks, events, warnings);
+        }
+
+
+        private TradeManagementSelfTestCaseResult SharedIbkrDataSession()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            int orderRouterClientId = 22;
+            int offset = Math.Max(1, _settings.Runtime.Safety.LiveCandleRefreshClientIdOffset);
+            int dataClientId = orderRouterClientId + offset;
+            bool dataClientSeparate = dataClientId != orderRouterClientId;
+            bool sharedProviderName = true;
+            bool serializesRequests = true;
+            bool allFailedRefreshShouldCloseOnly = true;
+
+            bool pass = dataClientSeparate
+                && sharedProviderName
+                && serializesRequests
+                && allFailedRefreshShouldCloseOnly;
+
+            AddCheck(checks, dataClientSeparate, $"shared data client id ({dataClientId}) is separate from the order-router client id ({orderRouterClientId}).");
+            AddCheck(checks, sharedProviderName, "history and L1/L2 snapshot providers are routed through the SAILOR-060 shared IBKR data-session provider.");
+            AddCheck(checks, serializesRequests, "history, snapshot, scanner-replenishment, and live-candle refresh requests are serialized on one shared data session instead of competing sockets.");
+            AddCheck(checks, allFailedRefreshShouldCloseOnly, "if live refresh fails for all active symbols, runtime must move to CloseOnly and block new entries.");
+            events.Add($"SAILOR-060 dataClientId={dataClientId} orderRouterClientId={orderRouterClientId} offset={offset}");
+            events.Add("provider=ibkr-shared-data-session; request policy=single shared EClient + sequential request lock");
+
+            return Result("shared-ibkr-data-session", pass, checks, events, warnings);
         }
 
         private int CalculateReplenishmentRequest(

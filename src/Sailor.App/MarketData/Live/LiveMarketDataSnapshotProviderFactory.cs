@@ -1,6 +1,6 @@
 using Sailor.App.Broker.Ibkr;
 #if SAILOR_IBAPI
-using Sailor.App.Broker.Ibkr.MarketData;
+using Sailor.App.Broker.Ibkr.Shared;
 #endif
 
 namespace Sailor.App.MarketData.Live;
@@ -18,7 +18,7 @@ public static class LiveMarketDataSnapshotProviderFactory
         }
 
 #if SAILOR_IBAPI
-        return new IbkrApiMarketDataSnapshotProvider(connectionOptions);
+        return new IbkrSharedMarketDataHistoryProvider(connectionOptions);
 #else
         return new DisabledIbkrMarketDataSnapshotProvider(fallback);
 #endif

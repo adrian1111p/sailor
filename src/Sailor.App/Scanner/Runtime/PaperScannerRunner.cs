@@ -22,7 +22,7 @@ public sealed class PaperScannerRunner : IDisposable
         PaperScannerOptions options)
     {
         _settings = settings;
-        _connectionOptions = connectionOptions;
+        _connectionOptions = CreateDataConnectionOptions(settings, connectionOptions, options);
 
         IHistoricalBarProvider historyProvider = HistoricalBarProviderFactory.Create(
             options.RequestIbkrHistory,
@@ -38,6 +38,27 @@ public sealed class PaperScannerRunner : IDisposable
     public string HistoryProviderName => _snapshotProvider.HistoryProviderName;
 
     public string MarketDataProviderName => _snapshotProvider.MarketDataProviderName;
+
+    public string DataConnectionDisplay => _connectionOptions.ToDisplayString();
+
+    private static IbkrConnectionOptions CreateDataConnectionOptions(
+        SailorAppSettings settings,
+        IbkrConnectionOptions connectionOptions,
+        PaperScannerOptions options)
+    {
+        if (!options.RequestIbkrHistory && !options.RequestIbkrMarketData)
+        {
+            return connectionOptions;
+        }
+
+        int clientIdOffset = Math.Max(1, settings.Runtime.Safety.LiveCandleRefreshClientIdOffset);
+        return connectionOptions with
+        {
+            ClientId = connectionOptions.ClientId + clientIdOffset,
+            SendOrders = false,
+            UseL2 = options.UseL2
+        };
+    }
 
     public async Task<PaperScannerRunResult> RunAsync(
         PaperScannerOptions options,

@@ -77,6 +77,7 @@ public sealed class PaperConductLoop
         if (liveCandleRefreshService is not null)
         {
             _log($"SAILOR-059 live paper per-iteration candle refresh is active: {liveCandleRefreshService.ToDisplayString()}.");
+            _log("SAILOR-060 shared IBKR live market-data/history session is active: scanner/history/snapshot/refresh data requests use one serialized data client and do not reuse the order-router client id.");
         }
 
         _log(healthMonitor.SafetyState.ToDisplayString());
@@ -116,6 +117,22 @@ public sealed class PaperConductLoop
                         .ConfigureAwait(false);
 
                     LogLiveCandleRefreshResults(iteration, refreshResults, warnings);
+                    if (request.SendOrders
+                        && refreshResults.Count > 0
+                        && refreshResults.All(result => !result.Success))
+                    {
+                        string message = $"SAILOR-060 live data refresh failed for all {refreshResults.Count} active symbol(s). Runtime moved to CloseOnly; entries remain blocked until the shared IBKR data session is healthy.";
+                        RuntimeIncident? incident = healthMonitor.MarkCloseOnly(
+                            "shared-data-refresh-failed",
+                            message,
+                            refreshResults.SelectMany(result => result.Warnings).Append(message));
+                        if (incident is not null)
+                        {
+                            warnings.Add(incident.Message);
+                            _log(incident.ToDisplayString());
+                            _log(healthMonitor.SafetyState.ToDisplayString());
+                        }
+                    }
                 }
                 else
                 {

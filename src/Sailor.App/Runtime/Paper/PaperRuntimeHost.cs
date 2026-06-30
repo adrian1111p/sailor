@@ -50,6 +50,7 @@ public sealed class PaperRuntimeHost
         using var scannerRunner = new PaperScannerRunner(_settings, request.ConnectionOptions, request.ScannerOptions);
         _log($"History provider: {scannerRunner.HistoryProviderName}");
         _log($"Market data provider: {scannerRunner.MarketDataProviderName}");
+        _log($"SAILOR-060 shared IBKR data connection: {scannerRunner.DataConnectionDisplay}");
         _log("");
 
         PaperScannerRunResult scannerResult;

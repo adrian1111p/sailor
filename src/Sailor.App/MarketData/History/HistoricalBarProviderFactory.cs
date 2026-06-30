@@ -1,4 +1,7 @@
 using Sailor.App.Broker.Ibkr;
+#if SAILOR_IBAPI
+using Sailor.App.Broker.Ibkr.Shared;
+#endif
 
 namespace Sailor.App.MarketData.History;
 
@@ -16,7 +19,7 @@ public static class HistoricalBarProviderFactory
         }
 
 #if SAILOR_IBAPI
-        return new Sailor.App.Broker.Ibkr.History.IbkrApiHistoricalBarProvider(connectionOptions);
+        return new IbkrSharedMarketDataHistoryProvider(connectionOptions);
 #else
         return new DisabledIbkrHistoricalBarProvider(fallback);
 #endif

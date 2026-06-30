@@ -1348,3 +1348,10 @@ SAILOR-059 candle-refresh iteration=2 requested=5 updated=5 unchanged=0 stale=0 
 ```
 
 The intended operational result is that a one-hour paper run shows active symbol bar timestamps advancing minute by minute with the current market, instead of remaining fixed on the startup candle.
+
+
+## SAILOR-060 — Shared IBKR live market-data/history session
+
+Status: implemented.
+
+This milestone replaces competing scanner/history/snapshot/live-refresh IBKR sockets with a shared serialized data-session provider. The order router keeps its own client id, while market-data/history paths use the configured data client offset. If live candle refresh fails for all active symbols during paper send-orders, runtime moves to CloseOnly and blocks new entries instead of continuing with stale bars. See `docs/2026-06-30_sailor_s060_shared_ibkr_live_data_session_notes.md`.
