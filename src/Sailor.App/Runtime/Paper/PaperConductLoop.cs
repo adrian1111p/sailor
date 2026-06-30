@@ -69,6 +69,16 @@ public sealed class PaperConductLoop
         {
             _log($"SAILOR-058 live-paper stale historical replay guard is active: maxBarAgeMinutes={request.LiveBarMaxAgeMinutes} futureToleranceMinutes={request.LiveBarFutureToleranceMinutes}.");
         }
+
+        using PaperLiveCandleRefreshService? liveCandleRefreshService = request.SendOrders && request.LiveCandleRefreshEnabled
+            ? new PaperLiveCandleRefreshService(request)
+            : null;
+
+        if (liveCandleRefreshService is not null)
+        {
+            _log($"SAILOR-059 live paper per-iteration candle refresh is active: {liveCandleRefreshService.ToDisplayString()}.");
+        }
+
         _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
 
@@ -94,13 +104,30 @@ public sealed class PaperConductLoop
                 await TryRecoverIfNeededAsync($"simulated disconnect at iteration {iteration}").ConfigureAwait(false);
             }
 
-            _log($"Iteration {iteration}/{request.MaxIterations} heartbeatUtc={DateTimeOffset.UtcNow:O} safety={healthMonitor.SafetyState.Mode}");
+            DateTimeOffset heartbeatUtc = DateTimeOffset.UtcNow;
+            _log($"Iteration {iteration}/{request.MaxIterations} heartbeatUtc={heartbeatUtc:O} safety={healthMonitor.SafetyState.Mode}");
+
+            if (liveCandleRefreshService is not null)
+            {
+                if (healthMonitor.SafetyState.CanRequestMarketData)
+                {
+                    IReadOnlyList<PaperLiveCandleRefreshResult> refreshResults = await liveCandleRefreshService
+                        .RefreshAsync(sessions, request, iteration, heartbeatUtc, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    LogLiveCandleRefreshResults(iteration, refreshResults, warnings);
+                }
+                else
+                {
+                    _log($"SAILOR-059 candle-refresh skipped iteration={iteration}: runtime safety {healthMonitor.SafetyState.Mode} blocks market-data requests. {healthMonitor.SafetyState.Reason}");
+                }
+            }
 
             foreach (PaperSymbolSession session in sessions.ToArray())
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                SailorStrategyFrame frame = session.NextFrame(runtimeState);
+                SailorStrategyFrame frame = session.NextFrame(runtimeState, advanceCursor: liveCandleRefreshService is null);
                 var bar = frame.LatestBar;
                 var indicators = frame.LatestIndicators;
                 if (bar is null || indicators is null)
@@ -340,6 +367,38 @@ public sealed class PaperConductLoop
             if (iteration < request.MaxIterations && request.CadenceSeconds > 0)
             {
                 await Task.Delay(TimeSpan.FromSeconds(request.CadenceSeconds), cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        void LogLiveCandleRefreshResults(
+            int iteration,
+            IReadOnlyList<PaperLiveCandleRefreshResult> refreshResults,
+            List<string> loopWarnings)
+        {
+            if (refreshResults.Count == 0)
+            {
+                _log($"SAILOR-059 candle-refresh iteration={iteration} requested=0 updated=0 unchanged=0 stale=0 failed=0");
+                return;
+            }
+
+            int updated = refreshResults.Count(result => result.Updated);
+            int failed = refreshResults.Count(result => !result.Success);
+            int stale = refreshResults.Count(result => result.Success && !result.Current);
+            int unchanged = refreshResults.Count - updated - failed - stale;
+            _log($"SAILOR-059 candle-refresh iteration={iteration} requested={refreshResults.Count} updated={updated} unchanged={Math.Max(0, unchanged)} stale={stale} failed={failed}");
+
+            foreach (PaperLiveCandleRefreshResult result in refreshResults)
+            {
+                foreach (string refreshWarning in result.Warnings)
+                {
+                    loopWarnings.Add(refreshWarning);
+                    _log($"WARN: {refreshWarning}");
+                }
+
+                if (result.Updated || !result.Success || !result.Current)
+                {
+                    _log($"candle-refresh: {result.ToDisplayString()}");
+                }
             }
         }
 

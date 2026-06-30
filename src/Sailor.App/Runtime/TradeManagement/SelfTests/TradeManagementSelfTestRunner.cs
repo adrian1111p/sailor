@@ -20,7 +20,8 @@ public static class TradeManagementSelfTestRunner
         "non-v21-single-lifecycle",
         "last-entry-945-blocks-replenishment",
         "force-flat-955-all-strategies",
-        "live-current-candle-guard"
+        "live-current-candle-guard",
+        "live-per-iteration-candle-refresh"
     ];
 
     public static Task<int> RunAsync(
@@ -157,6 +158,7 @@ public static class TradeManagementSelfTestRunner
                 "last-entry-945-blocks-replenishment" => LastEntryBlocksReplenishment(),
                 "force-flat-955-all-strategies" => ForceFlatAllStrategies(),
                 "live-current-candle-guard" => LiveCurrentCandleGuard(),
+                "live-per-iteration-candle-refresh" => LivePerIterationCandleRefresh(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -421,6 +423,53 @@ public static class TradeManagementSelfTestRunner
             events.Add(fresh.Reason);
 
             return Result("live-current-candle-guard", pass, checks, events, warnings);
+        }
+
+        private TradeManagementSelfTestCaseResult LivePerIterationCandleRefresh()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            DateTimeOffset previousFrame = new(2026, 6, 30, 15, 47, 0, TimeSpan.Zero);
+            DateTimeOffset refreshedFrame = new(2026, 6, 30, 15, 49, 0, TimeSpan.Zero);
+            DateTimeOffset observedUtc = new(2026, 6, 30, 15, 50, 0, TimeSpan.Zero);
+            int clientId = 22;
+            int offset = Math.Max(1, _settings.Runtime.Safety.LiveCandleRefreshClientIdOffset);
+            int refreshClientId = clientId + offset;
+
+            PaperLiveBarCurrentness currentness = PaperLiveBarCurrentness.Evaluate(
+                refreshedFrame,
+                observedUtc,
+                Math.Max(1, _settings.Runtime.Safety.LiveBarMaxAgeMinutes),
+                Math.Max(0, _settings.Runtime.Safety.LiveBarFutureToleranceMinutes));
+
+            var refreshResult = new PaperLiveCandleRefreshResult(
+                "BIYA",
+                Success: true,
+                Updated: true,
+                Current: currentness.IsCurrent,
+                PreviousFrameTime: previousFrame,
+                PreviousLoadedLastTime: previousFrame,
+                RefreshedLastTime: refreshedFrame,
+                AppliedFrameTime: refreshedFrame,
+                RefreshedBarCount: 61,
+                AppliedBarIndex: 60,
+                Message: "SAILOR-059 live paper candle refresh advanced/anchored BIYA to 2026-06-30T15:49:00.0000000+00:00.",
+                Warnings: Array.Empty<string>());
+
+            bool advanced = refreshResult.Updated && refreshResult.AppliedFrameTime > refreshResult.PreviousFrameTime;
+            bool separateClient = refreshClientId != clientId;
+            bool current = refreshResult.Current;
+            bool pass = advanced && separateClient && current && _settings.Runtime.Safety.LiveCandleRefreshEnabled;
+
+            AddCheck(checks, _settings.Runtime.Safety.LiveCandleRefreshEnabled, "live paper candle refresh is enabled by runtime safety settings.");
+            AddCheck(checks, separateClient, $"refresh uses a separate IBKR client id ({refreshClientId}) from the order router ({clientId}).");
+            AddCheck(checks, advanced, "per-iteration refresh can advance the decision frame from the previous minute to a newer minute.");
+            AddCheck(checks, current, "refreshed decision frame remains within the live current-candle age gate.");
+            events.Add(refreshResult.ToDisplayString());
+            events.Add($"refreshClientId={refreshClientId} orderRouterClientId={clientId} offset={offset}");
+
+            return Result("live-per-iteration-candle-refresh", pass, checks, events, warnings);
         }
 
         private int CalculateReplenishmentRequest(

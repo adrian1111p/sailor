@@ -29,7 +29,11 @@ public sealed record PaperRuntimeHostRequest(
     PaperScannerOptions? ReplenishmentScannerOptions = null,
     bool BlockStaleHistoricalReplay = true,
     int LiveBarMaxAgeMinutes = 5,
-    int LiveBarFutureToleranceMinutes = 2);
+    int LiveBarFutureToleranceMinutes = 2,
+    bool LiveCandleRefreshEnabled = true,
+    int LiveCandleRefreshLookbackMinutes = 60,
+    int LiveCandleRefreshClientIdOffset = 200,
+    int LiveCandleRefreshRequestIdBase = 31_000);
 
 public sealed record PaperRuntimeHostResult(
     IReadOnlyList<string> ActiveSymbols,

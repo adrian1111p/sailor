@@ -14,11 +14,14 @@ namespace Sailor.App.Runtime.Paper;
 
 public sealed class PaperSymbolSession
 {
-    private readonly IReadOnlyList<BacktestBar> _bars;
-    private readonly IReadOnlyList<BacktestIndicatorSnapshot> _indicators;
+    private List<BacktestBar> _bars;
+    private List<BacktestIndicatorSnapshot> _indicators;
     private readonly SailorRuntimeMode _mode;
     private readonly string _timeframe;
+    private readonly SailorStrategyProfile _profile;
+    private readonly int _runtimeForceFlatMinute;
     private int _cursor;
+    private bool _cursorPositionedOnFrame;
 
     private PaperSymbolSession(
         SailorRuntimeMode mode,
@@ -29,6 +32,8 @@ public sealed class PaperSymbolSession
         IReadOnlyList<BacktestIndicatorSnapshot> indicators,
         SailorMarketSnapshot? marketSnapshot,
         SailorStrategyAdapter strategy,
+        SailorStrategyProfile profile,
+        int runtimeForceFlatMinute,
         SailorTradeOrigin tradeOrigin,
         string? scannerSlotId,
         StrategyLifecyclePolicy lifecyclePolicy,
@@ -41,14 +46,17 @@ public sealed class PaperSymbolSession
         Symbol = symbol;
         _timeframe = timeframe;
         DataSourcePath = dataSourcePath;
-        _bars = bars;
-        _indicators = indicators;
+        _bars = bars.OrderBy(bar => bar.Time).ToList();
+        _indicators = indicators.OrderBy(indicator => indicator.Time).ToList();
         MarketSnapshot = marketSnapshot;
         Strategy = strategy;
+        _profile = profile;
+        _runtimeForceFlatMinute = runtimeForceFlatMinute;
         TradeOrigin = tradeOrigin;
         ScannerSlotId = string.IsNullOrWhiteSpace(scannerSlotId) ? null : scannerSlotId.Trim();
         LifecyclePolicy = lifecyclePolicy;
-        _cursor = Math.Clamp(startIndex - 1, 0, Math.Max(0, bars.Count - 1));
+        _cursor = Math.Clamp(startIndex - 1, 0, Math.Max(0, _bars.Count - 1));
+        _cursorPositionedOnFrame = false;
         PositionQuantity = quantity;
         AveragePrice = averagePrice;
         EntryBarIndex = quantity == 0 ? -1 : entryBarIndex;
@@ -133,7 +141,7 @@ public sealed class PaperSymbolSession
         string startReason;
         if (requireCurrentLiveBars)
         {
-            int latestCurrentIndex = FindLatestCurrentSessionIndex(dataSet.Bars, DateTimeOffset.UtcNow, profile, safeForceFlatMinute, Math.Max(1, liveBarMaxAgeMinutes));
+            int latestCurrentIndex = FindLatestCurrentSessionIndex(dataSet.Bars, DateTimeOffset.UtcNow, profile, safeForceFlatMinute, Math.Max(1, liveBarMaxAgeMinutes), futureToleranceMinutes: 2);
             if (latestCurrentIndex >= 0)
             {
                 startIndex = latestCurrentIndex;
@@ -177,6 +185,8 @@ public sealed class PaperSymbolSession
             indicators,
             marketSnapshot,
             strategy,
+            profile,
+            safeForceFlatMinute,
             tradeOrigin,
             scannerSlotId,
             lifecyclePolicy,
@@ -189,9 +199,18 @@ public sealed class PaperSymbolSession
         };
     }
 
-    public SailorStrategyFrame NextFrame(SailorRuntimeState runtimeState)
+    public SailorStrategyFrame NextFrame(SailorRuntimeState runtimeState, bool advanceCursor = true)
     {
-        if (_cursor < _bars.Count - 1)
+        if (!_cursorPositionedOnFrame)
+        {
+            if (_cursor < _bars.Count - 1)
+            {
+                _cursor++;
+            }
+
+            _cursorPositionedOnFrame = true;
+        }
+        else if (advanceCursor && _cursor < _bars.Count - 1)
         {
             _cursor++;
         }
@@ -207,6 +226,91 @@ public sealed class PaperSymbolSession
             _indicators.Take(_cursor + 1).ToArray(),
             MarketSnapshot,
             runtimeState);
+    }
+
+    public PaperLiveCandleRefreshResult ApplyLiveCandleRefresh(
+        IReadOnlyList<BacktestBar> refreshedBars,
+        DateTimeOffset observedUtc,
+        int maxAgeMinutes,
+        int futureToleranceMinutes)
+    {
+        DateTimeOffset? previousFrameTime = LastFrameTime;
+        DateTimeOffset? previousLoadedLastTime = LastLoadedBarTime;
+
+        if (refreshedBars.Count == 0)
+        {
+            return PaperLiveCandleRefreshResult.Failed(
+                Symbol,
+                previousFrameTime,
+                previousLoadedLastTime,
+                "SAILOR-059 live paper candle refresh returned no bars.");
+        }
+
+        IReadOnlyList<BacktestBar> normalizedBars = NormalizeBars(refreshedBars);
+        int latestCurrentIndex = FindLatestCurrentSessionIndex(
+            normalizedBars,
+            observedUtc,
+            _profile,
+            _runtimeForceFlatMinute,
+            Math.Max(1, maxAgeMinutes),
+            Math.Max(0, futureToleranceMinutes));
+
+        DateTimeOffset refreshedLastTime = normalizedBars[^1].Time;
+        if (latestCurrentIndex < 0)
+        {
+            PaperLiveBarCurrentness latestCurrentness = PaperLiveBarCurrentness.Evaluate(
+                refreshedLastTime,
+                observedUtc,
+                Math.Max(1, maxAgeMinutes),
+                Math.Max(0, futureToleranceMinutes));
+
+            return new PaperLiveCandleRefreshResult(
+                Symbol,
+                Success: true,
+                Updated: false,
+                Current: false,
+                previousFrameTime,
+                previousLoadedLastTime,
+                refreshedLastTime,
+                previousFrameTime,
+                normalizedBars.Count,
+                AppliedBarIndex: _cursorPositionedOnFrame ? _cursor : -1,
+                $"SAILOR-059 refreshed history did not contain a current usable live bar. {latestCurrentness.ToEntryBlockReason(Math.Max(1, maxAgeMinutes))}",
+                Warnings: Array.Empty<string>());
+        }
+
+        DateTimeOffset appliedTime = normalizedBars[latestCurrentIndex].Time;
+        bool updated = !previousFrameTime.HasValue || appliedTime > previousFrameTime.Value || !previousLoadedLastTime.HasValue || refreshedLastTime > previousLoadedLastTime.Value;
+
+        _bars = normalizedBars.ToList();
+        _indicators = TechnicalIndicatorCalculator.Calculate(_bars).ToList();
+        _cursor = Math.Clamp(latestCurrentIndex, 0, Math.Max(0, _bars.Count - 1));
+        _cursorPositionedOnFrame = true;
+        LastFrameTime = _bars[_cursor].Time;
+
+        PaperLiveBarCurrentness appliedCurrentness = PaperLiveBarCurrentness.Evaluate(
+            LastFrameTime.Value,
+            observedUtc,
+            Math.Max(1, maxAgeMinutes),
+            Math.Max(0, futureToleranceMinutes));
+
+        string message = updated
+            ? $"SAILOR-059 live paper candle refresh advanced/anchored {Symbol} to {LastFrameTime:O}."
+            : $"SAILOR-059 live paper candle refresh kept {Symbol} on current latest bar {LastFrameTime:O}.";
+
+        return new PaperLiveCandleRefreshResult(
+            Symbol,
+            Success: true,
+            Updated: updated,
+            Current: appliedCurrentness.IsCurrent,
+            previousFrameTime,
+            previousLoadedLastTime,
+            refreshedLastTime,
+            LastFrameTime,
+            _bars.Count,
+            _cursor,
+            message,
+            Warnings: Array.Empty<string>());
     }
 
     public PaperLiveBarCurrentness AssessLiveBarCurrentness(
@@ -228,6 +332,18 @@ public sealed class PaperSymbolSession
             observedUtc,
             maxAgeMinutes,
             futureToleranceMinutes);
+    }
+
+
+    private static IReadOnlyList<BacktestBar> NormalizeBars(IReadOnlyList<BacktestBar> bars)
+    {
+        var byMinute = new SortedDictionary<DateTimeOffset, BacktestBar>();
+        foreach (BacktestBar bar in bars)
+        {
+            byMinute[bar.Time] = bar;
+        }
+
+        return byMinute.Values.ToArray();
     }
 
 
@@ -266,7 +382,8 @@ public sealed class PaperSymbolSession
         DateTimeOffset observedUtc,
         SailorStrategyProfile profile,
         int forceFlatMinute,
-        int maxAgeMinutes)
+        int maxAgeMinutes,
+        int futureToleranceMinutes)
     {
         if (bars.Count == 0)
         {
@@ -297,7 +414,7 @@ public sealed class PaperSymbolSession
             }
 
             TimeSpan age = observedUtc - bar.Time.ToUniversalTime();
-            if (age < TimeSpan.FromMinutes(-2) || age > maxAge)
+            if (age < TimeSpan.FromMinutes(-Math.Max(0, futureToleranceMinutes)) || age > maxAge)
             {
                 continue;
             }

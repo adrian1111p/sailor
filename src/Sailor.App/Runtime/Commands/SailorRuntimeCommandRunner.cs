@@ -1569,7 +1569,11 @@ public static class SailorRuntimeCommandRunner
             ReplenishmentScannerOptions: replenishmentScannerOptions,
             BlockStaleHistoricalReplay: settings.Runtime.Safety.BlockStaleHistoricalReplay,
             LiveBarMaxAgeMinutes: settings.Runtime.Safety.LiveBarMaxAgeMinutes,
-            LiveBarFutureToleranceMinutes: settings.Runtime.Safety.LiveBarFutureToleranceMinutes);
+            LiveBarFutureToleranceMinutes: settings.Runtime.Safety.LiveBarFutureToleranceMinutes,
+            LiveCandleRefreshEnabled: settings.Runtime.Safety.LiveCandleRefreshEnabled,
+            LiveCandleRefreshLookbackMinutes: settings.Runtime.Safety.LiveCandleRefreshLookbackMinutes,
+            LiveCandleRefreshClientIdOffset: settings.Runtime.Safety.LiveCandleRefreshClientIdOffset,
+            LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult result = await host.RunAsync(request, CancellationToken.None);
@@ -1942,7 +1946,11 @@ public static class SailorRuntimeCommandRunner
             MaxOrderNotional: gate.RequestedMaxNotional,
             BlockStaleHistoricalReplay: settings.Runtime.Safety.BlockStaleHistoricalReplay,
             LiveBarMaxAgeMinutes: settings.Runtime.Safety.LiveBarMaxAgeMinutes,
-            LiveBarFutureToleranceMinutes: settings.Runtime.Safety.LiveBarFutureToleranceMinutes);
+            LiveBarFutureToleranceMinutes: settings.Runtime.Safety.LiveBarFutureToleranceMinutes,
+            LiveCandleRefreshEnabled: settings.Runtime.Safety.LiveCandleRefreshEnabled,
+            LiveCandleRefreshLookbackMinutes: settings.Runtime.Safety.LiveCandleRefreshLookbackMinutes,
+            LiveCandleRefreshClientIdOffset: settings.Runtime.Safety.LiveCandleRefreshClientIdOffset,
+            LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult runtimeResult = await host.RunAsync(request, CancellationToken.None).ConfigureAwait(false);

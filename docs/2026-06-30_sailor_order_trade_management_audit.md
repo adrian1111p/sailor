@@ -1323,3 +1323,28 @@ ForceFlatMinute = 955  -> 15:55 ET
 ```
 
 They remain mandatory for all strategies, including V21/V22/V23/V24.
+
+### SAILOR-059 — Live paper per-iteration candle refresh
+
+Status: implemented.
+
+SAILOR-059 completes the SAILOR-058 current-candle safety fix. SAILOR-058 prevented startup from replaying prior-day/end-of-day candles, but paper `--send-orders` still reused the same in-memory last candle on later heartbeat iterations. SAILOR-059 now refreshes active paper symbol candles before every strategy decision iteration.
+
+Implemented behavior:
+
+1. Paper send-orders sessions create a dedicated `PaperLiveCandleRefreshService`.
+2. The refresh service uses a separate IBKR client id derived from `ClientId + LiveCandleRefreshClientIdOffset`, so it does not collide with the order router client id.
+3. Each live paper iteration requests fresh 1-minute history for every active symbol.
+4. `PaperSymbolSession` updates its in-memory bars and indicators from the refreshed result.
+5. Strategy frames are anchored to the latest current same-day usable candle and no longer advance through historical replay bars in live paper mode.
+6. If no fresh current candle is available, SAILOR-058 continues to block entries once the candle age exceeds the configured max age. Exits and force-flat remain allowed.
+7. The SAILOR-057 self-test suite now includes `live-per-iteration-candle-refresh`.
+
+Expected runtime evidence:
+
+```text
+SAILOR-059 live paper per-iteration candle refresh is active: provider=ibkr-api clientId=222 lookbackMinutes=60.
+SAILOR-059 candle-refresh iteration=2 requested=5 updated=5 unchanged=0 stale=0 failed=0
+```
+
+The intended operational result is that a one-hour paper run shows active symbol bar timestamps advancing minute by minute with the current market, instead of remaining fixed on the startup candle.

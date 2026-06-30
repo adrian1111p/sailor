@@ -231,6 +231,14 @@ public sealed class SailorRuntimeSafetySettings
     public int LiveBarMaxAgeMinutes { get; set; } = 5;
 
     public int LiveBarFutureToleranceMinutes { get; set; } = 2;
+
+    public bool LiveCandleRefreshEnabled { get; set; } = true;
+
+    public int LiveCandleRefreshLookbackMinutes { get; set; } = 60;
+
+    public int LiveCandleRefreshClientIdOffset { get; set; } = 200;
+
+    public int LiveCandleRefreshRequestIdBase { get; set; } = 31_000;
 }
 
 public sealed class ScannerSettings
