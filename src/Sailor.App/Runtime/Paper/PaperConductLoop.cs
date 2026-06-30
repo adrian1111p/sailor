@@ -65,6 +65,10 @@ public sealed class PaperConductLoop
         {
             _log($"SAILOR-056 severe disconnect recovery orchestrator is active. Recovery JSON: {_severeDisconnectRecoveryOrchestrator.LatestJsonPath}");
         }
+        if (request.SendOrders && request.BlockStaleHistoricalReplay)
+        {
+            _log($"SAILOR-058 live-paper stale historical replay guard is active: maxBarAgeMinutes={request.LiveBarMaxAgeMinutes} futureToleranceMinutes={request.LiveBarFutureToleranceMinutes}.");
+        }
         _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
 
@@ -108,14 +112,29 @@ public sealed class PaperConductLoop
                 SailorStrategyPositionContext positionBefore = session.ToPositionContext();
                 SailorStrategyDecision decision;
 
-                bool forceFlatDue = request.ForceFlatNow || MarketTime.GetEasternMinuteOfDay(frame.Time) >= request.RuntimeOptions.ForceFlatMinute;
+                DateTimeOffset decisionClock = request.SendOrders ? DateTimeOffset.UtcNow : frame.Time;
+                bool forceFlatDue = request.ForceFlatNow || MarketTime.GetEasternMinuteOfDay(decisionClock) >= request.RuntimeOptions.ForceFlatMinute;
+                PaperLiveBarCurrentness? liveBarCurrentness = request.SendOrders && request.BlockStaleHistoricalReplay
+                    ? session.AssessLiveBarCurrentness(
+                        decisionClock,
+                        Math.Max(1, request.LiveBarMaxAgeMinutes),
+                        Math.Max(0, request.LiveBarFutureToleranceMinutes))
+                    : null;
+
                 if (forceFlatDue && positionBefore.HasOpenPosition)
                 {
-                    decision = CreateForceFlatDecision(session, frame.Time);
+                    decision = CreateForceFlatDecision(session, decisionClock);
                 }
                 else if (forceFlatDue)
                 {
-                    decision = SailorStrategyDecision.Hold(session.Symbol, $"Force-flat window reached at {frame.Time:O}; no open position.");
+                    decision = SailorStrategyDecision.Hold(session.Symbol, $"Force-flat window reached at runtimeClock={decisionClock:O}; no open position.");
+                }
+                else if (liveBarCurrentness is { IsCurrent: false })
+                {
+                    string staleReason = liveBarCurrentness.ToEntryBlockReason(Math.Max(1, request.LiveBarMaxAgeMinutes));
+                    decision = SailorStrategyDecision.Hold(session.Symbol, positionBefore.HasOpenPosition
+                        ? staleReason + " Existing position remains managed for broker reconciliation/force-flat only until fresh bars are available."
+                        : staleReason);
                 }
                 else if (!healthMonitor.CanOpenEntries(request.CanOpenEntries) && !positionBefore.HasOpenPosition)
                 {

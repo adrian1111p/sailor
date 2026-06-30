@@ -26,7 +26,10 @@ public sealed record PaperRuntimeHostRequest(
     RuntimeReconciliationDelegate? ReconcileBrokerStateAsync,
     bool EnforceMaxOrderNotional = false,
     decimal MaxOrderNotional = 0m,
-    PaperScannerOptions? ReplenishmentScannerOptions = null);
+    PaperScannerOptions? ReplenishmentScannerOptions = null,
+    bool BlockStaleHistoricalReplay = true,
+    int LiveBarMaxAgeMinutes = 5,
+    int LiveBarFutureToleranceMinutes = 2);
 
 public sealed record PaperRuntimeHostResult(
     IReadOnlyList<string> ActiveSymbols,

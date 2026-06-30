@@ -957,6 +957,7 @@ paper trade-management-test --scenario v21-multi-entry-until-close
 paper trade-management-test --scenario non-v21-single-lifecycle
 paper trade-management-test --scenario last-entry-945-blocks-replenishment
 paper trade-management-test --scenario force-flat-955-all-strategies
+paper trade-management-test --scenario live-current-candle-guard
 paper trade-management-test --list
 ```
 
@@ -984,6 +985,34 @@ Additional market-close acceptance criteria:
 | Scanner target is 10 but active scanner trades drop to 7 at 15:46 ET. | No 3 replacement entries are opened. Market-close last-entry rule wins. |
 | Any strategy has an open position at 15:55 ET. | Force-flat/close-only behavior starts according to existing force-flat rule. |
 | Severe disconnect recovers at 15:47 ET. | Rebuild sessions and manage/exit positions, but do not create new scanner entries. |
+
+### SAILOR-058 — Live paper current-candle guard
+
+Status: implemented as an emergency paper-runtime correction on 2026-06-30.
+
+Problem found during the first 1-hour paper run: `paper run --send-orders` was evaluating yesterday's historical replay bars, for example `2026-06-29T18:52:00Z` and `2026-06-29T21:59:00Z`, while the real runtime heartbeat was on 2026-06-30. This made the strategy repeatedly hold because of stale volume or the force-flat window.
+
+Implemented correction:
+
+1. Paper send-orders sessions now try to anchor the first conduct frame to the latest current same-day bar instead of replaying an old historical window.
+2. Runtime force-flat decisions use the live runtime clock in paper send-orders mode, not the stale historical frame timestamp.
+3. A live current-candle gate blocks strategy entries/evaluation when the active bar is from a different Eastern trading date, is older than the configured max age, or is in the future beyond tolerance.
+4. Stale-bar blocks produce explicit log evidence beginning with `SAILOR-058 live-paper current-candle gate blocked stale historical replay`.
+5. Active-session logging now includes loaded bar count, first/last CSV bar time, and the selected start anchor reason.
+6. The SAILOR-057 self-test suite now includes `live-current-candle-guard`.
+
+New settings under `Runtime.Safety`:
+
+```json
+{
+  "RequireCurrentBarsForPaperSendOrders": true,
+  "BlockStaleHistoricalReplay": true,
+  "LiveBarMaxAgeMinutes": 5,
+  "LiveBarFutureToleranceMinutes": 2
+}
+```
+
+Important: this fix prevents unsafe/invalid trading from stale history. If IBKR/history refresh still does not provide current-day 1m bars, the runtime will now block entries with a clear SAILOR-058 reason instead of silently replaying old candles. The next data-layer improvement, if needed, is to build/append live 1m candles from streaming market data during the conduct loop.
 
 ---
 

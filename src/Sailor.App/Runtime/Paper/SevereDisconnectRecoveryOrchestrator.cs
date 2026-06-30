@@ -327,7 +327,11 @@ public sealed class SevereDisconnectRecoveryOrchestrator
                     tradeOrigin: origin,
                     scannerSlotId: scannerSlotId,
                     lifecyclePolicy: _lifecyclePolicyResolver.Resolve(profile.Name, origin),
-                    maxIterations: request.MaxIterations);
+                    maxIterations: request.MaxIterations,
+                    runtimeLastEntryMinute: request.RuntimeOptions.LastEntryMinute,
+                    runtimeForceFlatMinute: request.RuntimeOptions.ForceFlatMinute,
+                    requireCurrentLiveBars: request.SendOrders && _settings.Runtime.Safety.RequireCurrentBarsForPaperSendOrders,
+                    liveBarMaxAgeMinutes: request.LiveBarMaxAgeMinutes);
 
                 rebuilt.Add(session);
                 TradeLifecycle updated = _tradeRegistry.RegisterRuntimeSession(

@@ -19,7 +19,8 @@ public static class TradeManagementSelfTestRunner
         "v21-multi-entry-until-close",
         "non-v21-single-lifecycle",
         "last-entry-945-blocks-replenishment",
-        "force-flat-955-all-strategies"
+        "force-flat-955-all-strategies",
+        "live-current-candle-guard"
     ];
 
     public static Task<int> RunAsync(
@@ -155,6 +156,7 @@ public static class TradeManagementSelfTestRunner
                 "non-v21-single-lifecycle" => NonV21SingleLifecycle(),
                 "last-entry-945-blocks-replenishment" => LastEntryBlocksReplenishment(),
                 "force-flat-955-all-strategies" => ForceFlatAllStrategies(),
+                "live-current-candle-guard" => LiveCurrentCandleGuard(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -386,6 +388,39 @@ public static class TradeManagementSelfTestRunner
             events.Add($"forceFlatMinute={_forceFlatMinute} longDecision={longDecision} shortDecision={shortDecision} flatDecision={flatDecision}");
 
             return Result("force-flat-955-all-strategies", pass, checks, events, warnings);
+        }
+
+        private TradeManagementSelfTestCaseResult LiveCurrentCandleGuard()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            DateTimeOffset observedUtc = new(2026, 6, 30, 15, 15, 0, TimeSpan.Zero);
+            DateTimeOffset stalePriorDayBar = new(2026, 6, 29, 18, 52, 0, TimeSpan.Zero);
+            DateTimeOffset freshCurrentBar = observedUtc.AddMinutes(-1);
+
+            PaperLiveBarCurrentness stale = PaperLiveBarCurrentness.Evaluate(
+                stalePriorDayBar,
+                observedUtc,
+                Math.Max(1, _settings.Runtime.Safety.LiveBarMaxAgeMinutes),
+                Math.Max(0, _settings.Runtime.Safety.LiveBarFutureToleranceMinutes));
+            PaperLiveBarCurrentness fresh = PaperLiveBarCurrentness.Evaluate(
+                freshCurrentBar,
+                observedUtc,
+                Math.Max(1, _settings.Runtime.Safety.LiveBarMaxAgeMinutes),
+                Math.Max(0, _settings.Runtime.Safety.LiveBarFutureToleranceMinutes));
+
+            bool pass = !stale.IsCurrent
+                && fresh.IsCurrent
+                && stale.ToEntryBlockReason(_settings.Runtime.Safety.LiveBarMaxAgeMinutes).Contains("blocked stale historical replay", StringComparison.OrdinalIgnoreCase);
+
+            AddCheck(checks, !stale.IsCurrent, "prior-day bar is rejected for paper send-orders/live decisioning.");
+            AddCheck(checks, fresh.IsCurrent, "same-day recent bar is accepted for paper send-orders/live decisioning.");
+            AddCheck(checks, stale.ToEntryBlockReason(_settings.Runtime.Safety.LiveBarMaxAgeMinutes).Contains("blocked stale historical replay", StringComparison.OrdinalIgnoreCase), "stale-bar reason explains that historical replay was blocked.");
+            events.Add(stale.ToEntryBlockReason(_settings.Runtime.Safety.LiveBarMaxAgeMinutes));
+            events.Add(fresh.Reason);
+
+            return Result("live-current-candle-guard", pass, checks, events, warnings);
         }
 
         private int CalculateReplenishmentRequest(

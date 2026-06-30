@@ -193,7 +193,7 @@ public sealed class PaperRuntimeHost
         _log("----------------------");
         foreach (PaperSymbolSession session in sessions)
         {
-            _log($"{session.Symbol}: data={session.DataSourcePath} snapshotL1={session.MarketSnapshot?.HasL1 == true} snapshotL2={session.MarketSnapshot?.HasL2 == true} seedPosition={session.PositionDisplay()} strategy={session.Strategy.Name} policy={session.LifecyclePolicy.ToDisplayString()}");
+            _log($"{session.Symbol}: data={session.DataSourcePath} bars={session.LoadedBarCount} first={session.FirstLoadedBarTime:O} last={session.LastLoadedBarTime:O} start={session.StartReason} snapshotL1={session.MarketSnapshot?.HasL1 == true} snapshotL2={session.MarketSnapshot?.HasL2 == true} seedPosition={session.PositionDisplay()} strategy={session.Strategy.Name} policy={session.LifecyclePolicy.ToDisplayString()}");
         }
 
         _log("");
@@ -241,6 +241,12 @@ public sealed class PaperRuntimeHost
             _log($"Severe recovery latest JSON: {severeRecoveryOrchestrator.LatestJsonPath}");
             _log($"Severe recovery CSV: {severeRecoveryOrchestrator.DailyCsvPath}");
         }
+        _log("");
+
+        _log("SAILOR-058 live paper current-candle guard.");
+        _log(_settings.Runtime.Safety.RequireCurrentBarsForPaperSendOrders
+            ? $"Paper send-orders sessions must use current same-day candles; stale historical replay is blocked after {_settings.Runtime.Safety.LiveBarMaxAgeMinutes} minute(s)."
+            : "Paper send-orders current-candle requirement is disabled by configuration.");
         _log("");
 
         var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, tradeRegistry, scannerSlotManager, severeRecoveryOrchestrator);
@@ -325,7 +331,11 @@ public sealed class PaperRuntimeHost
                     origin,
                     seed.ScannerSlotId,
                     lifecyclePolicyResolver.Resolve(profile.Name, origin),
-                    request.MaxIterations);
+                    request.MaxIterations,
+                    request.RuntimeOptions.LastEntryMinute,
+                    request.RuntimeOptions.ForceFlatMinute,
+                    request.SendOrders && _settings.Runtime.Safety.RequireCurrentBarsForPaperSendOrders,
+                    _settings.Runtime.Safety.LiveBarMaxAgeMinutes);
 
                 StrategyLifecyclePolicy lifecyclePolicy = session.LifecyclePolicy;
 

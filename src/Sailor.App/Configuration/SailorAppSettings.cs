@@ -223,6 +223,14 @@ public sealed class SailorRuntimeSafetySettings
     public bool SevereDisconnectResumeEntriesOnlyAfterCleanReconciliation { get; set; } = true;
 
     public bool SevereDisconnectResumeScannerBeforeLastEntry { get; set; } = true;
+
+    public bool RequireCurrentBarsForPaperSendOrders { get; set; } = true;
+
+    public bool BlockStaleHistoricalReplay { get; set; } = true;
+
+    public int LiveBarMaxAgeMinutes { get; set; } = 5;
+
+    public int LiveBarFutureToleranceMinutes { get; set; } = 2;
 }
 
 public sealed class ScannerSettings

@@ -1566,7 +1566,10 @@ public static class SailorRuntimeCommandRunner
             reconnectBackoffSeconds,
             simulateDisconnectAtIteration,
             brokerReconcileAsync,
-            ReplenishmentScannerOptions: replenishmentScannerOptions);
+            ReplenishmentScannerOptions: replenishmentScannerOptions,
+            BlockStaleHistoricalReplay: settings.Runtime.Safety.BlockStaleHistoricalReplay,
+            LiveBarMaxAgeMinutes: settings.Runtime.Safety.LiveBarMaxAgeMinutes,
+            LiveBarFutureToleranceMinutes: settings.Runtime.Safety.LiveBarFutureToleranceMinutes);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult result = await host.RunAsync(request, CancellationToken.None);
@@ -1936,7 +1939,10 @@ public static class SailorRuntimeCommandRunner
             simulateDisconnectAtIteration,
             brokerReconcileAsync,
             EnforceMaxOrderNotional: true,
-            MaxOrderNotional: gate.RequestedMaxNotional);
+            MaxOrderNotional: gate.RequestedMaxNotional,
+            BlockStaleHistoricalReplay: settings.Runtime.Safety.BlockStaleHistoricalReplay,
+            LiveBarMaxAgeMinutes: settings.Runtime.Safety.LiveBarMaxAgeMinutes,
+            LiveBarFutureToleranceMinutes: settings.Runtime.Safety.LiveBarFutureToleranceMinutes);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult runtimeResult = await host.RunAsync(request, CancellationToken.None).ConfigureAwait(false);

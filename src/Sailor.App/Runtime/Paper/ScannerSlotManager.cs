@@ -180,7 +180,11 @@ public sealed class ScannerSlotManager
                     tradeOrigin: SailorTradeOrigin.ScannerOwned,
                     scannerSlotId: scannerSlotId,
                     lifecyclePolicy: _lifecyclePolicyResolver.Resolve(profile.Name, SailorTradeOrigin.ScannerOwned),
-                    maxIterations: request.MaxIterations);
+                    maxIterations: request.MaxIterations,
+                    runtimeLastEntryMinute: request.RuntimeOptions.LastEntryMinute,
+                    runtimeForceFlatMinute: request.RuntimeOptions.ForceFlatMinute,
+                    requireCurrentLiveBars: request.SendOrders && _settings.Runtime.Safety.RequireCurrentBarsForPaperSendOrders,
+                    liveBarMaxAgeMinutes: request.LiveBarMaxAgeMinutes);
 
                 sessions.Add(session);
                 activeSymbols.Add(symbol);

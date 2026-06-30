@@ -90,6 +90,16 @@ public sealed class PaperSymbolSession
 
     public bool HasMoreBars => _cursor < _bars.Count - 1;
 
+    public DateTimeOffset FirstLoadedBarTime => _bars.Count == 0 ? DateTimeOffset.MinValue : _bars[0].Time;
+
+    public DateTimeOffset LastLoadedBarTime => _bars.Count == 0 ? DateTimeOffset.MinValue : _bars[^1].Time;
+
+    public int LoadedBarCount => _bars.Count;
+
+    public int CurrentBarIndex => _cursor;
+
+    public string StartReason { get; private init; } = string.Empty;
+
     public static PaperSymbolSession Create(
         SailorRuntimeMode mode,
         string symbol,
@@ -102,17 +112,45 @@ public sealed class PaperSymbolSession
         SailorTradeOrigin tradeOrigin,
         string? scannerSlotId,
         StrategyLifecyclePolicy lifecyclePolicy,
-        int maxIterations)
+        int maxIterations,
+        int runtimeLastEntryMinute,
+        int runtimeForceFlatMinute,
+        bool requireCurrentLiveBars,
+        int liveBarMaxAgeMinutes)
     {
+        _ = runtimeLastEntryMinute;
         var provider = new CsvBacktestDataProvider();
         BacktestDataSet dataSet = provider.LoadBars(symbol, timeframe);
         IReadOnlyList<BacktestIndicatorSnapshot> indicators = TechnicalIndicatorCalculator.Calculate(dataSet.Bars);
 
         int warmup = Math.Max(25, Math.Max(profile.ScannerMinimumBars, profile.ScannerLookbackBars));
         int replayWindow = Math.Max(1, maxIterations) + 5;
-        int lastUsableIndex = FindLastUsableRegularSessionIndex(dataSet.Bars, profile);
-        int startIndex = Math.Max(warmup, lastUsableIndex - replayWindow);
-        startIndex = Math.Min(startIndex, Math.Max(0, lastUsableIndex));
+        int safeForceFlatMinute = runtimeForceFlatMinute > 0
+            ? runtimeForceFlatMinute
+            : profile.ForceFlatMinute > 0 ? profile.ForceFlatMinute : 24 * 60;
+        int lastUsableIndex = FindLastUsableRegularSessionIndex(dataSet.Bars, profile, safeForceFlatMinute);
+        int startIndex;
+        string startReason;
+        if (requireCurrentLiveBars)
+        {
+            int latestCurrentIndex = FindLatestCurrentSessionIndex(dataSet.Bars, DateTimeOffset.UtcNow, profile, safeForceFlatMinute, Math.Max(1, liveBarMaxAgeMinutes));
+            if (latestCurrentIndex >= 0)
+            {
+                startIndex = latestCurrentIndex;
+                startReason = $"live-current-anchor index={latestCurrentIndex} time={dataSet.Bars[latestCurrentIndex].Time:O}";
+            }
+            else
+            {
+                startIndex = Math.Min(Math.Max(0, lastUsableIndex), Math.Max(0, dataSet.Bars.Count - 1));
+                startReason = $"live-current-anchor unavailable; fallback to last pre-force-flat usable index={startIndex} time={dataSet.Bars[startIndex].Time:O}; stale gate will block entries until fresh bars exist";
+            }
+        }
+        else
+        {
+            startIndex = Math.Max(warmup, lastUsableIndex - replayWindow);
+            startIndex = Math.Min(startIndex, Math.Max(0, lastUsableIndex));
+            startReason = $"historical-replay startIndex={startIndex} lastUsableIndex={lastUsableIndex} replayWindow={replayWindow}";
+        }
 
         int quantity = 0;
         decimal averagePrice = 0m;
@@ -145,7 +183,10 @@ public sealed class PaperSymbolSession
             startIndex,
             quantity,
             averagePrice,
-            entryBarIndex);
+            entryBarIndex)
+        {
+            StartReason = startReason
+        };
     }
 
     public SailorStrategyFrame NextFrame(SailorRuntimeState runtimeState)
@@ -168,10 +209,32 @@ public sealed class PaperSymbolSession
             runtimeState);
     }
 
+    public PaperLiveBarCurrentness AssessLiveBarCurrentness(
+        DateTimeOffset observedUtc,
+        int maxAgeMinutes,
+        int futureToleranceMinutes)
+    {
+        if (LastFrameTime is null)
+        {
+            return PaperLiveBarCurrentness.Stale(
+                observedUtc,
+                observedUtc,
+                int.MaxValue,
+                "no strategy frame has been produced yet");
+        }
+
+        return PaperLiveBarCurrentness.Evaluate(
+            LastFrameTime.Value,
+            observedUtc,
+            maxAgeMinutes,
+            futureToleranceMinutes);
+    }
+
 
     private static int FindLastUsableRegularSessionIndex(
         IReadOnlyList<BacktestBar> bars,
-        SailorStrategyProfile profile)
+        SailorStrategyProfile profile,
+        int forceFlatMinute)
     {
         if (bars.Count == 0)
         {
@@ -182,8 +245,8 @@ public sealed class PaperSymbolSession
             ? profile.MarketOpenMinute + Math.Max(0, profile.SkipFirstMinutes)
             : 0;
 
-        int lastEntryOrForceMinute = profile.ForceFlatMinute > 0
-            ? profile.ForceFlatMinute - 1
+        int lastEntryOrForceMinute = forceFlatMinute > 0
+            ? forceFlatMinute - 1
             : 24 * 60 - 1;
 
         for (int i = bars.Count - 1; i >= 0; i--)
@@ -196,6 +259,53 @@ public sealed class PaperSymbolSession
         }
 
         return bars.Count - 1;
+    }
+
+    private static int FindLatestCurrentSessionIndex(
+        IReadOnlyList<BacktestBar> bars,
+        DateTimeOffset observedUtc,
+        SailorStrategyProfile profile,
+        int forceFlatMinute,
+        int maxAgeMinutes)
+    {
+        if (bars.Count == 0)
+        {
+            return -1;
+        }
+
+        DateOnly currentDate = MarketTime.GetEasternDate(observedUtc);
+        int firstEntryMinute = profile.UseMarketHours
+            ? profile.MarketOpenMinute + Math.Max(0, profile.SkipFirstMinutes)
+            : 0;
+        int latestAllowedMinute = forceFlatMinute > 0
+            ? Math.Min(forceFlatMinute - 1, MarketTime.GetEasternMinuteOfDay(observedUtc))
+            : MarketTime.GetEasternMinuteOfDay(observedUtc);
+        TimeSpan maxAge = TimeSpan.FromMinutes(Math.Max(1, maxAgeMinutes));
+
+        for (int i = bars.Count - 1; i >= 0; i--)
+        {
+            BacktestBar bar = bars[i];
+            if (MarketTime.GetEasternDate(bar.Time) != currentDate)
+            {
+                continue;
+            }
+
+            int minute = MarketTime.GetEasternMinuteOfDay(bar.Time);
+            if (minute < firstEntryMinute || minute > latestAllowedMinute)
+            {
+                continue;
+            }
+
+            TimeSpan age = observedUtc - bar.Time.ToUniversalTime();
+            if (age < TimeSpan.FromMinutes(-2) || age > maxAge)
+            {
+                continue;
+            }
+
+            return i;
+        }
+
+        return -1;
     }
 
     public SailorStrategyPositionContext ToPositionContext()
