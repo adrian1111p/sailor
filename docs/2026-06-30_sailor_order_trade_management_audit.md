@@ -564,15 +564,16 @@ manualManagedActive does not reduce requiredScannerNew
 
 ### 7.2 Current implementation status
 
-Current implementation: **not implemented**.
+Current implementation after SAILOR-055: **implemented as a paper/live-pilot runtime scaffold**.
 
 Current behavior:
 
-- scanner selection is performed before conduct;
-- selected symbols are fixed for the conduct loop;
-- no 5-minute intraday scanner cycle runs inside conduct;
-- no scanner-owned slot registry exists;
-- no minimum scanner target is enforced;
+- scanner selection still creates the initial conduct set before the loop;
+- SAILOR-055 adds scanner-owned target accounting around that initial set;
+- the conduct loop can add new scanner-owned sessions on the configured replenishment interval;
+- scanner-owned sessions are counted separately from manual/pre-existing/unknown sessions;
+- replenishment is blocked by runtime safety, stale/failed entry permission, and the `LastEntryMinute=945` market-close gate;
+- scanner-slot evidence is written to JSON/CSV;
 - default `Runtime.Safety.MaxActiveSymbols=3` conflicts with a target of 10;
 - manual trades are not classified separately from scanner trades.
 
@@ -859,7 +860,18 @@ Implementation steps:
 
 ### SAILOR-055 — Scanner slot target and 5-minute replenishment
 
-Implementation steps:
+Implementation status update after SAILOR-055 source changes:
+
+- Added `ScannerSlotManager`.
+- Added scanner target/replenishment settings to `ScannerSettings` and `appsettings.json`.
+- Added scanner-slot reports under `logs/<mode>/ScannerSlots`.
+- The conduct loop now keeps a mutable active-session list so a replenishment cycle can add new scanner-owned sessions without dropping manual/pre-existing sessions.
+- Scanner-owned sessions count toward `TargetScannerTrades`; manual/pre-existing/unknown/explicit sessions are reported as managed sessions but do not reduce scanner shortfall.
+- Replenishment is blocked when runtime safety is not clean, when ET frame time is at/after `LastEntryMinute=945`, or when a candidate was stopped for the day and `AvoidSameDayStoppedSymbols=true`.
+- Scan-list paper runs preserve the original workbook-backed scanner options for later replenishment after the initial retained-symbol universe is narrowed for conduct.
+- Default `Runtime.Safety.MaxActiveSymbols` was raised to `10` to allow the scanner target to be represented.
+
+Implementation steps completed:
 
 1. Add `ScannerSlotManager`.
 2. Add settings for target, replenish interval, allow weak entry, avoid same-day stopped symbols.

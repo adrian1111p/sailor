@@ -1412,6 +1412,8 @@ public static class SailorRuntimeCommandRunner
             pointsAllowWeakEntry,
             pointsRetainWatchOnly);
 
+        PaperScannerOptions replenishmentScannerOptions = scannerOptions;
+
         if (mode == SailorRuntimeMode.Paper && HasScanListInput(args))
         {
             ScanListWorkbookOptions workbookOptions = CreateScanListWorkbookOptions(args, runtimeOptions.TopCount);
@@ -1557,7 +1559,8 @@ public static class SailorRuntimeCommandRunner
             reconnectAttempts,
             reconnectBackoffSeconds,
             simulateDisconnectAtIteration,
-            brokerReconcileAsync);
+            brokerReconcileAsync,
+            ReplenishmentScannerOptions: replenishmentScannerOptions);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult result = await host.RunAsync(request, CancellationToken.None);

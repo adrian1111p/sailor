@@ -179,7 +179,7 @@ public sealed class PaperRuntimeHost
         _log($"universalLastEntryMinute={request.RuntimeOptions.LastEntryMinute} universalForceFlatMinute={request.RuntimeOptions.ForceFlatMinute}");
         _log("");
 
-        IReadOnlyList<PaperSymbolSession> sessions = CreateSessions(request, sessionPlan.Seeds, warnings, tradeRegistry, lifecyclePolicyResolver);
+        List<PaperSymbolSession> sessions = CreateSessions(request, sessionPlan.Seeds, warnings, tradeRegistry, lifecyclePolicyResolver);
         if (sessions.Count == 0)
         {
             warnings.Add("No symbols were activated. Conduct loop did not start.");
@@ -198,13 +198,30 @@ public sealed class PaperRuntimeHost
 
         _log("");
 
+        var scannerSlotManager = new ScannerSlotManager(
+            _settings,
+            request.ConnectionOptions,
+            request.ReplenishmentScannerOptions ?? request.ScannerOptions,
+            tradeRegistry,
+            lifecyclePolicyResolver,
+            _log,
+            request.RuntimeOptions.Mode);
+        _log("SAILOR-055 scanner slot target and 5-minute replenishment.");
+        _log("Scanner-owned sessions count toward the scanner target; manual/pre-existing/unknown sessions are managed separately and never reduce scanner shortfall.");
+        _log(scannerSlotManager.ToDisplayString());
+        ScannerSlotReplenishmentReport initialSlotReport = scannerSlotManager.WriteStatusReport(sessions, "initial scanner slot report before conduct loop");
+        _log(initialSlotReport.ToSummaryString());
+        _log($"Scanner slot latest JSON: {initialSlotReport.JsonPath}");
+        _log($"Scanner slot CSV: {initialSlotReport.CsvPath}");
+        _log("");
+
         await using IOrderRouter router = IbkrOrderRouterFactory.Create(
             request.SendOrders,
             request.ConnectionOptions,
             request.PrimaryExchange,
             request.WaitSeconds);
 
-        var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, tradeRegistry);
+        var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, tradeRegistry, scannerSlotManager);
         PaperRuntimeHostResult loopResult = await conductLoop.RunAsync(
             sessions,
             router,
@@ -236,7 +253,7 @@ public sealed class PaperRuntimeHost
         };
     }
 
-    private IReadOnlyList<PaperSymbolSession> CreateSessions(
+    private List<PaperSymbolSession> CreateSessions(
         PaperRuntimeHostRequest request,
         IReadOnlyList<DynamicTradeSessionSeed> seeds,
         List<string> warnings,

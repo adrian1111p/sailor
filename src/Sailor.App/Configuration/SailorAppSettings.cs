@@ -228,6 +228,14 @@ public sealed class ScannerSettings
     public bool PointsAllowWeakEntry { get; set; } = false;
 
     public bool PointsRetainWatchOnly { get; set; } = true;
+
+    public int TargetScannerTrades { get; set; } = 10;
+
+    public int ReplenishmentIntervalSeconds { get; set; } = 300;
+
+    public bool ReplenishmentAllowWeakEntry { get; set; } = false;
+
+    public bool AvoidSameDayStoppedSymbols { get; set; } = true;
 }
 
 public sealed class SailorProfileSettings

@@ -12,16 +12,22 @@ public sealed class PaperConductLoop
     private readonly Action<string> _log;
     private readonly OrderLedgerStore _ledger;
     private readonly TradeLifecycleRegistryStore _tradeRegistry;
+    private readonly ScannerSlotManager? _scannerSlotManager;
 
-    public PaperConductLoop(SailorRuntimeMode mode, Action<string> log, TradeLifecycleRegistryStore? tradeRegistry = null)
+    public PaperConductLoop(
+        SailorRuntimeMode mode,
+        Action<string> log,
+        TradeLifecycleRegistryStore? tradeRegistry = null,
+        ScannerSlotManager? scannerSlotManager = null)
     {
         _log = log;
         _ledger = new OrderLedgerStore(mode);
         _tradeRegistry = tradeRegistry ?? new TradeLifecycleRegistryStore(mode);
+        _scannerSlotManager = scannerSlotManager;
     }
 
     public async Task<PaperRuntimeHostResult> RunAsync(
-        IReadOnlyList<PaperSymbolSession> sessions,
+        List<PaperSymbolSession> sessions,
         IOrderRouter router,
         PaperRuntimeHostRequest request,
         SailorRuntimeState runtimeState,
@@ -48,6 +54,10 @@ public sealed class PaperConductLoop
         _log($"reconnectAttempts={request.ReconnectAttempts} reconnectBackoffSeconds={request.ReconnectBackoffSeconds} simulateDisconnectAtIteration={request.SimulateDisconnectAtIteration}");
         _log($"router={router.RouterName}");
         _log("SAILOR-054 lifecycle entry gates are active: default single-lifecycle, V21-V24 multi-cycle before LastEntryMinute, manual/unknown exit-only.");
+        if (_scannerSlotManager is not null)
+        {
+            _log($"SAILOR-055 scanner slot replenishment gate is active: {_scannerSlotManager.ToDisplayString()}");
+        }
         _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
 
@@ -75,7 +85,7 @@ public sealed class PaperConductLoop
 
             _log($"Iteration {iteration}/{request.MaxIterations} heartbeatUtc={DateTimeOffset.UtcNow:O} safety={healthMonitor.SafetyState.Mode}");
 
-            foreach (PaperSymbolSession session in sessions)
+            foreach (PaperSymbolSession session in sessions.ToArray())
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -262,6 +272,40 @@ public sealed class PaperConductLoop
                     string lifecycleCloseReason = $"SAILOR-054 {session.LifecyclePolicy.Mode.ToDisplayName()} closed the entry window after strategy exit receipt {receipt.Status}.";
                     session.MarkLifecycleClosedAfterStrategyExit(lifecycleCloseReason);
                     _log($"{session.Symbol}: {lifecycleCloseReason}");
+                }
+            }
+
+            if (_scannerSlotManager is not null)
+            {
+                ScannerSlotReplenishmentReport? slotReport = await _scannerSlotManager.TryReplenishIfDueAsync(
+                    sessions,
+                    request,
+                    healthMonitor,
+                    cancellationToken).ConfigureAwait(false);
+                if (slotReport is not null)
+                {
+                    _log("SAILOR-055 scanner slot replenishment report");
+                    _log(slotReport.ToSummaryString());
+                    if (slotReport.NewSlotsCreated > 0)
+                    {
+                        runtimeState.SetActiveSymbols(sessions.Select(session => session.Symbol));
+                    }
+                    if (!string.IsNullOrWhiteSpace(slotReport.JsonPath))
+                    {
+                        _log($"Scanner slot latest JSON: {slotReport.JsonPath}");
+                    }
+                    if (!string.IsNullOrWhiteSpace(slotReport.CsvPath))
+                    {
+                        _log($"Scanner slot CSV: {slotReport.CsvPath}");
+                    }
+                    foreach (string blockedSymbol in slotReport.BlockedSymbols.Take(30))
+                    {
+                        _log($"scanner-slot-blocked: {blockedSymbol}");
+                    }
+                    if (slotReport.BlockedSymbols.Count > 30)
+                    {
+                        _log($"scanner-slot-blocked: ... {slotReport.BlockedSymbols.Count - 30} more");
+                    }
                 }
             }
 

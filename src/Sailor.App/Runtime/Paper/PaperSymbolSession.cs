@@ -74,6 +74,8 @@ public sealed class PaperSymbolSession
 
     public bool ScannerSlotActive => TradeOrigin == SailorTradeOrigin.ScannerOwned && !string.IsNullOrWhiteSpace(ScannerSlotId);
 
+    public DateTimeOffset? LastFrameTime { get; private set; }
+
     public int PositionQuantity { get; private set; }
 
     public decimal AveragePrice { get; private set; }
@@ -153,9 +155,11 @@ public sealed class PaperSymbolSession
             _cursor++;
         }
 
+        LastFrameTime = _bars[_cursor].Time;
+
         return new SailorStrategyFrame(
             _mode,
-            _bars[_cursor].Time,
+            LastFrameTime.Value,
             Symbol,
             _timeframe,
             _bars.Take(_cursor + 1).ToArray(),
