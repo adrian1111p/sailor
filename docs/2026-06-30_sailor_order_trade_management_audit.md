@@ -828,6 +828,14 @@ OrderSupervisor:
 
 ### SAILOR-054 — Strategy lifecycle policies
 
+Implementation status update after SAILOR-054 source changes:
+
+- Added `StrategyLifecycleMode`, `StrategyLifecyclePolicy`, and `StrategyLifecyclePolicyResolver`.
+- Added `StrategyLifecyclePolicies` settings with defaults for V21/V22/V23/V24 and `default`.
+- Attached one lifecycle policy to every `PaperSymbolSession` created by the SAILOR-053 dynamic session plan.
+- Added runtime entry gates: manual/unknown broker sessions are exit-only; V21-V24 may re-enter before universal `LastEntryMinute=945`; all other profiles close their entry window after a strategy exit.
+- Preserved the universal `LastEntryMinute=945` and `ForceFlatMinute=955` safety rule.
+
 Add policy map:
 
 ```json

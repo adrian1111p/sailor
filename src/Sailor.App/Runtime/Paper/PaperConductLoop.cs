@@ -47,6 +47,7 @@ public sealed class PaperConductLoop
         _log($"cadence={request.CadenceSeconds}s iterations={request.MaxIterations} sendOrders={request.SendOrders} dryRun={request.DryRun} canOpenEntries={request.CanOpenEntries} forceFlatNow={request.ForceFlatNow} enforceMaxNotional={request.EnforceMaxOrderNotional} maxNotional={request.MaxOrderNotional:F2}");
         _log($"reconnectAttempts={request.ReconnectAttempts} reconnectBackoffSeconds={request.ReconnectBackoffSeconds} simulateDisconnectAtIteration={request.SimulateDisconnectAtIteration}");
         _log($"router={router.RouterName}");
+        _log("SAILOR-054 lifecycle entry gates are active: default single-lifecycle, V21-V24 multi-cycle before LastEntryMinute, manual/unknown exit-only.");
         _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
 
@@ -126,6 +127,19 @@ public sealed class PaperConductLoop
                     continue;
                 }
 
+                if (isEntry)
+                {
+                    int easternMinuteOfDay = MarketTime.GetEasternMinuteOfDay(frame.Time);
+                    StrategyLifecycleEntryDecision entryDecision = session.EvaluateEntryPolicy(easternMinuteOfDay, request.RuntimeOptions.LastEntryMinute);
+                    if (!entryDecision.AllowEntry)
+                    {
+                        string warning = $"{session.Symbol}: entry blocked by lifecycle policy {session.LifecyclePolicy.Mode.ToDisplayName()}. {entryDecision.Reason}";
+                        warnings.Add(warning);
+                        _log($"WARN: {warning}");
+                        continue;
+                    }
+                }
+
                 if (isExitOrFlatten && !healthMonitor.SafetyState.CanRouteExits)
                 {
                     string warning = $"{session.Symbol}: exit/flatten order blocked because runtime safety is {healthMonitor.SafetyState.Mode}. {healthMonitor.SafetyState.Reason}";
@@ -134,13 +148,6 @@ public sealed class PaperConductLoop
                     continue;
                 }
 
-                if (isEntry && MarketTime.GetEasternMinuteOfDay(frame.Time) >= request.RuntimeOptions.LastEntryMinute)
-                {
-                    string warning = $"{session.Symbol}: entry blocked because bar time is after last-entry minute {request.RuntimeOptions.LastEntryMinute} ET.";
-                    warnings.Add(warning);
-                    _log($"WARN: {warning}");
-                    continue;
-                }
 
                 if (decision.Type == SailorStrategyDecisionType.EnterShort && !request.RuntimeOptions.AllowShort)
                 {
@@ -245,6 +252,17 @@ public sealed class PaperConductLoop
                     scannerSlotId: session.ScannerSlotId,
                     sourceMessage: $"SAILOR-053 conduct loop decision={decision.Type} origin={session.TradeOrigin.ToDisplayName()} positionUpdated={positionUpdated}. {updateMessage}");
                 _log($"Trade lifecycle: {lifecycle.ToDisplayString()}");
+
+                if (positionUpdated
+                    && isExitOrFlatten
+                    && positionBefore.HasOpenPosition
+                    && !session.HasOpenPosition
+                    && session.LifecyclePolicy.ShouldCloseEntryWindowAfterStrategyExit(session.TradeOrigin))
+                {
+                    string lifecycleCloseReason = $"SAILOR-054 {session.LifecyclePolicy.Mode.ToDisplayName()} closed the entry window after strategy exit receipt {receipt.Status}.";
+                    session.MarkLifecycleClosedAfterStrategyExit(lifecycleCloseReason);
+                    _log($"{session.Symbol}: {lifecycleCloseReason}");
+                }
             }
 
             _log("");

@@ -31,6 +31,7 @@ public sealed class PaperSymbolSession
         SailorStrategyAdapter strategy,
         SailorTradeOrigin tradeOrigin,
         string? scannerSlotId,
+        StrategyLifecyclePolicy lifecyclePolicy,
         int startIndex,
         int quantity,
         decimal averagePrice,
@@ -46,6 +47,7 @@ public sealed class PaperSymbolSession
         Strategy = strategy;
         TradeOrigin = tradeOrigin;
         ScannerSlotId = string.IsNullOrWhiteSpace(scannerSlotId) ? null : scannerSlotId.Trim();
+        LifecyclePolicy = lifecyclePolicy;
         _cursor = Math.Clamp(startIndex - 1, 0, Math.Max(0, bars.Count - 1));
         PositionQuantity = quantity;
         AveragePrice = averagePrice;
@@ -63,6 +65,14 @@ public sealed class PaperSymbolSession
     public SailorTradeOrigin TradeOrigin { get; }
 
     public string? ScannerSlotId { get; }
+
+    public StrategyLifecyclePolicy LifecyclePolicy { get; }
+
+    public bool LifecycleClosedForEntry { get; private set; }
+
+    public string? LifecycleClosedReason { get; private set; }
+
+    public bool ScannerSlotActive => TradeOrigin == SailorTradeOrigin.ScannerOwned && !string.IsNullOrWhiteSpace(ScannerSlotId);
 
     public int PositionQuantity { get; private set; }
 
@@ -89,6 +99,7 @@ public sealed class PaperSymbolSession
         BrokerPositionRow? brokerSeed,
         SailorTradeOrigin tradeOrigin,
         string? scannerSlotId,
+        StrategyLifecyclePolicy lifecyclePolicy,
         int maxIterations)
     {
         var provider = new CsvBacktestDataProvider();
@@ -128,6 +139,7 @@ public sealed class PaperSymbolSession
             strategy,
             tradeOrigin,
             scannerSlotId,
+            lifecyclePolicy,
             startIndex,
             quantity,
             averagePrice,
@@ -187,11 +199,31 @@ public sealed class PaperSymbolSession
             ? new SailorStrategyPositionContext(true, PositionQuantity, AveragePrice, EntryBarIndex)
             : SailorStrategyPositionContext.Flat;
 
+    public StrategyLifecycleEntryDecision EvaluateEntryPolicy(int easternMinuteOfDay, int lastEntryMinute)
+        => LifecyclePolicy.EvaluateEntry(
+            TradeOrigin,
+            ScannerSlotActive,
+            LifecycleClosedForEntry,
+            easternMinuteOfDay,
+            lastEntryMinute);
+
+    public void MarkLifecycleClosedAfterStrategyExit(string reason)
+    {
+        if (LifecycleClosedForEntry)
+        {
+            return;
+        }
+
+        LifecycleClosedForEntry = true;
+        LifecycleClosedReason = string.IsNullOrWhiteSpace(reason) ? "strategy-exit" : reason.Trim();
+    }
+
     public string PositionDisplay()
     {
         string side = PositionQuantity > 0 ? "LONG" : PositionQuantity < 0 ? "SHORT" : "FLAT";
         string slot = string.IsNullOrWhiteSpace(ScannerSlotId) ? "slot=n/a" : $"slot={ScannerSlotId}";
-        return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex} origin={TradeOrigin.ToDisplayName()} {slot}";
+        string lifecycleClosed = LifecycleClosedForEntry ? " entryClosed=True" : string.Empty;
+        return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex} origin={TradeOrigin.ToDisplayName()} {slot} lifecycle={LifecyclePolicy.Mode.ToDisplayName()}{lifecycleClosed}";
     }
 
     public bool ApplyReceipt(

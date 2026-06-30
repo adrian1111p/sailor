@@ -71,6 +71,7 @@ public static class SailorSettingsLoader
         settings.Runtime ??= new SailorRuntimeSettings();
         settings.ConductProfiles ??= new Dictionary<string, ConductExitSettings>(StringComparer.OrdinalIgnoreCase);
         settings.Scanner ??= new ScannerSettings();
+        settings.StrategyLifecyclePolicies = NormalizeStrategyLifecyclePolicies(settings.StrategyLifecyclePolicies);
         settings.Profiles ??= new Dictionary<string, SailorProfileSettings>(StringComparer.OrdinalIgnoreCase);
 
         NormalizeRisk(settings.Risk);
@@ -117,6 +118,36 @@ public static class SailorSettingsLoader
         }
 
         return settings;
+    }
+
+
+    private static Dictionary<string, string> NormalizeStrategyLifecyclePolicies(Dictionary<string, string>? configuredPolicies)
+    {
+        var policies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["default"] = "SingleLifecycleUntilStrategyExit",
+            ["v21-15minutes"] = "MultiCycleUntilLastEntryMinute",
+            ["v22-15minutes"] = "MultiCycleUntilLastEntryMinute",
+            ["v23-5minutes"] = "MultiCycleUntilLastEntryMinute",
+            ["v24-5minutes"] = "MultiCycleUntilLastEntryMinute"
+        };
+
+        if (configuredPolicies is null)
+        {
+            return policies;
+        }
+
+        foreach (KeyValuePair<string, string> pair in configuredPolicies)
+        {
+            if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+            {
+                continue;
+            }
+
+            policies[pair.Key.Trim()] = pair.Value.Trim();
+        }
+
+        return policies;
     }
 
     private static void NormalizeRisk(BacktestRiskSettings risk)

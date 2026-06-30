@@ -20,6 +20,8 @@ public sealed class SailorAppSettings
 
     public ScannerSettings Scanner { get; set; } = new();
 
+    public Dictionary<string, string> StrategyLifecyclePolicies { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     public Dictionary<string, SailorProfileSettings> Profiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 

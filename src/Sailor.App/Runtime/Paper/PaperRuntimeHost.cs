@@ -172,7 +172,14 @@ public sealed class PaperRuntimeHost
 
         _log("");
 
-        IReadOnlyList<PaperSymbolSession> sessions = CreateSessions(request, sessionPlan.Seeds, warnings, tradeRegistry);
+        var lifecyclePolicyResolver = new StrategyLifecyclePolicyResolver(_settings);
+        _log("SAILOR-054 strategy lifecycle policies.");
+        _log("V21/V22/V23/V24 are multi-cycle only before the universal LastEntryMinute; default profiles are single-lifecycle; manual/unknown broker trades are exit-only.");
+        _log(lifecyclePolicyResolver.ToSummaryString());
+        _log($"universalLastEntryMinute={request.RuntimeOptions.LastEntryMinute} universalForceFlatMinute={request.RuntimeOptions.ForceFlatMinute}");
+        _log("");
+
+        IReadOnlyList<PaperSymbolSession> sessions = CreateSessions(request, sessionPlan.Seeds, warnings, tradeRegistry, lifecyclePolicyResolver);
         if (sessions.Count == 0)
         {
             warnings.Add("No symbols were activated. Conduct loop did not start.");
@@ -186,7 +193,7 @@ public sealed class PaperRuntimeHost
         _log("----------------------");
         foreach (PaperSymbolSession session in sessions)
         {
-            _log($"{session.Symbol}: data={session.DataSourcePath} snapshotL1={session.MarketSnapshot?.HasL1 == true} snapshotL2={session.MarketSnapshot?.HasL2 == true} seedPosition={session.PositionDisplay()} strategy={session.Strategy.Name}");
+            _log($"{session.Symbol}: data={session.DataSourcePath} snapshotL1={session.MarketSnapshot?.HasL1 == true} snapshotL2={session.MarketSnapshot?.HasL2 == true} seedPosition={session.PositionDisplay()} strategy={session.Strategy.Name} policy={session.LifecyclePolicy.ToDisplayString()}");
         }
 
         _log("");
@@ -233,7 +240,8 @@ public sealed class PaperRuntimeHost
         PaperRuntimeHostRequest request,
         IReadOnlyList<DynamicTradeSessionSeed> seeds,
         List<string> warnings,
-        TradeLifecycleRegistryStore tradeRegistry)
+        TradeLifecycleRegistryStore tradeRegistry,
+        StrategyLifecyclePolicyResolver lifecyclePolicyResolver)
     {
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(request.RuntimeOptions.ProfileName, _settings);
 
@@ -277,7 +285,10 @@ public sealed class PaperRuntimeHost
                     brokerSeed,
                     origin,
                     seed.ScannerSlotId,
+                    lifecyclePolicyResolver.Resolve(profile.Name, origin),
                     request.MaxIterations);
+
+                StrategyLifecyclePolicy lifecyclePolicy = session.LifecyclePolicy;
 
                 TradeLifecycle lifecycle = tradeRegistry.RegisterRuntimeSession(
                     normalizedSymbol,
@@ -290,7 +301,7 @@ public sealed class PaperRuntimeHost
                     request.Account,
                     $"SAILOR-053 dynamic session registered. {seed.Reason}");
 
-                _log($"{normalizedSymbol}: tradeLifecycle={lifecycle.TradeId} origin={lifecycle.Origin.ToDisplayName()} status={lifecycle.Status.ToDisplayName()} scannerSlot={lifecycle.ScannerSlotId ?? "n/a"} dynamicReason={seed.Reason}");
+                _log($"{normalizedSymbol}: tradeLifecycle={lifecycle.TradeId} origin={lifecycle.Origin.ToDisplayName()} status={lifecycle.Status.ToDisplayName()} scannerSlot={lifecycle.ScannerSlotId ?? "n/a"} lifecycle={lifecyclePolicy.Mode.ToDisplayName()} dynamicReason={seed.Reason}");
                 sessions.Add(session);
             }
             catch (Exception ex)
