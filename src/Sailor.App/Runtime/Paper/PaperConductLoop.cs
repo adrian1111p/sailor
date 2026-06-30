@@ -13,17 +13,20 @@ public sealed class PaperConductLoop
     private readonly OrderLedgerStore _ledger;
     private readonly TradeLifecycleRegistryStore _tradeRegistry;
     private readonly ScannerSlotManager? _scannerSlotManager;
+    private readonly SevereDisconnectRecoveryOrchestrator? _severeDisconnectRecoveryOrchestrator;
 
     public PaperConductLoop(
         SailorRuntimeMode mode,
         Action<string> log,
         TradeLifecycleRegistryStore? tradeRegistry = null,
-        ScannerSlotManager? scannerSlotManager = null)
+        ScannerSlotManager? scannerSlotManager = null,
+        SevereDisconnectRecoveryOrchestrator? severeDisconnectRecoveryOrchestrator = null)
     {
         _log = log;
         _ledger = new OrderLedgerStore(mode);
         _tradeRegistry = tradeRegistry ?? new TradeLifecycleRegistryStore(mode);
         _scannerSlotManager = scannerSlotManager;
+        _severeDisconnectRecoveryOrchestrator = severeDisconnectRecoveryOrchestrator;
     }
 
     public async Task<PaperRuntimeHostResult> RunAsync(
@@ -57,6 +60,10 @@ public sealed class PaperConductLoop
         if (_scannerSlotManager is not null)
         {
             _log($"SAILOR-055 scanner slot replenishment gate is active: {_scannerSlotManager.ToDisplayString()}");
+        }
+        if (_severeDisconnectRecoveryOrchestrator is not null)
+        {
+            _log($"SAILOR-056 severe disconnect recovery orchestrator is active. Recovery JSON: {_severeDisconnectRecoveryOrchestrator.LatestJsonPath}");
         }
         _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
@@ -337,6 +344,37 @@ public sealed class PaperConductLoop
             }
 
             recoveryAttempted = true;
+
+            if (_severeDisconnectRecoveryOrchestrator is not null)
+            {
+                SevereDisconnectRecoveryResult severeRecovery = await _severeDisconnectRecoveryOrchestrator.RecoverAsync(
+                    sessions,
+                    request,
+                    runtimeState,
+                    healthMonitor,
+                    recoveryService,
+                    reason,
+                    cancellationToken).ConfigureAwait(false);
+
+                _log("SAILOR-056 severe disconnect recovery report");
+                _log(severeRecovery.Report.ToSummaryString());
+                _log($"Severe recovery latest JSON: {severeRecovery.Report.JsonPath}");
+                _log($"Severe recovery CSV: {severeRecovery.Report.CsvPath}");
+
+                foreach (string recoveryEvent in severeRecovery.Report.Events)
+                {
+                    _log($"recovery-event: {recoveryEvent}");
+                }
+
+                foreach (string recoveryWarning in severeRecovery.Report.Warnings)
+                {
+                    warnings.Add(recoveryWarning);
+                    _log($"WARN: {recoveryWarning}");
+                }
+
+                return;
+            }
+
             runtimeState.SetStatus(SailorRuntimeStatus.Reconnecting, $"SAILOR-031 reconnect/reconcile after {reason}.");
 
             ConnectionRecoveryResult recoveryResult = await recoveryService.TryRecoverAsync(

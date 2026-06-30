@@ -898,19 +898,47 @@ reason
 
 ### SAILOR-056 — Severe disconnect recovery orchestrator
 
-Implementation steps:
+Status: implemented as a safe runtime recovery scaffold on 2026-06-30.
 
-1. Detect severe disconnect.
-2. Move to CloseOnly.
-3. Reconnect.
-4. Build broker truth snapshot.
-5. Merge with registry.
-6. Create/resume sessions for every broker position and open order.
-7. Refresh history and candles for every session.
-8. Prioritize exits.
+Implemented behavior:
+
+1. Detect severe disconnect/degraded runtime state via the existing health monitor.
+2. Move runtime through reconnecting/close-only safety states.
+3. Reconnect through the existing `ConnectionRecoveryService`.
+4. Build broker truth from the recovered `ReconciliationResult`.
+5. Mirror broker state through SAILOR-052 and merge it into the SAILOR-051 registry.
+6. Create/resume sessions for every broker position and every broker open-order symbol.
+7. Refresh history/candles for recovered symbols through the scanner history path before rebuilding sessions.
+8. Prioritize exits by classifying unknown broker/open-order symbols as `UnknownBroker`, which is exit-only under SAILOR-054.
 9. Re-enable entries only after clean reconciliation and only before `LastEntryMinute=945`.
-10. Resume scanner replenishment only before 15:45 ET; after 15:45 ET resume exits/flatten/reconcile only.
-11. Write recovery report.
+10. Resume scanner replenishment only before 15:45 ET and only after clean reconciliation; after 15:45 ET recovery remains exits/flatten/reconcile only.
+11. Write JSON/CSV recovery reports under `logs/<mode>/Recovery`.
+
+Implementation files:
+
+- `SevereDisconnectRecoveryOrchestrator.cs`
+- `SevereDisconnectRecoveryReport.cs`
+- `SevereDisconnectRecoveryReportWriter.cs`
+- updates in `PaperRuntimeHost.cs`, `PaperConductLoop.cs`, `ScannerSlotManager.cs`, settings, and appsettings
+
+Recovery report fields:
+
+```text
+reconnectRecovered
+reconciliationStatus
+brokerTruthAvailable
+sessionsRebuilt
+historyRefreshOk/historyRefreshTotal
+easternMinuteOfDay
+lastEntryMinute
+canResumeEntries
+scannerReplenishmentAllowed
+sessionsBefore/sessionsAfter
+brokerPositionSymbols
+brokerOpenOrderSymbols
+rebuiltSymbols
+warnings
+```
 
 ### SAILOR-057 — Order/trade management self-tests
 

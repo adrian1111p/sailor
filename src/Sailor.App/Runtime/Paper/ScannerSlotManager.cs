@@ -54,6 +54,9 @@ public sealed class ScannerSlotManager
     public string ToDisplayString()
         => $"targetScannerTrades={TargetScannerTrades} replenishIntervalSeconds={ReplenishIntervalSeconds} allowWeakEntry={ReplenishmentAllowWeakEntry} avoidSameDayStoppedSymbols={AvoidSameDayStoppedSymbols}";
 
+    public void RequestImmediateReplenishment()
+        => _nextReplenishmentUtc = DateTimeOffset.MinValue;
+
     public ScannerSlotReplenishmentReport WriteStatusReport(
         IReadOnlyList<PaperSymbolSession> sessions,
         string reason)

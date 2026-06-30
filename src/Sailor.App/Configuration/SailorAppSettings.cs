@@ -215,6 +215,14 @@ public sealed class SailorRuntimeSafetySettings
     public int HeartbeatSeconds { get; set; } = 10;
 
     public bool EmergencyFlattenOnDisconnect { get; set; } = true;
+
+    public bool SevereDisconnectRecoveryEnabled { get; set; } = true;
+
+    public bool SevereDisconnectRefreshHistoryBeforeResume { get; set; } = true;
+
+    public bool SevereDisconnectResumeEntriesOnlyAfterCleanReconciliation { get; set; } = true;
+
+    public bool SevereDisconnectResumeScannerBeforeLastEntry { get; set; } = true;
 }
 
 public sealed class ScannerSettings

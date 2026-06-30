@@ -221,7 +221,29 @@ public sealed class PaperRuntimeHost
             request.PrimaryExchange,
             request.WaitSeconds);
 
-        var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, tradeRegistry, scannerSlotManager);
+        SevereDisconnectRecoveryOrchestrator? severeRecoveryOrchestrator = _settings.Runtime.Safety.SevereDisconnectRecoveryEnabled
+            ? new SevereDisconnectRecoveryOrchestrator(
+                _settings,
+                request.ConnectionOptions,
+                tradeRegistry,
+                lifecyclePolicyResolver,
+                scannerSlotManager,
+                _log,
+                request.RuntimeOptions.Mode)
+            : null;
+
+        _log("SAILOR-056 severe disconnect recovery orchestrator.");
+        _log(_settings.Runtime.Safety.SevereDisconnectRecoveryEnabled
+            ? "Severe disconnect recovery will reconnect, rebuild broker-truth sessions, refresh history, and resume entries only after clean reconciliation before LastEntryMinute."
+            : "Severe disconnect recovery orchestrator is disabled by Runtime.Safety.SevereDisconnectRecoveryEnabled=false; legacy reconnect-only behavior remains active.");
+        if (severeRecoveryOrchestrator is not null)
+        {
+            _log($"Severe recovery latest JSON: {severeRecoveryOrchestrator.LatestJsonPath}");
+            _log($"Severe recovery CSV: {severeRecoveryOrchestrator.DailyCsvPath}");
+        }
+        _log("");
+
+        var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, tradeRegistry, scannerSlotManager, severeRecoveryOrchestrator);
         PaperRuntimeHostResult loopResult = await conductLoop.RunAsync(
             sessions,
             router,
