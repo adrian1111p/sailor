@@ -15,6 +15,7 @@ using Sailor.App.Reporting;
 using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.Live;
 using Sailor.App.Runtime.Paper;
+using Sailor.App.Runtime.TradeManagement;
 using Sailor.App.Scanner.Runtime;
 using Sailor.App.Scanner.ScanList;
 using Sailor.App.Scanner.Universe;
@@ -84,6 +85,10 @@ public static class SailorRuntimeCommandRunner
             case "status":
             case "positions":
                 await RunStatusAsync(mode, settings);
+                break;
+
+            case "trades":
+                await RunTradesAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
             case "reconcile":
@@ -2125,6 +2130,23 @@ public static class SailorRuntimeCommandRunner
         Log(writer, $"Ledger JSONL: {ledgerPath}");
         Log(writer, $"Ledger CSV:   {ledger.DailyCsvPath}");
 
+        var tradeRegistry = new TradeLifecycleRegistryStore(mode);
+        int registryQuantityAfter = EstimateManualCommandPositionAfter(intent, receipt);
+        decimal registryAveragePrice = receipt.AverageFillPrice > 0m
+            ? receipt.AverageFillPrice
+            : limitPrice ?? 0m;
+        TradeLifecycle lifecycle = tradeRegistry.ApplyOrderReceipt(
+            intent,
+            receipt,
+            SailorTradeOrigin.SailorManualCommand,
+            registryQuantityAfter,
+            registryAveragePrice,
+            scannerSlotId: null,
+            sourceMessage: "SAILOR-051 manual order command lifecycle evidence.");
+        Log(writer, $"Trade registry latest JSON: {tradeRegistry.LatestJsonPath}");
+        Log(writer, $"Trade registry event JSONL: {tradeRegistry.DailyJsonlPath}");
+        Log(writer, $"Trade lifecycle: {lifecycle.ToDisplayString()}");
+
         if (receipt.Events.Count > 0)
         {
             Log(writer, "");
@@ -2149,6 +2171,60 @@ public static class SailorRuntimeCommandRunner
 
         Log(writer, "");
         Log(writer, receipt.SentToBroker ? "Order was sent to IBKR paper." : "No order was sent to broker.");
+        Log(writer, $"Runtime log: {logFilePath}");
+    }
+
+    private static async Task RunTradesAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        string subcommand = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.OrdinalIgnoreCase))?.Trim().ToLowerInvariant() ?? "status";
+        if (subcommand is not "status" and not "list")
+        {
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} trades status [--all] [--symbol TSLA]");
+            return;
+        }
+
+        _ = settings;
+        bool includeClosed = args.Any(arg => arg.Equals("--all", StringComparison.OrdinalIgnoreCase));
+        string symbolFilter = ReadStringOption(args, "--symbol", string.Empty).Trim().ToUpperInvariant();
+        var tradeRegistry = new TradeLifecycleRegistryStore(mode);
+        TradeLifecycleRegistrySnapshot snapshot = tradeRegistry.LoadSnapshot();
+        IReadOnlyList<TradeLifecycle> trades = snapshot.Trades
+            .Where(trade => includeClosed || trade.IsActive)
+            .Where(trade => string.IsNullOrWhiteSpace(symbolFilter) || trade.NormalizedSymbol.Equals(symbolFilter, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(trade => trade.IsActive)
+            .ThenBy(trade => trade.Symbol, StringComparer.OrdinalIgnoreCase)
+            .ThenByDescending(trade => trade.UpdatedUtc)
+            .ToArray();
+
+        string logFilePath = CreateRuntimeLogFilePath(mode, "trades_status");
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {mode.ToDisplayName()} trades status");
+        Log(writer, "SAILOR-051 trade lifecycle registry and ownership model.");
+        Log(writer, "This command reads local registry evidence only. It does not connect to TWS, reconcile broker state, conduct strategies, or send orders.");
+        Log(writer, $"Trade registry latest JSON: {tradeRegistry.LatestJsonPath}");
+        Log(writer, $"Trade registry event JSONL: {tradeRegistry.DailyJsonlPath}");
+        Log(writer, snapshot.ToSummaryString());
+        Log(writer, $"filter activeOnly={!includeClosed} symbol={(string.IsNullOrWhiteSpace(symbolFilter) ? "all" : symbolFilter)} displayed={trades.Count}");
+        Log(writer, "");
+
+        if (trades.Count == 0)
+        {
+            Log(writer, "No trade lifecycles found for this filter.");
+        }
+        else
+        {
+            Log(writer, "Trade lifecycles");
+            Log(writer, "----------------");
+            foreach (TradeLifecycle trade in trades)
+            {
+                Log(writer, trade.ToDisplayString());
+            }
+        }
+
+        Log(writer, "");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -2563,6 +2639,23 @@ public static class SailorRuntimeCommandRunner
         Log(writer, receipt.ToDisplayString());
         Log(writer, $"Ledger JSONL: {ledgerPath}");
         Log(writer, $"Ledger CSV:   {ledger.DailyCsvPath}");
+
+        var tradeRegistry = new TradeLifecycleRegistryStore(mode);
+        int registryQuantityAfter = EstimateManualCommandPositionAfter(intent, receipt);
+        decimal registryAveragePrice = receipt.AverageFillPrice > 0m
+            ? receipt.AverageFillPrice
+            : position.AverageCost;
+        TradeLifecycle lifecycle = tradeRegistry.ApplyOrderReceipt(
+            intent,
+            receipt,
+            SailorTradeOrigin.UnknownBroker,
+            registryQuantityAfter,
+            registryAveragePrice,
+            scannerSlotId: null,
+            sourceMessage: "SAILOR-051 live close-only flatten lifecycle evidence.");
+        Log(writer, $"Trade registry latest JSON: {tradeRegistry.LatestJsonPath}");
+        Log(writer, $"Trade registry event JSONL: {tradeRegistry.DailyJsonlPath}");
+        Log(writer, $"Trade lifecycle: {lifecycle.ToDisplayString()}");
         foreach (string evt in receipt.Events)
         {
             Log(writer, $"event: {evt}");
@@ -3115,6 +3208,27 @@ public static class SailorRuntimeCommandRunner
         return $"{string.Join(", ", symbols.Take(Math.Max(1, max)))}{(symbols.Count > max ? ", ..." : string.Empty)}";
     }
 
+    private static int EstimateManualCommandPositionAfter(SailorOrderIntent intent, SailorOrderReceipt receipt)
+    {
+        int fillQuantity = receipt.Status == SailorOrderStatus.DryRun
+            ? intent.Quantity
+            : receipt.FilledQuantity;
+
+        if (fillQuantity <= 0)
+        {
+            return 0;
+        }
+
+        return intent.Side switch
+        {
+            SailorOrderSide.Buy => fillQuantity,
+            SailorOrderSide.SellShort => -fillQuantity,
+            SailorOrderSide.Sell => 0,
+            SailorOrderSide.BuyToCover => 0,
+            _ => 0
+        };
+    }
+
     private static StreamWriter CreateWriter(string logFilePath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(logFilePath)!);
@@ -3180,6 +3294,8 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} order TSLA BUY 1 LMT 350.00 --send-orders");
         Console.WriteLine($"  sailor {name} status");
         Console.WriteLine($"  sailor {name} positions");
+        Console.WriteLine($"  sailor {name} trades status");
+        Console.WriteLine($"  sailor {name} trades status --all --symbol TSLA");
         Console.WriteLine($"  sailor {name} reconcile --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} reconcile --local-only");
         Console.WriteLine($"  sailor {name} report latest");
@@ -3209,6 +3325,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - SAILOR-038 adds scan-list memory evidence, removed-symbol retention, history batch planning, and the in-memory candle merge foundation");
         Console.WriteLine("  - SAILOR-047 adds paper scan-points diagnostics for points-only scanner audit without starting conduct or routing orders");
         Console.WriteLine("  - SAILOR-048 adds live points-pilot gating, scan-points-test regression diagnostics, and final points-scanner operator commands");
+        Console.WriteLine("  - SAILOR-051 records trade lifecycle ownership under state/{paper|live}/trades and exposes trades status");
         Console.WriteLine("  - scan-list inputs support 5-minute refresh, daily list changes, intraday additions, and top-N trade eligibility contracts for the next dynamic runtime milestone");
         Console.WriteLine("  - SAILOR-034 consumes the live-readiness gate for a one-symbol live pilot");
         Console.WriteLine("  - live pilot enforces one explicit symbol, small max notional, operator-watching-TWS acknowledgement, long-only default, pre-run reconciliation, and final zero exposure");

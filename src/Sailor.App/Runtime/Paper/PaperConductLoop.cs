@@ -2,6 +2,7 @@ using Sailor.App.Backtest;
 using Sailor.App.Broker.Orders;
 using Sailor.App.Broker.State;
 using Sailor.App.Runtime.Common;
+using Sailor.App.Runtime.TradeManagement;
 using Sailor.App.Strategy.Runtime;
 
 namespace Sailor.App.Runtime.Paper;
@@ -10,11 +11,13 @@ public sealed class PaperConductLoop
 {
     private readonly Action<string> _log;
     private readonly OrderLedgerStore _ledger;
+    private readonly TradeLifecycleRegistryStore _tradeRegistry;
 
-    public PaperConductLoop(SailorRuntimeMode mode, Action<string> log)
+    public PaperConductLoop(SailorRuntimeMode mode, Action<string> log, TradeLifecycleRegistryStore? tradeRegistry = null)
     {
         _log = log;
         _ledger = new OrderLedgerStore(mode);
+        _tradeRegistry = tradeRegistry ?? new TradeLifecycleRegistryStore(mode);
     }
 
     public async Task<PaperRuntimeHostResult> RunAsync(
@@ -222,7 +225,8 @@ public sealed class PaperConductLoop
                     await TryRecoverIfNeededAsync($"order receipt for {intent.NormalizedSymbol}").ConfigureAwait(false);
                 }
 
-                if (session.ApplyReceipt(intent, receipt, bar.Close, request.DryRun, indicators.BarIndex, out string updateMessage))
+                bool positionUpdated = session.ApplyReceipt(intent, receipt, bar.Close, request.DryRun, indicators.BarIndex, out string updateMessage);
+                if (positionUpdated)
                 {
                     filledOrAssumedFillCount++;
                     _log(updateMessage);
@@ -231,6 +235,16 @@ public sealed class PaperConductLoop
                 {
                     _log(updateMessage);
                 }
+
+                TradeLifecycle lifecycle = _tradeRegistry.ApplyOrderReceipt(
+                    intent,
+                    receipt,
+                    SailorTradeOrigin.ScannerOwned,
+                    session.PositionQuantity,
+                    session.AveragePrice,
+                    scannerSlotId: null,
+                    sourceMessage: $"SAILOR-051 conduct loop decision={decision.Type} positionUpdated={positionUpdated}. {updateMessage}");
+                _log($"Trade lifecycle: {lifecycle.ToDisplayString()}");
             }
 
             _log("");

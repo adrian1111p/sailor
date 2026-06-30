@@ -1056,3 +1056,82 @@ SAILOR-057 — Trade-management self-tests
 ```
 
 The highest priority is SAILOR-051 + SAILOR-052. Without trade ownership and broker-state truth, SAILOR cannot safely decide whether a trade is scanner-owned, manual, pre-existing, stopped for day, or eligible for scanner re-entry.
+
+---
+
+## 12. SAILOR-051 implementation update — trade lifecycle registry and ownership model
+
+Date: 2026-06-30  
+Status: implemented as the first source milestone after this audit.
+
+SAILOR-051 implements the persistent registry foundation proposed in section 9.
+
+### 12.1 Implemented now
+
+New persistent files:
+
+```text
+state/{paper|live}/trades/trade_registry_latest.json
+state/{paper|live}/trades/trade_registry_yyyyMMdd.jsonl
+```
+
+New source namespace:
+
+```text
+Sailor.App.Runtime.TradeManagement
+```
+
+New model:
+
+```text
+TradeLifecycle
+TradeLifecycleStatus
+SailorTradeOrigin
+TradeLifecycleRegistrySnapshot
+TradeLifecycleRegistryStore
+TradeLifecycleEvent
+```
+
+New command:
+
+```powershell
+sailor paper trades status
+sailor paper trades status --all --symbol TSLA
+```
+
+### 12.2 Ownership model now available
+
+SAILOR can now persist the ownership type of a lifecycle:
+
+```text
+ScannerOwned        -> selected by scanner; future scanner target accounting uses only this origin
+SailorPreExisting   -> selected session had an existing broker/local position seed
+ExplicitRuntime     -> explicit/fallback runtime symbol
+SailorManualCommand -> created by sailor order command
+UnknownBroker       -> broker-sourced lifecycle not yet classified by the broker mirror
+ManualPreStart      -> reserved for SAILOR-052
+ManualIntraday      -> reserved for SAILOR-052
+```
+
+### 12.3 Runtime integration now available
+
+During `paper run` / shared host activation, active sessions are registered before the conduct loop starts.
+
+During the conduct loop, every routed intent/receipt updates the registry after the local session position update.
+
+The manual order command path also writes registry evidence.
+
+### 12.4 Still not implemented in SAILOR-051
+
+SAILOR-051 does **not** yet implement:
+
+```text
+- continuous TWS broker-state mirror;
+- manual order/position detection after runtime start;
+- asynchronous per-symbol trade workers;
+- manual close = stop-for-day policy;
+- scanner target 10 replenishment every 5 minutes;
+- severe-disconnect full trade rebuild.
+```
+
+Those remain correctly assigned to SAILOR-052 through SAILOR-057.
