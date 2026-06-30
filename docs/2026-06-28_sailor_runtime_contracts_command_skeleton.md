@@ -902,3 +902,30 @@ pointsScore >= --points-min-trade-score
 ```
 
 This does not weaken existing live safety. Live orders still require explicit live confirmation, operator watching TWS, paper certification, account match, clean live reconciliation, max-notional gates, and data-quality clean evidence.
+
+## SAILOR-049 — Common points scoring for all strategy profiles
+
+SAILOR-049 makes the points scanner common for all resolved Sailor strategy profiles. The scanner no longer gives V18-Silver an exclusive add-on scoring layer. The former V18 add-on factors are now shared as profile-aware `PROFILE_*` factors.
+
+Common factor families:
+
+```text
+PROFILE_CANDLE_COLOR
+PROFILE_BAR_MOMENTUM
+PROFILE_VWAP_REVERSION
+PROFILE_VWAP_EXTENSION_OK/HIGH
+PROFILE_BODY_CONTROLLED/EXTENDED
+PROFILE_VOL_RATIO_OK/LOW/NOT_REQUIRED
+```
+
+Use the same command pattern for any strategy profile:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --scanner-mode points-only --no-depth --wait-seconds 15
+```
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --scanner-mode points-only --no-depth --wait-seconds 15
+```
+
+Scanner mode is common. Conduct entry behavior remains strategy-specific until a later conduct-entry refactor.

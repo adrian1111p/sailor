@@ -156,7 +156,14 @@ public sealed class PointsScanner
         ScorePrice(factors, legacyBlocks, latestBar.Close, profile);
         ScoreVolume(factors, legacyBlocks, latestBar, latestIndicators, volumeRatio, profile);
         ScoreDirectionalTrend(factors, legacyBlocks, latestBar, latestIndicators, profile, isShort, momentumPercent);
-        factors.AddRange(PointsScannerV18SilverScoring.Score(latestBar, previousBar, latestIndicators, profile, _settings, isShort, volumeRatio));
+        factors.AddRange(PointsScannerCommonStrategyScoring.Score(
+            latestBar,
+            previousBar,
+            latestIndicators,
+            profile,
+            _settings,
+            isShort,
+            volumeRatio));
 
         decimal score = factors.Sum(factor => factor.Points);
         return new PointsScannerSideScore(

@@ -138,3 +138,15 @@ dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- p
 ## Remaining limitation
 
 The scanner is now points-capable, but V18-Silver conduct still has legacy hard entry filters. The next milestone should decide whether to introduce a `points-approved` conduct entry context or a profile option that lets conduct trust the points scanner instead of re-applying the same hard blocks.
+
+## SAILOR-049 update — V18-only scorer replaced by common profile scorer
+
+SAILOR-046 Step 7 originally introduced `PointsScannerV18SilverScoring` as the first dedicated points add-on module. SAILOR-049 supersedes that runtime behavior.
+
+The real scorer used by `PointsScanner` is now:
+
+```text
+src/Sailor.App/Backtest/Scanner/Points/PointsScannerCommonStrategyScoring.cs
+```
+
+It applies the former V18-style add-on factors to every active strategy profile as profile-aware `PROFILE_*` factor codes. `PointsScannerV18SilverScoring` remains as a compatibility shim only.

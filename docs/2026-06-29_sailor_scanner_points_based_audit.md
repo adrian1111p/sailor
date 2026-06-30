@@ -1467,3 +1467,119 @@ docs/2026-06-29_sailor_points_scanner_steps_15_18_notes.md
 ```
 
 The audit remains the design source for the scanner migration.
+
+## 18. SAILOR-049 implementation — Common points scoring for all strategies
+
+Date: 2026-06-30
+
+SAILOR-049 makes the strongest scanner-side points scoring common to all strategy profiles.
+
+The earlier SAILOR-046 implementation introduced a V18-Silver-specific scoring module. That proved the points model worked, but it meant V18-Silver received richer factor evidence than other profiles.
+
+SAILOR-049 replaces that runtime behavior with a shared module:
+
+```text
+src/Sailor.App/Backtest/Scanner/Points/PointsScannerCommonStrategyScoring.cs
+```
+
+The main scanner now applies these common factors to every resolved `SailorStrategyProfile`:
+
+```text
+PROFILE_CANDLE_COLOR / PROFILE_CANDLE_COLOR_ADVERSE
+PROFILE_BAR_MOMENTUM / PROFILE_BAR_MOMENTUM_MISSING
+PROFILE_VWAP_REVERSION
+PROFILE_VWAP_EXTENSION_OK / PROFILE_VWAP_EXTENSION_HIGH / PROFILE_VWAP_MISSING
+PROFILE_BODY_CONTROLLED / PROFILE_BODY_EXTENDED
+PROFILE_VOL_RATIO_OK / PROFILE_VOL_RATIO_LOW / PROFILE_VOL_RATIO_NOT_REQUIRED
+```
+
+The factors are common, but not blind: they use the active profile's own settings such as `EntryMomentumPercent`, `MinimumVolumeRatio`, `SideMode`, and indicator requirements. Therefore `v18-silver`, `v21-15minutes`, `harvester-conduct-v3`, `harvester-conduct-v9`, and configured profiles are all scored through the same points framework while preserving their profile-specific thresholds.
+
+`PointsScannerV18SilverScoring` remains only as a compatibility shim and delegates to the common scorer. It should not be extended with new V18-only factors unless a future audit explicitly asks for a strategy-specific overlay.
+
+### 18.1 Strategy profiles to validate with the common scanner
+
+The common points scanner should be tested against every built-in scan-list strategy profile, not only V18-Silver. The purpose of this validation is to prove that each profile produces explainable `PROFILE_*` factor evidence and that the scanner selection layer can rank candidates without reverting to legacy hard scanner blocks.
+
+Canonical strategy/profile names to test:
+
+| Profile name | Scanner validation command pattern | Notes |
+|---|---|---|
+| `v18-silver` | `paper scan-points 1m v18-silver 10 ... --scanner-mode points-only` | Original V18 selective-short validation profile. |
+| `v21-15minutes` | `paper scan-points 1m v21-15minutes 10 ... --scanner-mode points-only` | 15-minute profile; already used to confirm common `PROFILE_*` factors outside V18. |
+| `v22-15minutes` | `paper scan-points 1m v22-15minutes 10 ... --scanner-mode points-only` | 15-minute profile variant. |
+| `v23-5minutes` | `paper scan-points 1m v23-5minutes 10 ... --scanner-mode points-only` | 5-minute profile variant. |
+| `v24-5minutes` | `paper scan-points 1m v24-5minutes 10 ... --scanner-mode points-only` | 5-minute profile variant; also mapped by the `harvester-conduct-v9` alias for conduct creation. |
+| `v16-sqzbreakout` | `paper scan-points 1m v16-sqzbreakout 10 ... --scanner-mode points-only` | Squeeze-breakout conduct profile. |
+| `v13` | `paper scan-points 1m v13 10 ... --scanner-mode points-only` | Built-in conduct profile. |
+| `v12` | `paper scan-points 1m v12 10 ... --scanner-mode points-only` | Built-in conduct profile. |
+| `v10-hybrid` | `paper scan-points 1m v10-hybrid 10 ... --scanner-mode points-only` | Hybrid conduct profile. |
+| `v17-hybridflow` | `paper scan-points 1m v17-hybridflow 10 ... --scanner-mode points-only` | Hybrid-flow conduct profile. |
+| `v2-conduct` | `paper scan-points 1m v2-conduct 10 ... --scanner-mode points-only` | V2 conduct-flow profile. |
+| `v1-first` | `paper scan-points 1m v1-first 10 ... --scanner-mode points-only` | First conduct profile. |
+| `v19-purplecloud` | `paper scan-points 1m v19-purplecloud 10 ... --scanner-mode points-only` | Purple-cloud conduct profile. |
+| `v15-shortcap` | `paper scan-points 1m v15-shortcap 10 ... --scanner-mode points-only` | Short-cap profile. |
+| `v14-smallcap` | `paper scan-points 1m v14-smallcap 10 ... --scanner-mode points-only` | Small-cap profile. |
+| `v20-gen001-choppyshield` | `paper scan-points 1m v20-gen001-choppyshield 10 ... --scanner-mode points-only` | Choppy-shield profile. |
+| `conduct-v3` | `paper scan-points 1m conduct-v3 10 ... --scanner-mode points-only` | Conduct V3 / Catamaran canonical profile. |
+| `sailor-conduct-v3` | `paper scan-points 1m sailor-conduct-v3 10 ... --scanner-mode points-only` | Alias/profile variant of Conduct V3. |
+| `harvester-conduct-v3` | `paper scan-points 1m harvester-conduct-v3 10 ... --scanner-mode points-only` | Harvester V3 conduct profile. |
+| `harvester-conduct-v9` | `paper scan-points 1m harvester-conduct-v9 10 ... --scanner-mode points-only` | Harvester V9 conduct profile alias; scanner should still emit common points evidence. |
+
+Short aliases such as `v18`, `v21`, `v23`, `v24`, `v22`, `v16`, `v10`, `v17`, `v2`, `v1`, `v19`, `v15`, `v14`, `v20`, `conduct`, `catamaran`, `harvester-v3`, and `harvester-v9` normalize internally to the canonical names above. Scanner validation should use the canonical names in logs and documentation so reports are easy to compare.
+
+Recommended PowerShell loop for scanner-only validation of all canonical profiles:
+
+```powershell
+$profiles = @(
+  "v18-silver",
+  "v21-15minutes",
+  "v22-15minutes",
+  "v23-5minutes",
+  "v24-5minutes",
+  "v16-sqzbreakout",
+  "v13",
+  "v12",
+  "v10-hybrid",
+  "v17-hybridflow",
+  "v2-conduct",
+  "v1-first",
+  "v19-purplecloud",
+  "v15-shortcap",
+  "v14-smallcap",
+  "v20-gen001-choppyshield",
+  "conduct-v3",
+  "sailor-conduct-v3",
+  "harvester-conduct-v3",
+  "harvester-conduct-v9"
+)
+
+foreach ($profile in $profiles) {
+  Write-Host "=== Testing points scanner profile $profile ==="
+  dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points 1m $profile 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --scanner-mode points-only --no-depth --wait-seconds 15
+}
+```
+
+Expected validation result for each profile:
+
+```text
+scannerMode=points-only
+pointsCandidates > 0, when usable history exists
+report=<scanner csv path>
+candidate explanations include PROFILE_* factor codes
+No orders sent.
+```
+
+A profile can still produce `dataQuality=Blocked`, `staleSelected`, or `safety=CloseOnly` if history/market-data/reconciliation evidence is not clean. That is not a common-scanner failure. It only means the runtime correctly prevents entry routing while keeping scanner diagnostics available.
+
+Validation commands:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points 1m v18-silver 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --scanner-mode points-only --no-depth --wait-seconds 15
+```
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper scan-points 1m v21-15minutes 10 --file scan\data\scan_default.xlsx --sheet Candidates --account DUN559573 --max-symbols 45 --scanner-mode points-only --no-depth --wait-seconds 15
+```
+
+Expected result: top candidate explanations contain `PROFILE_*` factor codes for both profiles, proving the common scoring layer is active outside V18-Silver.
