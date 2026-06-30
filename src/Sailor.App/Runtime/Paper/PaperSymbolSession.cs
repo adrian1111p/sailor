@@ -7,6 +7,7 @@ using Sailor.App.Broker.Orders;
 using Sailor.App.Broker.State;
 using Sailor.App.MarketData.Snapshots;
 using Sailor.App.Runtime.Common;
+using Sailor.App.Runtime.TradeManagement;
 using Sailor.App.Strategy.Runtime;
 
 namespace Sailor.App.Runtime.Paper;
@@ -28,6 +29,8 @@ public sealed class PaperSymbolSession
         IReadOnlyList<BacktestIndicatorSnapshot> indicators,
         SailorMarketSnapshot? marketSnapshot,
         SailorStrategyAdapter strategy,
+        SailorTradeOrigin tradeOrigin,
+        string? scannerSlotId,
         int startIndex,
         int quantity,
         decimal averagePrice,
@@ -41,6 +44,8 @@ public sealed class PaperSymbolSession
         _indicators = indicators;
         MarketSnapshot = marketSnapshot;
         Strategy = strategy;
+        TradeOrigin = tradeOrigin;
+        ScannerSlotId = string.IsNullOrWhiteSpace(scannerSlotId) ? null : scannerSlotId.Trim();
         _cursor = Math.Clamp(startIndex - 1, 0, Math.Max(0, bars.Count - 1));
         PositionQuantity = quantity;
         AveragePrice = averagePrice;
@@ -54,6 +59,10 @@ public sealed class PaperSymbolSession
     public SailorMarketSnapshot? MarketSnapshot { get; }
 
     public SailorStrategyAdapter Strategy { get; }
+
+    public SailorTradeOrigin TradeOrigin { get; }
+
+    public string? ScannerSlotId { get; }
 
     public int PositionQuantity { get; private set; }
 
@@ -78,6 +87,8 @@ public sealed class PaperSymbolSession
         SailorMarketSnapshot? marketSnapshot,
         SailorPosition? localSeed,
         BrokerPositionRow? brokerSeed,
+        SailorTradeOrigin tradeOrigin,
+        string? scannerSlotId,
         int maxIterations)
     {
         var provider = new CsvBacktestDataProvider();
@@ -115,6 +126,8 @@ public sealed class PaperSymbolSession
             indicators,
             marketSnapshot,
             strategy,
+            tradeOrigin,
+            scannerSlotId,
             startIndex,
             quantity,
             averagePrice,
@@ -177,7 +190,8 @@ public sealed class PaperSymbolSession
     public string PositionDisplay()
     {
         string side = PositionQuantity > 0 ? "LONG" : PositionQuantity < 0 ? "SHORT" : "FLAT";
-        return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex}";
+        string slot = string.IsNullOrWhiteSpace(ScannerSlotId) ? "slot=n/a" : $"slot={ScannerSlotId}";
+        return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex} origin={TradeOrigin.ToDisplayName()} {slot}";
     }
 
     public bool ApplyReceipt(

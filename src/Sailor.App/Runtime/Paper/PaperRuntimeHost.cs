@@ -153,7 +153,26 @@ public sealed class PaperRuntimeHost
             _log("");
         }
 
-        IReadOnlyList<PaperSymbolSession> sessions = CreateSessions(request, scannerResult, warnings, tradeRegistry);
+        var sessionManager = new DynamicTradeSessionManager(_settings, _log);
+        DynamicTradeSessionPlan sessionPlan = sessionManager.BuildPlan(request, scannerResult, tradeRegistry);
+
+        _log("SAILOR-053 dynamic trade session manager.");
+        _log("This milestone builds one conduct-session plan from scanner-selected symbols, broker/manual/pre-existing positions, local Sailor positions, and active lifecycle registry rows.");
+        _log(sessionPlan.ToSummaryString());
+        foreach (DynamicTradeSessionSeed seed in sessionPlan.Seeds)
+        {
+            _log($"dynamic-session: {seed.ToDisplayString()}");
+        }
+
+        foreach (string planWarning in sessionPlan.Warnings)
+        {
+            warnings.Add(planWarning);
+            _log($"WARN: {planWarning}");
+        }
+
+        _log("");
+
+        IReadOnlyList<PaperSymbolSession> sessions = CreateSessions(request, sessionPlan.Seeds, warnings, tradeRegistry);
         if (sessions.Count == 0)
         {
             warnings.Add("No symbols were activated. Conduct loop did not start.");
@@ -212,41 +231,11 @@ public sealed class PaperRuntimeHost
 
     private IReadOnlyList<PaperSymbolSession> CreateSessions(
         PaperRuntimeHostRequest request,
-        PaperScannerRunResult scannerResult,
+        IReadOnlyList<DynamicTradeSessionSeed> seeds,
         List<string> warnings,
         TradeLifecycleRegistryStore tradeRegistry)
     {
         SailorStrategyProfile profile = SailorStrategyProfile.FromName(request.RuntimeOptions.ProfileName, _settings);
-        int maxActive = Math.Max(1, Math.Min(request.RuntimeOptions.TopCount, _settings.Runtime.Safety.MaxActiveSymbols <= 0 ? request.RuntimeOptions.TopCount : _settings.Runtime.Safety.MaxActiveSymbols));
-
-        var selected = scannerResult.Candidates
-            .Take(maxActive)
-            .Select((candidate, index) => new ActiveSymbolSeed(
-                candidate.Symbol,
-                candidate.Snapshot,
-                SailorTradeOrigin.ScannerOwned,
-                CreateScannerSlotId(candidate.Symbol, index + 1)))
-            .ToList();
-
-        if (selected.Count == 0)
-        {
-            IReadOnlyList<string> fallbackSymbols = scannerResult.PreparedSymbols.Count > 0
-                ? scannerResult.PreparedSymbols
-                : scannerResult.ResolvedSymbols;
-
-            selected.AddRange(fallbackSymbols
-                .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(maxActive)
-                .Select(symbol => new ActiveSymbolSeed(symbol, null, SailorTradeOrigin.ExplicitRuntime, null)));
-
-            if (selected.Count > 0)
-            {
-                string warning = "Scanner returned no ranked candidates; SAILOR-030 activated prepared fallback symbols so the conduct loop can still be smoke-tested.";
-                warnings.Add(warning);
-                _log($"WARN: {warning}");
-            }
-        }
 
         var localBySymbol = request.Reconciliation.LocalPositions
             .Where(position => !position.IsFlat)
@@ -259,54 +248,54 @@ public sealed class PaperRuntimeHost
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
         var sessions = new List<PaperSymbolSession>();
-        foreach (ActiveSymbolSeed selectedSymbol in selected)
+        foreach (DynamicTradeSessionSeed seed in seeds)
         {
-            string normalizedSymbol = selectedSymbol.Symbol.Trim().ToUpperInvariant();
+            string normalizedSymbol = seed.NormalizedSymbol;
             localBySymbol.TryGetValue(normalizedSymbol, out SailorPosition? localSeed);
             brokerBySymbol.TryGetValue(normalizedSymbol, out BrokerPositionRow? brokerSeed);
 
             try
             {
+                SailorTradeOrigin origin = seed.Origin;
+                if (brokerSeed is not null && !brokerSeed.IsFlat && origin == SailorTradeOrigin.ScannerOwned)
+                {
+                    origin = SailorTradeOrigin.SailorPreExisting;
+                }
+                else if (localSeed is not null && !localSeed.IsFlat && origin == SailorTradeOrigin.ScannerOwned)
+                {
+                    origin = SailorTradeOrigin.SailorPreExisting;
+                }
+
                 PaperSymbolSession session = PaperSymbolSession.Create(
                     request.RuntimeOptions.Mode,
                     normalizedSymbol,
                     request.RuntimeOptions.Timeframe,
                     profile,
                     _settings,
-                    selectedSymbol.Snapshot,
+                    seed.Snapshot,
                     localSeed,
                     brokerSeed,
+                    origin,
+                    seed.ScannerSlotId,
                     request.MaxIterations);
-
-                SailorTradeOrigin origin = selectedSymbol.Origin;
-                if (brokerSeed is not null && !brokerSeed.IsFlat)
-                {
-                    origin = SailorTradeOrigin.SailorPreExisting;
-                }
-                else if (localSeed is not null && !localSeed.IsFlat)
-                {
-                    origin = SailorTradeOrigin.SailorPreExisting;
-                }
 
                 TradeLifecycle lifecycle = tradeRegistry.RegisterRuntimeSession(
                     normalizedSymbol,
                     profile.Name,
                     origin,
-                    selectedSymbol.ScannerSlotId,
+                    seed.ScannerSlotId,
                     session.PositionQuantity,
                     session.AveragePrice,
                     request.RuntimeOptions.Timeframe,
                     request.Account,
-                    origin == SailorTradeOrigin.ScannerOwned
-                        ? "SAILOR-051 scanner-owned selected session."
-                        : "SAILOR-051 explicit/pre-existing runtime session.");
+                    $"SAILOR-053 dynamic session registered. {seed.Reason}");
 
-                _log($"{normalizedSymbol}: tradeLifecycle={lifecycle.TradeId} origin={lifecycle.Origin.ToDisplayName()} status={lifecycle.Status.ToDisplayName()} scannerSlot={lifecycle.ScannerSlotId ?? "n/a"}");
+                _log($"{normalizedSymbol}: tradeLifecycle={lifecycle.TradeId} origin={lifecycle.Origin.ToDisplayName()} status={lifecycle.Status.ToDisplayName()} scannerSlot={lifecycle.ScannerSlotId ?? "n/a"} dynamicReason={seed.Reason}");
                 sessions.Add(session);
             }
             catch (Exception ex)
             {
-                string warning = $"{normalizedSymbol}: could not create paper symbol session: {ex.Message}";
+                string warning = $"{normalizedSymbol}: could not create paper symbol session from dynamic plan: {ex.Message}";
                 warnings.Add(warning);
                 _log($"WARN: {warning}");
             }
@@ -315,15 +304,4 @@ public sealed class PaperRuntimeHost
         return sessions;
     }
 
-    private static string CreateScannerSlotId(string symbol, int rank)
-    {
-        string normalizedSymbol = symbol.Trim().ToUpperInvariant();
-        return $"SCAN-{DateTime.UtcNow:yyyyMMdd}-{rank:000}-{normalizedSymbol}";
-    }
-
-    private sealed record ActiveSymbolSeed(
-        string Symbol,
-        Sailor.App.MarketData.Snapshots.SailorMarketSnapshot? Snapshot,
-        SailorTradeOrigin Origin,
-        string? ScannerSlotId);
 }

@@ -3467,6 +3467,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} trades mirror --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} broker mirror --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} broker mirror --account DU123456 --intraday --wait-seconds 15");
+        Console.WriteLine($"  sailor {name} run 1m v21-15minutes 10 --scan-file scan/data/scan_default.xlsx --scan-sheet Candidates --scanner-mode points-only --dry-run --iterations 10");
         Console.WriteLine($"  sailor {name} reconcile --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} reconcile --local-only");
         Console.WriteLine($"  sailor {name} report latest");
@@ -3483,6 +3484,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - status reads the local order ledger and position store");
         Console.WriteLine("  - trades status reads the SAILOR-051 trade lifecycle registry");
         Console.WriteLine("  - broker mirror / trades mirror persist the SAILOR-052 broker-state mirror and classify manual/external trades");
+        Console.WriteLine("  - SAILOR-053 dynamic trade session manager merges scanner selections, broker/manual/pre-existing positions, local Sailor positions, and active lifecycle rows into one conduct plan");
         Console.WriteLine("  - reconcile requests broker positions, open orders, and executions when built with -p:EnableIbkrApi=true");
         Console.WriteLine("  - entries are blocked unless broker reconciliation succeeds without critical mismatch");
         Console.WriteLine("  - paper run now starts the scanner-backed conduct loop, builds strategy frames, creates order intents, writes the ledger, and can route through IBKR paper");

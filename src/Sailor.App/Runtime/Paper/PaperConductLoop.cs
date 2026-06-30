@@ -239,11 +239,11 @@ public sealed class PaperConductLoop
                 TradeLifecycle lifecycle = _tradeRegistry.ApplyOrderReceipt(
                     intent,
                     receipt,
-                    SailorTradeOrigin.ScannerOwned,
+                    session.TradeOrigin,
                     session.PositionQuantity,
                     session.AveragePrice,
-                    scannerSlotId: null,
-                    sourceMessage: $"SAILOR-051 conduct loop decision={decision.Type} positionUpdated={positionUpdated}. {updateMessage}");
+                    scannerSlotId: session.ScannerSlotId,
+                    sourceMessage: $"SAILOR-053 conduct loop decision={decision.Type} origin={session.TradeOrigin.ToDisplayName()} positionUpdated={positionUpdated}. {updateMessage}");
                 _log($"Trade lifecycle: {lifecycle.ToDisplayString()}");
             }
 

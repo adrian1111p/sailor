@@ -1177,3 +1177,55 @@ Still not implemented after SAILOR-052:
 - full severe-disconnect rebuild.
 
 These remain in SAILOR-053 to SAILOR-056.
+
+---
+
+## SAILOR-053 update — Dynamic trade session manager
+
+SAILOR-053 implements the first dynamic session planning layer required by the order/trade-management audit.
+
+### Implemented in SAILOR-053
+
+The runtime now builds a dynamic conduct-session plan from these sources:
+
+1. scanner-selected symbols;
+2. verified non-flat broker positions;
+3. local Sailor non-flat positions;
+4. active same-day lifecycle registry rows with non-zero broker quantity;
+5. fallback prepared symbols only for dry-run/smoke-test style operation when no managed evidence exists.
+
+The plan records each session with ownership:
+
+- `scanner-owned`;
+- `sailor-pre-existing`;
+- `manual-pre-start`;
+- `manual-intraday`;
+- `unknown-broker`;
+- `explicit-runtime`;
+- `sailor-manual-command`.
+
+Manual/external sessions are included in strategy conduct, but they do not count toward the scanner target.
+
+### Important limitations after SAILOR-053
+
+This milestone does not yet implement scanner replenishment, mid-loop session add/remove, or continuous broker polling. It is a session-planning foundation for those later steps.
+
+The following items remain future work:
+
+- dynamic add/remove while the conduct loop is already running;
+- scanner target replenishment every 5 minutes;
+- V21/V22/V23/V24 multiple-entry policy;
+- external open-order fill tracking before a broker position exists;
+- severe-disconnect rebuild of all session state after reconnect;
+- explicit tests for manual close = stop-for-day and later scanner reselection.
+
+### Universal timing rule unchanged
+
+SAILOR-053 does not change these mandatory timing rules:
+
+```text
+LastEntryMinute = 945  -> 15:45 ET
+ForceFlatMinute = 955  -> 15:55 ET
+```
+
+They remain mandatory for all strategies, including V21/V22/V23/V24.
