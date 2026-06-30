@@ -78,6 +78,7 @@ public sealed class PaperConductLoop
         {
             _log($"SAILOR-059 live paper per-iteration candle refresh is active: {liveCandleRefreshService.ToDisplayString()}.");
             _log("SAILOR-060 shared IBKR live market-data/history session is active: scanner/history/snapshot/refresh data requests use one serialized data client and do not reuse the order-router client id.");
+            _log($"SAILOR-061 live refresh fallback and diagnostics are active: fallback={request.LiveCandleRefreshFallbackEnabled} diagnostics={request.LiveCandleRefreshDiagnosticsEnabled} closeOnlyAfterStale={request.LiveRefreshCloseOnlyAfterStale}.");
         }
 
         _log(healthMonitor.SafetyState.ToDisplayString());
@@ -117,20 +118,38 @@ public sealed class PaperConductLoop
                         .ConfigureAwait(false);
 
                     LogLiveCandleRefreshResults(iteration, refreshResults, warnings);
-                    if (request.SendOrders
-                        && refreshResults.Count > 0
-                        && refreshResults.All(result => !result.Success))
+                    if (request.SendOrders && refreshResults.Count > 0)
                     {
-                        string message = $"SAILOR-060 live data refresh failed for all {refreshResults.Count} active symbol(s). Runtime moved to CloseOnly; entries remain blocked until the shared IBKR data session is healthy.";
-                        RuntimeIncident? incident = healthMonitor.MarkCloseOnly(
-                            "shared-data-refresh-failed",
-                            message,
-                            refreshResults.SelectMany(result => result.Warnings).Append(message));
-                        if (incident is not null)
+                        bool everyRefreshFailed = refreshResults.All(result => !result.Success);
+                        bool anyFallbackOrRefreshCurrent = refreshResults.Any(result => result.Success && result.Current);
+                        bool allDecisionFramesStale = sessions.All(session =>
                         {
-                            warnings.Add(incident.Message);
-                            _log(incident.ToDisplayString());
-                            _log(healthMonitor.SafetyState.ToDisplayString());
+                            PaperLiveBarCurrentness currentness = session.AssessLiveBarCurrentness(
+                                heartbeatUtc,
+                                Math.Max(1, request.LiveBarMaxAgeMinutes),
+                                Math.Max(0, request.LiveBarFutureToleranceMinutes));
+                            return !currentness.IsCurrent;
+                        });
+
+                        if (everyRefreshFailed && !anyFallbackOrRefreshCurrent && (!request.LiveRefreshCloseOnlyAfterStale || allDecisionFramesStale))
+                        {
+                            string message = $"SAILOR-061 live data refresh failed for all {refreshResults.Count} active symbol(s) and no current fallback bar remains usable. Runtime moved to CloseOnly; entries remain blocked until the shared IBKR data session is healthy.";
+                            RuntimeIncident? incident = healthMonitor.MarkCloseOnly(
+                                "shared-data-refresh-failed",
+                                message,
+                                refreshResults.SelectMany(result => result.Warnings).Append(message));
+                            if (incident is not null)
+                            {
+                                warnings.Add(incident.Message);
+                                _log(incident.ToDisplayString());
+                                _log(healthMonitor.SafetyState.ToDisplayString());
+                            }
+                        }
+                        else if (everyRefreshFailed && !anyFallbackOrRefreshCurrent)
+                        {
+                            string message = $"SAILOR-061 live data refresh failed for all {refreshResults.Count} active symbol(s), but at least one decision frame is still inside the live-bar age gate; runtime remains {healthMonitor.SafetyState.Mode} until stale expiry.";
+                            warnings.Add(message);
+                            _log($"WARN: {message}");
                         }
                     }
                 }
@@ -412,7 +431,7 @@ public sealed class PaperConductLoop
                     _log($"WARN: {refreshWarning}");
                 }
 
-                if (result.Updated || !result.Success || !result.Current)
+                if (result.Updated || !result.Success || !result.Current || result.Message.Contains("SAILOR-061", StringComparison.OrdinalIgnoreCase))
                 {
                     _log($"candle-refresh: {result.ToDisplayString()}");
                 }

@@ -313,6 +313,76 @@ public sealed class PaperSymbolSession
             Warnings: Array.Empty<string>());
     }
 
+
+    public PaperLiveCandleRefreshResult ApplyLiveCandleRefreshFallback(
+        DateTimeOffset observedUtc,
+        int maxAgeMinutes,
+        int futureToleranceMinutes,
+        string failureMessage,
+        IEnumerable<string>? warnings = null)
+    {
+        DateTimeOffset? previousFrameTime = LastFrameTime;
+        DateTimeOffset? previousLoadedLastTime = LastLoadedBarTime == DateTimeOffset.MinValue
+            ? null
+            : LastLoadedBarTime;
+
+        if (_bars.Count == 0)
+        {
+            return PaperLiveCandleRefreshResult.Failed(
+                Symbol,
+                previousFrameTime,
+                previousLoadedLastTime,
+                $"SAILOR-061 live refresh fallback could not run because no in-memory bars exist. {failureMessage}",
+                warnings);
+        }
+
+        int fallbackIndex = _cursorPositionedOnFrame
+            ? Math.Clamp(_cursor, 0, _bars.Count - 1)
+            : Math.Clamp(_cursor + 1, 0, _bars.Count - 1);
+
+        DateTimeOffset fallbackTime = _bars[fallbackIndex].Time;
+        PaperLiveBarCurrentness currentness = PaperLiveBarCurrentness.Evaluate(
+            fallbackTime,
+            observedUtc,
+            Math.Max(1, maxAgeMinutes),
+            Math.Max(0, futureToleranceMinutes));
+
+        if (!currentness.IsCurrent)
+        {
+            return new PaperLiveCandleRefreshResult(
+                Symbol,
+                Success: false,
+                Updated: false,
+                Current: false,
+                previousFrameTime,
+                previousLoadedLastTime,
+                RefreshedLastTime: null,
+                AppliedFrameTime: fallbackTime,
+                RefreshedBarCount: 0,
+                AppliedBarIndex: fallbackIndex,
+                $"SAILOR-061 live refresh fallback refused stale in-memory bar after refresh failure. {currentness.ToEntryBlockReason(Math.Max(1, maxAgeMinutes))} Refresh failure: {failureMessage}",
+                Warnings: warnings?.ToArray() ?? Array.Empty<string>());
+        }
+
+        _cursor = fallbackIndex;
+        _cursorPositionedOnFrame = true;
+        LastFrameTime = fallbackTime;
+
+        return new PaperLiveCandleRefreshResult(
+            Symbol,
+            Success: true,
+            Updated: false,
+            Current: true,
+            previousFrameTime,
+            previousLoadedLastTime,
+            RefreshedLastTime: null,
+            AppliedFrameTime: fallbackTime,
+            RefreshedBarCount: 0,
+            AppliedBarIndex: fallbackIndex,
+            $"SAILOR-061 live refresh fallback reused current in-memory bar for {Symbol} at {fallbackTime:O} after refresh failure; {currentness.Reason}. Refresh failure: {failureMessage}",
+            Warnings: warnings?.ToArray() ?? Array.Empty<string>());
+    }
+
     public PaperLiveBarCurrentness AssessLiveBarCurrentness(
         DateTimeOffset observedUtc,
         int maxAgeMinutes,

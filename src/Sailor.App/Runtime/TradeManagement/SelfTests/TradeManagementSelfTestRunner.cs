@@ -22,7 +22,8 @@ public static class TradeManagementSelfTestRunner
         "force-flat-955-all-strategies",
         "live-current-candle-guard",
         "live-per-iteration-candle-refresh",
-        "shared-ibkr-data-session"
+        "shared-ibkr-data-session",
+        "live-refresh-fallback-diagnostics"
     ];
 
     public static Task<int> RunAsync(
@@ -161,6 +162,7 @@ public static class TradeManagementSelfTestRunner
                 "live-current-candle-guard" => LiveCurrentCandleGuard(),
                 "live-per-iteration-candle-refresh" => LivePerIterationCandleRefresh(),
                 "shared-ibkr-data-session" => SharedIbkrDataSession(),
+                "live-refresh-fallback-diagnostics" => LiveRefreshFallbackDiagnostics(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -486,21 +488,58 @@ public static class TradeManagementSelfTestRunner
             bool dataClientSeparate = dataClientId != orderRouterClientId;
             bool sharedProviderName = true;
             bool serializesRequests = true;
-            bool allFailedRefreshShouldCloseOnly = true;
+            bool allFailedRefreshShouldEventuallyCloseOnly = true;
 
             bool pass = dataClientSeparate
                 && sharedProviderName
                 && serializesRequests
-                && allFailedRefreshShouldCloseOnly;
+                && allFailedRefreshShouldEventuallyCloseOnly;
 
             AddCheck(checks, dataClientSeparate, $"shared data client id ({dataClientId}) is separate from the order-router client id ({orderRouterClientId}).");
             AddCheck(checks, sharedProviderName, "history and L1/L2 snapshot providers are routed through the SAILOR-060 shared IBKR data-session provider.");
             AddCheck(checks, serializesRequests, "history, snapshot, scanner-replenishment, and live-candle refresh requests are serialized on one shared data session instead of competing sockets.");
-            AddCheck(checks, allFailedRefreshShouldCloseOnly, "if live refresh fails for all active symbols, runtime must move to CloseOnly and block new entries.");
+            AddCheck(checks, allFailedRefreshShouldEventuallyCloseOnly, "if live refresh fails for all active symbols, runtime must move to CloseOnly after the current fallback bar becomes stale.");
             events.Add($"SAILOR-060 dataClientId={dataClientId} orderRouterClientId={orderRouterClientId} offset={offset}");
             events.Add("provider=ibkr-shared-data-session; request policy=single shared EClient + sequential request lock");
 
             return Result("shared-ibkr-data-session", pass, checks, events, warnings);
+        }
+
+        private TradeManagementSelfTestCaseResult LiveRefreshFallbackDiagnostics()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            DateTimeOffset previousFreshBar = new(2026, 6, 30, 17, 7, 0, TimeSpan.Zero);
+            DateTimeOffset observedFreshWindow = new(2026, 6, 30, 17, 9, 0, TimeSpan.Zero);
+            DateTimeOffset observedStaleWindow = new(2026, 6, 30, 17, 13, 0, TimeSpan.Zero);
+
+            PaperLiveBarCurrentness fallbackFresh = PaperLiveBarCurrentness.Evaluate(
+                previousFreshBar,
+                observedFreshWindow,
+                Math.Max(1, _settings.Runtime.Safety.LiveBarMaxAgeMinutes),
+                Math.Max(0, _settings.Runtime.Safety.LiveBarFutureToleranceMinutes));
+            PaperLiveBarCurrentness fallbackStale = PaperLiveBarCurrentness.Evaluate(
+                previousFreshBar,
+                observedStaleWindow,
+                Math.Max(1, _settings.Runtime.Safety.LiveBarMaxAgeMinutes),
+                Math.Max(0, _settings.Runtime.Safety.LiveBarFutureToleranceMinutes));
+
+            bool fallbackEnabled = _settings.Runtime.Safety.LiveCandleRefreshFallbackEnabled;
+            bool diagnosticsEnabled = _settings.Runtime.Safety.LiveCandleRefreshDiagnosticsEnabled;
+            bool closeOnlyAfterStale = _settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale;
+            bool pass = fallbackEnabled && diagnosticsEnabled && closeOnlyAfterStale && fallbackFresh.IsCurrent && !fallbackStale.IsCurrent;
+
+            AddCheck(checks, fallbackEnabled, "SAILOR-061 fallback is enabled so zero-bar refreshes can reuse a still-current in-memory bar.");
+            AddCheck(checks, diagnosticsEnabled, "SAILOR-061 diagnostics are enabled so the exact IBKR refresh request is logged.");
+            AddCheck(checks, closeOnlyAfterStale, "runtime moves to CloseOnly only after the fallback bar is stale.");
+            AddCheck(checks, fallbackFresh.IsCurrent, "a failed refresh may continue using a previous bar while it is still inside the live age gate.");
+            AddCheck(checks, !fallbackStale.IsCurrent, "the same fallback bar is rejected once it exceeds the live age gate.");
+            events.Add($"freshFallback={fallbackFresh.Reason} ageMinutes={fallbackFresh.AgeMinutes}");
+            events.Add(fallbackStale.ToEntryBlockReason(_settings.Runtime.Safety.LiveBarMaxAgeMinutes));
+            events.Add("diagnostic command: paper history-refresh-test SYMBOL --client-id 222 --lookback-minutes 60");
+
+            return Result("live-refresh-fallback-diagnostics", pass, checks, events, warnings);
         }
 
         private int CalculateReplenishmentRequest(

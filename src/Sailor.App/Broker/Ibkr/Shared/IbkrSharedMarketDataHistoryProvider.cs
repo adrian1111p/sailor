@@ -152,15 +152,21 @@ public sealed class IbkrSharedMarketDataHistoryProvider : IHistoricalBarProvider
                     .ToArray();
 
                 IReadOnlyList<string> warnings = _wrapper.DrainErrors();
+                IReadOnlyList<string> events = _wrapper.DrainEvents();
                 if (bars.Count == 0)
                 {
+                    IReadOnlyList<string> diagnosticWarnings = warnings
+                        .Concat(events.Select(row => $"event: {row}"))
+                        .Append($"SAILOR-061 shared-history-request {request.ToDisplayString()} endUtc={request.EndTimeUtc:O} clientId={_connectionOptions.ClientId}")
+                        .ToArray();
+
                     return HistoricalBarLoadResult.Failed(
                         request,
                         remoteRequested: true,
                         remoteProviderAvailable: true,
                         cachePath,
                         $"SAILOR-060 shared IBKR data session returned no historical bars for {request.Symbol} using clientId={_connectionOptions.ClientId}.",
-                        warnings);
+                        diagnosticWarnings);
                 }
 
                 (string writtenCachePath, string? mirrorPath) = HistoricalCacheWriter.Write(request, bars);
@@ -184,7 +190,10 @@ public sealed class IbkrSharedMarketDataHistoryProvider : IHistoricalBarProvider
                     remoteProviderAvailable: true,
                     cachePath,
                     $"SAILOR-060 shared IBKR historical request failed for {request.Symbol}: {ex.Message}",
-                    _wrapper.DrainErrors());
+                    _wrapper.DrainErrors()
+                        .Concat(_wrapper.DrainEvents().Select(row => $"event: {row}"))
+                        .Append($"SAILOR-061 shared-history-request {request.ToDisplayString()} endUtc={request.EndTimeUtc:O} clientId={_connectionOptions.ClientId}")
+                        .ToArray());
             }
             finally
             {

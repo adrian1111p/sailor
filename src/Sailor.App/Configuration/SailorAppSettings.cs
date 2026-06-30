@@ -239,7 +239,14 @@ public sealed class SailorRuntimeSafetySettings
     public int LiveCandleRefreshClientIdOffset { get; set; } = 200;
 
     public int LiveCandleRefreshRequestIdBase { get; set; } = 31_000;
+
+    public bool LiveCandleRefreshFallbackEnabled { get; set; } = true;
+
+    public bool LiveCandleRefreshDiagnosticsEnabled { get; set; } = true;
+
+    public bool LiveRefreshCloseOnlyAfterStale { get; set; } = true;
 }
+
 
 public sealed class ScannerSettings
 {

@@ -58,19 +58,35 @@ public sealed class PaperLiveCandleRefreshService : IDisposable
                 request.PrimaryExchange,
                 mirrorToBacktestData: request.ScannerOptions.MirrorHistoryToBacktest);
 
+            string requestDiagnostics = $"SAILOR-061 refresh-request {historicalRequest.ToDisplayString()} endUtc={historicalRequest.EndTimeUtc:O} provider={ProviderName} clientId={ClientId}";
+
             HistoricalBarLoadResult loadResult = await _historyProvider
                 .GetOneMinuteHistoryAsync(historicalRequest, cancellationToken)
                 .ConfigureAwait(false);
 
             var warnings = new List<string>(loadResult.Warnings.Select(warning => $"{session.Symbol}: {warning}"));
+
             if (!loadResult.Success)
             {
-                results.Add(PaperLiveCandleRefreshResult.Failed(
-                    session.Symbol,
-                    session.LastFrameTime,
-                    session.LastLoadedBarTime,
-                    $"SAILOR-059 live paper candle refresh failed: {loadResult.Message}",
-                    warnings));
+                string failureMessage = $"SAILOR-059 live paper candle refresh failed: {loadResult.Message}";
+                if (request.LiveCandleRefreshDiagnosticsEnabled)
+                {
+                    warnings.Add($"{session.Symbol}: {requestDiagnostics}");
+                }
+
+                results.Add(request.LiveCandleRefreshFallbackEnabled
+                    ? session.ApplyLiveCandleRefreshFallback(
+                        observedUtc,
+                        Math.Max(1, request.LiveBarMaxAgeMinutes),
+                        Math.Max(0, request.LiveBarFutureToleranceMinutes),
+                        failureMessage,
+                        warnings)
+                    : PaperLiveCandleRefreshResult.Failed(
+                        session.Symbol,
+                        session.LastFrameTime,
+                        session.LastLoadedBarTime,
+                        failureMessage,
+                        warnings));
                 continue;
             }
 
@@ -80,8 +96,27 @@ public sealed class PaperLiveCandleRefreshService : IDisposable
                 Math.Max(1, request.LiveBarMaxAgeMinutes),
                 Math.Max(0, request.LiveBarFutureToleranceMinutes));
 
-            if (warnings.Count > 0)
+            if (!applyResult.Current && request.LiveCandleRefreshFallbackEnabled)
             {
+                if (request.LiveCandleRefreshDiagnosticsEnabled)
+                {
+                    warnings.Add($"{session.Symbol}: {requestDiagnostics}");
+                }
+
+                applyResult = session.ApplyLiveCandleRefreshFallback(
+                    observedUtc,
+                    Math.Max(1, request.LiveBarMaxAgeMinutes),
+                    Math.Max(0, request.LiveBarFutureToleranceMinutes),
+                    applyResult.Message,
+                    warnings);
+            }
+            else if (warnings.Count > 0)
+            {
+                if (!applyResult.Current && request.LiveCandleRefreshDiagnosticsEnabled)
+                {
+                    warnings.Add($"{session.Symbol}: {requestDiagnostics}");
+                }
+
                 applyResult = applyResult with { Warnings = applyResult.Warnings.Concat(warnings).ToArray() };
             }
 

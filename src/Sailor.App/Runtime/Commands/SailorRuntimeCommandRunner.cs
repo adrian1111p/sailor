@@ -61,6 +61,11 @@ public static class SailorRuntimeCommandRunner
                 await RunHistoryAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
+            case "history-refresh-test":
+            case "refresh-test":
+                await RunHistoryRefreshTestAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
             case "quotes":
             case "quote":
                 await RunMarketSnapshotAsync(mode, args.Skip(1).ToArray(), settings, forceDepth: false);
@@ -337,6 +342,96 @@ public static class SailorRuntimeCommandRunner
         Log(writer, "");
         Log(writer, "Next command after successful cache write:");
         Log(writer, "dotnet run --project src\\Sailor.App\\Sailor.App.csproj -- backtest TSLA 1m v21-15minutes");
+    }
+
+
+    private static async Task RunHistoryRefreshTestAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        string symbol = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.Ordinal))?.Trim().ToUpperInvariant() ?? "TSLA";
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} history-refresh-test TSLA --client-id 222");
+            return;
+        }
+
+        SailorRuntimeOptions options = CreateOptions(mode, ["1m", settings.DefaultProfile, "1", symbol], settings);
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        string account = ReadStringOption(args, "--account", modeSettings.Account ?? string.Empty);
+        int clientId = ReadIntOption(args, "--client-id", modeSettings.ClientId + Math.Max(1, settings.Runtime.Safety.LiveCandleRefreshClientIdOffset));
+        int lookbackMinutes = ReadIntOption(args, "--lookback-minutes", Math.Max(15, settings.Runtime.Safety.LiveCandleRefreshLookbackMinutes));
+        int requestId = ReadIntOption(args, "--request-id", Math.Max(61_000, settings.Runtime.Safety.LiveCandleRefreshRequestIdBase + 30_000));
+        bool useRth = !args.Any(arg => arg.Equals("--all-hours", StringComparison.OrdinalIgnoreCase));
+        bool mirrorToBacktest = !args.Any(arg => arg.Equals("--no-backtest-copy", StringComparison.OrdinalIgnoreCase));
+        string primaryExchange = ReadStringOption(args, "--primary-exchange", "NASDAQ");
+
+        IbkrConnectionOptions baseConnectionOptions = IbkrConnectionOptions.FromRuntimeOptions(
+            options,
+            account,
+            modeSettings.ConnectTimeoutSeconds);
+        IbkrConnectionOptions dataConnectionOptions = baseConnectionOptions with
+        {
+            ClientId = clientId,
+            SendOrders = false,
+            UseL2 = false
+        };
+
+        string logFilePath = CreateRuntimeLogFilePath(mode, $"history_refresh_test_{symbol}");
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, "SAILOR-061 live history refresh diagnostic.");
+        Log(writer, "This command sends no orders. It performs one direct 1m history refresh request through the same shared-data provider used by paper live candle refresh.");
+        Log(writer, options.ToCompactString());
+        Log(writer, dataConnectionOptions.ToDisplayString());
+        Log(writer, $"symbol={symbol} lookbackMinutes={lookbackMinutes} requestId={requestId} useRth={useRth} primaryExchange={primaryExchange} mirrorBacktest={mirrorToBacktest}");
+        Log(writer, "");
+
+        HistoricalBarRequest request = HistoricalBarRequest.CreateOneMinute(
+            mode,
+            symbol,
+            TimeSpan.FromMinutes(Math.Max(1, lookbackMinutes)),
+            requestId,
+            useRth,
+            primaryExchange,
+            mirrorToBacktest);
+
+        Log(writer, $"Request: {request.ToDisplayString()} endUtc={request.EndTimeUtc:O}");
+        IHistoricalBarProvider provider = HistoricalBarProviderFactory.Create(true, dataConnectionOptions);
+        try
+        {
+            Log(writer, $"Provider: {provider.ProviderName}");
+            HistoricalBarLoadResult result = await provider.GetOneMinuteHistoryAsync(request, CancellationToken.None).ConfigureAwait(false);
+            Log(writer, result.ToDisplayString());
+            Log(writer, result.Message);
+            if (result.Bars.Count > 0)
+            {
+                Log(writer, $"First bar: {result.Bars[0].Time:O} open={result.Bars[0].Open:F4} close={result.Bars[0].Close:F4} volume={result.Bars[0].Volume}");
+                Log(writer, $"Last bar:  {result.Bars[^1].Time:O} open={result.Bars[^1].Open:F4} close={result.Bars[^1].Close:F4} volume={result.Bars[^1].Volume}");
+                PaperLiveBarCurrentness currentness = PaperLiveBarCurrentness.Evaluate(
+                    result.Bars[^1].Time,
+                    DateTimeOffset.UtcNow,
+                    Math.Max(1, settings.Runtime.Safety.LiveBarMaxAgeMinutes),
+                    Math.Max(0, settings.Runtime.Safety.LiveBarFutureToleranceMinutes));
+                Log(writer, $"Currentness: {(currentness.IsCurrent ? "current" : "stale")} {currentness.Reason} ageMinutes={currentness.AgeMinutes}");
+            }
+
+            foreach (string warning in result.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+        finally
+        {
+            if (provider is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
+
+        Log(writer, "");
+        Log(writer, $"Runtime log: {logFilePath}");
+        Log(writer, "No orders sent.");
     }
 
 
@@ -1573,7 +1668,10 @@ public static class SailorRuntimeCommandRunner
             LiveCandleRefreshEnabled: settings.Runtime.Safety.LiveCandleRefreshEnabled,
             LiveCandleRefreshLookbackMinutes: settings.Runtime.Safety.LiveCandleRefreshLookbackMinutes,
             LiveCandleRefreshClientIdOffset: settings.Runtime.Safety.LiveCandleRefreshClientIdOffset,
-            LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase);
+            LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase,
+            LiveCandleRefreshFallbackEnabled: settings.Runtime.Safety.LiveCandleRefreshFallbackEnabled,
+            LiveCandleRefreshDiagnosticsEnabled: settings.Runtime.Safety.LiveCandleRefreshDiagnosticsEnabled,
+            LiveRefreshCloseOnlyAfterStale: settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult result = await host.RunAsync(request, CancellationToken.None);
@@ -1950,7 +2048,10 @@ public static class SailorRuntimeCommandRunner
             LiveCandleRefreshEnabled: settings.Runtime.Safety.LiveCandleRefreshEnabled,
             LiveCandleRefreshLookbackMinutes: settings.Runtime.Safety.LiveCandleRefreshLookbackMinutes,
             LiveCandleRefreshClientIdOffset: settings.Runtime.Safety.LiveCandleRefreshClientIdOffset,
-            LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase);
+            LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase,
+            LiveCandleRefreshFallbackEnabled: settings.Runtime.Safety.LiveCandleRefreshFallbackEnabled,
+            LiveCandleRefreshDiagnosticsEnabled: settings.Runtime.Safety.LiveCandleRefreshDiagnosticsEnabled,
+            LiveRefreshCloseOnlyAfterStale: settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult runtimeResult = await host.RunAsync(request, CancellationToken.None).ConfigureAwait(false);
@@ -3469,6 +3570,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} history 1m TSLA");
         Console.WriteLine($"  sailor {name} history 1m smallcaps --top 10 --days 5");
         Console.WriteLine($"  sailor {name} history 1m TSLA --local-cache");
+        Console.WriteLine($"  sailor {name} history-refresh-test TSLA --client-id {modeSettings.ClientId + Math.Max(1, settings.Runtime.Safety.LiveCandleRefreshClientIdOffset)} --lookback-minutes 60");
         Console.WriteLine($"  sailor {name} quotes TSLA");
         Console.WriteLine($"  sailor {name} quotes TSLA --seconds 15 --market-data-type 2");
         Console.WriteLine($"  sailor {name} depth TSLA --levels 5");

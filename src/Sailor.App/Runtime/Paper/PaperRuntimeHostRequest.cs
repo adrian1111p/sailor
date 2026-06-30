@@ -33,7 +33,10 @@ public sealed record PaperRuntimeHostRequest(
     bool LiveCandleRefreshEnabled = true,
     int LiveCandleRefreshLookbackMinutes = 60,
     int LiveCandleRefreshClientIdOffset = 200,
-    int LiveCandleRefreshRequestIdBase = 31_000);
+    int LiveCandleRefreshRequestIdBase = 31_000,
+    bool LiveCandleRefreshFallbackEnabled = true,
+    bool LiveCandleRefreshDiagnosticsEnabled = true,
+    bool LiveRefreshCloseOnlyAfterStale = true);
 
 public sealed record PaperRuntimeHostResult(
     IReadOnlyList<string> ActiveSymbols,

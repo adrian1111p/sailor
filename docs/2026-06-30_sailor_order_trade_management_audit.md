@@ -1355,3 +1355,18 @@ The intended operational result is that a one-hour paper run shows active symbol
 Status: implemented.
 
 This milestone replaces competing scanner/history/snapshot/live-refresh IBKR sockets with a shared serialized data-session provider. The order router keeps its own client id, while market-data/history paths use the configured data client offset. If live candle refresh fails for all active symbols during paper send-orders, runtime moves to CloseOnly and blocks new entries instead of continuing with stale bars. See `docs/2026-06-30_sailor_s060_shared_ibkr_live_data_session_notes.md`.
+
+## SAILOR-061 — Live refresh fallback and diagnostics
+
+Status: implemented.
+
+SAILOR-061 refines the SAILOR-059/S060 live paper candle refresh path. If the shared IBKR data session returns zero bars during a per-iteration refresh, the runtime now reuses the current in-memory decision bar only while it is still valid under the SAILOR-058 live-bar age gate. The runtime moves to `CloseOnly` only after all active symbols have no successful refresh and no current fallback bar remains usable.
+
+Implemented evidence and diagnostics:
+
+- exact IBKR refresh request parameters are logged with `SAILOR-061 refresh-request ...`;
+- `paper history-refresh-test SYMBOL --client-id 222 --lookback-minutes 60` directly tests the shared-data refresh path without orders;
+- self-test scenario `live-refresh-fallback-diagnostics` validates fallback, diagnostics, and close-only-after-stale behavior;
+- new runtime settings control fallback, diagnostics, and CloseOnly timing.
+
+Safety remains conservative: SAILOR-061 does not bypass strategy entry filters, broker reconciliation, lifecycle policies, stale-bar gates, or force-flat logic.
