@@ -16,6 +16,7 @@ using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.Live;
 using Sailor.App.Runtime.Paper;
 using Sailor.App.Runtime.TradeManagement;
+using Sailor.App.Runtime.TradeManagement.SelfTests;
 using Sailor.App.Scanner.Runtime;
 using Sailor.App.Scanner.ScanList;
 using Sailor.App.Scanner.Universe;
@@ -94,6 +95,11 @@ public static class SailorRuntimeCommandRunner
             case "broker":
                 await RunBrokerAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
+            case "trade-management-test":
+            case "trade-test":
+                Environment.ExitCode = await TradeManagementSelfTestRunner.RunAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
 
             case "reconcile":
                 await RunReconcileAsync(mode, args.Skip(1).ToArray(), settings);
@@ -3441,6 +3447,8 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} scan-list 1m v21-15minutes 10 --file scan/data/scan_default.xlsx --sheet Candidates --local-cache --no-quotes");
         Console.WriteLine($"  sailor {name} scan-points 1m v18-silver 10 --file scan/data/scan_default.xlsx --sheet Candidates --scanner-mode points-only --no-depth");
         Console.WriteLine($"  sailor {name} scan-points-test 1m v18-silver 10 --file scan/data/scan_default.xlsx --sheet Candidates --scanner-mode points-only --no-depth --max-symbols 45");
+        Console.WriteLine($"  sailor {name} trade-management-test --scenario all");
+        Console.WriteLine($"  sailor {name} trade-management-test --scenario severe-disconnect-recovery");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --local-cache");
         Console.WriteLine($"  sailor {name} scan 1m sailor-trend-volume 3 smallcaps --days 5 --market-data-type 2");
         Console.WriteLine($"  sailor {name} scan 1m v21-15minutes 1 TSLA --local-cache --no-depth");

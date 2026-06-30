@@ -942,9 +942,12 @@ warnings
 
 ### SAILOR-057 — Order/trade management self-tests
 
-Add commands:
+Status: implemented as deterministic non-broker self-tests on 2026-06-30.
+
+Added commands:
 
 ```powershell
+paper trade-management-test --scenario all
 paper trade-management-test --scenario preexisting-position
 paper trade-management-test --scenario manual-open-after-start
 paper trade-management-test --scenario manual-close-stop-day
@@ -954,9 +957,23 @@ paper trade-management-test --scenario v21-multi-entry-until-close
 paper trade-management-test --scenario non-v21-single-lifecycle
 paper trade-management-test --scenario last-entry-945-blocks-replenishment
 paper trade-management-test --scenario force-flat-955-all-strategies
+paper trade-management-test --list
 ```
 
-Tests should not send broker orders unless `--send-orders` is explicitly supplied. Default should be simulation/dry-run.
+Alias:
+
+```powershell
+paper trade-test --scenario all
+```
+
+The SAILOR-057 command intentionally does not send broker orders and does not connect to IBKR. It remains a deterministic simulation/regression command even when `--send-orders` is supplied; the flag is reported for evidence only.
+
+Evidence files:
+
+```text
+logs/<mode>/SelfTests/trade_management_self_test_latest.json
+logs/<mode>/SelfTests/trade_management_self_test_yyyyMMdd.csv
+```
 
 Additional market-close acceptance criteria:
 
