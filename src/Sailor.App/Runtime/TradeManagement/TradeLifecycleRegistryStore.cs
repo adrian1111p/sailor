@@ -223,6 +223,116 @@ public sealed class TradeLifecycleRegistryStore
         return updated;
     }
 
+
+    public TradeLifecycle ApplyBrokerMirrorPosition(
+        string symbol,
+        string profileName,
+        SailorTradeOrigin origin,
+        int brokerQuantity,
+        decimal brokerAveragePrice,
+        string? account,
+        string source,
+        string reason)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        string normalizedSymbol = NormalizeSymbol(symbol);
+        var snapshot = LoadSnapshot();
+        var trades = snapshot.Trades.ToList();
+        TradeLifecycle? existing = FindActiveTrade(trades, normalizedSymbol, scannerSlotId: null)
+            ?? FindMostRecentTrade(trades, normalizedSymbol);
+
+        TradeLifecycleStatus status = brokerQuantity == 0
+            ? TradeLifecycleStatus.PendingEntry
+            : TradeLifecycleStatus.Open;
+
+        SailorTradeOrigin resolvedOrigin = existing is null
+            ? origin
+            : existing.Origin is SailorTradeOrigin.UnknownBroker
+                ? origin
+                : existing.Origin;
+
+        TradeLifecycle updated = existing is null || existing.Status.IsClosed()
+            ? new TradeLifecycle(
+                CreateTradeId(normalizedSymbol, now),
+                normalizedSymbol,
+                NormalizeProfile(profileName),
+                resolvedOrigin,
+                ScannerSlotId: null,
+                status,
+                brokerQuantity,
+                brokerAveragePrice,
+                ManualStoppedForDay: false,
+                DateOnly.FromDateTime(now.UtcDateTime),
+                now,
+                now,
+                Timeframe: null,
+                Account: NormalizeOptional(account),
+                LastOrderIntentId: null,
+                LastBrokerOrderId: null,
+                LastReason: reason,
+                CompletedUtc: null)
+            : existing with
+            {
+                ProfileName = string.Equals(existing.ProfileName, "unknown", StringComparison.OrdinalIgnoreCase) || string.Equals(existing.ProfileName, "broker-mirror", StringComparison.OrdinalIgnoreCase)
+                    ? NormalizeProfile(profileName)
+                    : existing.ProfileName,
+                Origin = resolvedOrigin,
+                Status = status,
+                BrokerQuantity = brokerQuantity,
+                BrokerAveragePrice = brokerAveragePrice,
+                ManualStoppedForDay = false,
+                Account = existing.Account ?? NormalizeOptional(account),
+                LastReason = reason,
+                UpdatedUtc = now,
+                CompletedUtc = null
+            };
+
+        Upsert(trades, updated);
+        Save(trades, updated, $"broker-mirror-position:{source}", reason, null, null, now);
+        return updated;
+    }
+
+    public TradeLifecycle MarkBrokerMirrorClosedManually(string symbol, string reason)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        string normalizedSymbol = NormalizeSymbol(symbol);
+        var snapshot = LoadSnapshot();
+        var trades = snapshot.Trades.ToList();
+        TradeLifecycle? existing = FindActiveTrade(trades, normalizedSymbol, scannerSlotId: null)
+            ?? FindMostRecentTrade(trades, normalizedSymbol);
+
+        TradeLifecycle updated = existing is null
+            ? new TradeLifecycle(
+                CreateTradeId(normalizedSymbol, now),
+                normalizedSymbol,
+                "broker-mirror",
+                SailorTradeOrigin.UnknownBroker,
+                ScannerSlotId: null,
+                TradeLifecycleStatus.ClosedManually,
+                BrokerQuantity: 0,
+                BrokerAveragePrice: 0m,
+                ManualStoppedForDay: true,
+                DateOnly.FromDateTime(now.UtcDateTime),
+                now,
+                now,
+                LastReason: reason,
+                CompletedUtc: now)
+            : existing with
+            {
+                Status = TradeLifecycleStatus.ClosedManually,
+                BrokerQuantity = 0,
+                BrokerAveragePrice = 0m,
+                ManualStoppedForDay = true,
+                LastReason = reason,
+                UpdatedUtc = now,
+                CompletedUtc = now
+            };
+
+        Upsert(trades, updated);
+        Save(trades, updated, "broker-mirror-manual-close", reason, null, null, now);
+        return updated;
+    }
+
     private static TradeLifecycleStatus DetermineStatus(
         SailorOrderIntent intent,
         SailorOrderReceipt receipt,

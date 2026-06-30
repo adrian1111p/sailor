@@ -121,6 +121,38 @@ public sealed class PaperRuntimeHost
         _log($"Trade registry event JSONL: {tradeRegistry.DailyJsonlPath}");
         _log("");
 
+        bool hasBrokerMirrorInput = request.Reconciliation.BrokerPositions.Count > 0
+            || request.Reconciliation.BrokerOpenOrders.Count > 0
+            || request.Reconciliation.BrokerExecutions.Count > 0;
+        if (request.SendOrders || hasBrokerMirrorInput)
+        {
+            var brokerDetector = new BrokerStateManualTradeDetector(request.RuntimeOptions.Mode, tradeRegistry);
+            BrokerStateMirrorSnapshot mirror = brokerDetector.MirrorAndDetect(
+                request.Reconciliation,
+                request.Account,
+                brokerVerified: true,
+                unknownBrokerPositionsAreIntradayManual: false,
+                markMissingActivePositionsAsManualClosed: true,
+                source: "pre-run-reconciliation");
+
+            _log("SAILOR-052 broker state mirror and manual trade detector.");
+            _log("Pre-run broker positions/open orders/executions were mirrored before creating strategy sessions.");
+            _log($"Broker mirror latest JSON: {brokerDetector.LatestJsonPath}");
+            _log($"Broker mirror event JSONL: {brokerDetector.DailyJsonlPath}");
+            _log(mirror.ToSummaryString());
+            foreach (BrokerMirrorDetection detection in mirror.Detections)
+            {
+                _log($"broker-detection: {detection.ToDisplayString()}");
+            }
+
+            foreach (string mirrorWarning in mirror.Warnings)
+            {
+                warnings.Add(mirrorWarning);
+            }
+
+            _log("");
+        }
+
         IReadOnlyList<PaperSymbolSession> sessions = CreateSessions(request, scannerResult, warnings, tradeRegistry);
         if (sessions.Count == 0)
         {

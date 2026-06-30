@@ -91,6 +91,10 @@ public static class SailorRuntimeCommandRunner
                 await RunTradesAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
+            case "broker":
+                await RunBrokerAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
             case "reconcile":
                 await RunReconcileAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
@@ -2180,9 +2184,16 @@ public static class SailorRuntimeCommandRunner
         SailorAppSettings settings)
     {
         string subcommand = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.OrdinalIgnoreCase))?.Trim().ToLowerInvariant() ?? "status";
+        if (subcommand is "mirror" or "sync" or "detect")
+        {
+            await RunBrokerMirrorAsync(mode, args.Skip(1).ToArray(), settings, commandName: "trades mirror").ConfigureAwait(false);
+            return;
+        }
+
         if (subcommand is not "status" and not "list")
         {
             Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} trades status [--all] [--symbol TSLA]");
+            Console.WriteLine($"       sailor {mode.ToDisplayName()} trades mirror --account DU123456 --wait-seconds 15");
             return;
         }
 
@@ -2225,6 +2236,163 @@ public static class SailorRuntimeCommandRunner
         }
 
         Log(writer, "");
+        Log(writer, $"Runtime log: {logFilePath}");
+    }
+
+    private static async Task RunBrokerAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        string subcommand = args.FirstOrDefault(arg => !arg.StartsWith("--", StringComparison.OrdinalIgnoreCase))?.Trim().ToLowerInvariant() ?? "mirror";
+        if (subcommand is "mirror" or "sync" or "detect")
+        {
+            await RunBrokerMirrorAsync(mode, args.Skip(1).ToArray(), settings, commandName: "broker mirror").ConfigureAwait(false);
+            return;
+        }
+
+        Console.WriteLine($"Usage: sailor {mode.ToDisplayName()} broker mirror --account DU123456 --wait-seconds 15");
+    }
+
+    private static async Task RunBrokerMirrorAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings,
+        string commandName)
+    {
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        SailorRuntimeOptions options = CreateOptions(mode, Array.Empty<string>(), settings);
+        string account = ReadStringOption(args, "--account", modeSettings.Account ?? string.Empty);
+        int waitSeconds = ReadIntOption(args, "--wait-seconds", modeSettings.ConnectTimeoutSeconds);
+        int executionRequestId = ReadIntOption(args, "--execution-request-id", 52000);
+        bool localOnly = HasOption(args, "--local-only");
+        bool markIntraday = HasOption(args, "--intraday") || ReadBooleanOption(args, "--manual-intraday", defaultValue: false);
+        bool noManualClose = HasOption(args, "--no-manual-close-detect");
+
+        var connectionOptions = new IbkrConnectionOptions(
+            mode,
+            options.Host,
+            options.Port,
+            options.ClientId,
+            account,
+            modeSettings.ConnectTimeoutSeconds,
+            options.UseL1,
+            options.UseL2,
+            SendOrders: false,
+            AllowShort: options.AllowShort);
+
+        var request = new PositionRequest(
+            mode,
+            account,
+            TimeSpan.FromSeconds(Math.Max(1, waitSeconds)),
+            executionRequestId);
+
+        string logFilePath = CreateRuntimeLogFilePath(mode, "broker_mirror");
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {mode.ToDisplayName()} {commandName}");
+        Log(writer, "SAILOR-052 broker state mirror and manual trade detector.");
+        Log(writer, "This command requests broker positions/open orders/executions, persists a broker mirror snapshot, and synchronizes the SAILOR-051 trade lifecycle registry.");
+        Log(writer, "It sends no orders and does not conduct strategies.");
+        Log(writer, connectionOptions.ToDisplayString());
+        Log(writer, request.ToDisplayString());
+        Log(writer, $"localOnly={localOnly} unknownBrokerPositionsAreIntradayManual={markIntraday} manualCloseDetect={!noManualClose}");
+        Log(writer, "");
+
+        await using IPositionProvider provider = CreatePositionProvider(localOnly, connectionOptions);
+        Log(writer, $"Position provider: {provider.ProviderName}");
+
+        var reconciliationService = new ReconciliationService(mode);
+        ReconciliationResult reconciliation = await reconciliationService.ReconcileAsync(provider, request, CancellationToken.None).ConfigureAwait(false);
+        Log(writer, reconciliation.ToSummaryString());
+        Log(writer, reconciliation.Message);
+        foreach (string warning in reconciliation.Warnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
+
+        bool brokerVerified = !localOnly;
+        var tradeRegistry = new TradeLifecycleRegistryStore(mode);
+        var detector = new BrokerStateManualTradeDetector(mode, tradeRegistry);
+        BrokerStateMirrorSnapshot mirror = detector.MirrorAndDetect(
+            reconciliation,
+            account,
+            brokerVerified,
+            unknownBrokerPositionsAreIntradayManual: markIntraday,
+            markMissingActivePositionsAsManualClosed: !noManualClose,
+            source: commandName.Replace(' ', '-'));
+
+        Log(writer, "");
+        Log(writer, mirror.ToSummaryString());
+        Log(writer, $"Broker mirror latest JSON: {detector.LatestJsonPath}");
+        Log(writer, $"Broker mirror event JSONL: {detector.DailyJsonlPath}");
+        Log(writer, $"Trade registry latest JSON: {tradeRegistry.LatestJsonPath}");
+        Log(writer, $"Trade registry event JSONL: {tradeRegistry.DailyJsonlPath}");
+
+        Log(writer, "");
+        if (mirror.Positions.Count == 0)
+        {
+            Log(writer, "Broker positions: none");
+        }
+        else
+        {
+            Log(writer, "Broker positions mirrored");
+            Log(writer, "-------------------------");
+            foreach (BrokerMirrorPositionRow position in mirror.Positions)
+            {
+                Log(writer, position.ToDisplayString());
+            }
+        }
+
+        if (mirror.OpenOrders.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Broker open orders mirrored");
+            Log(writer, "---------------------------");
+            foreach (BrokerMirrorOpenOrderRow order in mirror.OpenOrders)
+            {
+                Log(writer, order.ToDisplayString());
+            }
+        }
+
+        if (mirror.Executions.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Broker executions mirrored");
+            Log(writer, "--------------------------");
+            foreach (BrokerMirrorExecutionRow execution in mirror.Executions.Take(30))
+            {
+                Log(writer, execution.ToDisplayString());
+            }
+        }
+
+        Log(writer, "");
+        if (mirror.Detections.Count == 0)
+        {
+            Log(writer, "Manual/external detections: none");
+        }
+        else
+        {
+            Log(writer, "Manual/external detections");
+            Log(writer, "--------------------------");
+            foreach (BrokerMirrorDetection detection in mirror.Detections)
+            {
+                Log(writer, detection.ToDisplayString());
+            }
+        }
+
+        if (mirror.Warnings.Count > 0)
+        {
+            Log(writer, "");
+            Log(writer, "Warnings");
+            Log(writer, "--------");
+            foreach (string warning in mirror.Warnings)
+            {
+                Log(writer, $"WARN: {warning}");
+            }
+        }
+
+        Log(writer, "");
+        Log(writer, "No orders sent.");
         Log(writer, $"Runtime log: {logFilePath}");
     }
 
@@ -3296,6 +3464,9 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} positions");
         Console.WriteLine($"  sailor {name} trades status");
         Console.WriteLine($"  sailor {name} trades status --all --symbol TSLA");
+        Console.WriteLine($"  sailor {name} trades mirror --account DU123456 --wait-seconds 15");
+        Console.WriteLine($"  sailor {name} broker mirror --account DU123456 --wait-seconds 15");
+        Console.WriteLine($"  sailor {name} broker mirror --account DU123456 --intraday --wait-seconds 15");
         Console.WriteLine($"  sailor {name} reconcile --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} reconcile --local-only");
         Console.WriteLine($"  sailor {name} report latest");
@@ -3310,6 +3481,8 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - manual paper order command creates a normalized SailorOrderIntent and writes a ledger");
         Console.WriteLine("  - optional IBApi paper order router can be enabled with -p:EnableIbkrApi=true and --send-orders");
         Console.WriteLine("  - status reads the local order ledger and position store");
+        Console.WriteLine("  - trades status reads the SAILOR-051 trade lifecycle registry");
+        Console.WriteLine("  - broker mirror / trades mirror persist the SAILOR-052 broker-state mirror and classify manual/external trades");
         Console.WriteLine("  - reconcile requests broker positions, open orders, and executions when built with -p:EnableIbkrApi=true");
         Console.WriteLine("  - entries are blocked unless broker reconciliation succeeds without critical mismatch");
         Console.WriteLine("  - paper run now starts the scanner-backed conduct loop, builds strategy frames, creates order intents, writes the ledger, and can route through IBKR paper");

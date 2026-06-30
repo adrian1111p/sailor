@@ -1135,3 +1135,45 @@ SAILOR-051 does **not** yet implement:
 ```
 
 Those remain correctly assigned to SAILOR-052 through SAILOR-057.
+
+---
+
+## SAILOR-052 update — Broker state mirror and manual trade detector
+
+SAILOR-052 implements the broker-state evidence layer required by this audit.
+
+Implemented now:
+
+1. Broker positions, open orders, and recent executions can be mirrored into persistent local files.
+2. The mirror is compared against the SAILOR-051 lifecycle registry.
+3. Unknown broker positions are classified as either `ManualPreStart` or `ManualIntraday` depending on command/runtime context.
+4. External broker open orders and executions are reported as detections.
+5. A previously active Sailor lifecycle that disappears from verified broker positions is marked `ClosedManually` and `ManualStoppedForDay=true`.
+6. `paper run` / live pilot host performs a conservative pre-run mirror when broker-verified reconciliation data is available.
+
+Commands:
+
+```powershell
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper broker mirror --account DUN559573 --wait-seconds 15
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper trades mirror --account DUN559573 --wait-seconds 15
+dotnet run --project src\Sailor.App\Sailor.App.csproj -p:EnableIbkrApi=true -- paper broker mirror --account DUN559573 --intraday --wait-seconds 15
+```
+
+Persistence:
+
+```text
+state/paper/broker-mirror/broker_state_mirror_latest.json
+state/paper/broker-mirror/broker_state_mirror_yyyyMMdd.jsonl
+state/live/broker-mirror/broker_state_mirror_latest.json
+state/live/broker-mirror/broker_state_mirror_yyyyMMdd.jsonl
+```
+
+Still not implemented after SAILOR-052:
+
+- always-on broker polling during the conduct loop;
+- dynamic strategy session creation for newly detected manual intraday symbols;
+- scanner target replenishment;
+- policy-level consumption of `ManualStoppedForDay` by all strategies;
+- full severe-disconnect rebuild.
+
+These remain in SAILOR-053 to SAILOR-056.
