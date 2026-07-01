@@ -47,6 +47,14 @@ public sealed class PaperConductLoop
         int routedCount = 0;
         int filledOrAssumedFillCount = 0;
         bool recoveryAttempted = false;
+        HarshConductTradeLogWriter? harshLogWriter = request.HarshConductTestEnabled
+            ? new HarshConductTradeLogWriter(request.RuntimeOptions.Mode)
+            : null;
+        HarshConductTradeTracker? harshTracker = request.HarshConductTestEnabled
+            ? new HarshConductTradeTracker()
+            : null;
+        int harshGovernanceStops = 0;
+        string harshGovernanceReason = "none";
 
         if (sessions.Count == 0)
         {
@@ -59,6 +67,17 @@ public sealed class PaperConductLoop
         _log($"cadence={request.CadenceSeconds}s iterations={request.MaxIterations} sendOrders={request.SendOrders} dryRun={request.DryRun} canOpenEntries={request.CanOpenEntries} forceFlatNow={request.ForceFlatNow} enforceMaxNotional={request.EnforceMaxOrderNotional} maxNotional={request.MaxOrderNotional:F2}");
         _log($"reconnectAttempts={request.ReconnectAttempts} reconnectBackoffSeconds={request.ReconnectBackoffSeconds} simulateDisconnectAtIteration={request.SimulateDisconnectAtIteration}");
         _log($"router={router.RouterName}");
+        if (request.HarshConductTestEnabled)
+        {
+            _log($"SAILOR-064 harsh conduct test is active: targetTrades={request.HarshConductTargetTrades} defaultQuantity={request.HarshConductDefaultQuantity} replenishEverySeconds={request.HarshConductReplenishmentIntervalSeconds} bypassStrategyEntries=True bypassStaleGate=True.");
+            if (harshLogWriter is not null)
+            {
+                _log($"SAILOR-064 trade log CSV: {harshLogWriter.TradeCsvPath}");
+                _log($"SAILOR-064 latest trade log CSV: {harshLogWriter.LatestTradeCsvPath}");
+                _log($"SAILOR-064 summary CSV: {harshLogWriter.SummaryCsvPath}");
+                _log($"SAILOR-064 latest summary CSV: {harshLogWriter.LatestSummaryCsvPath}");
+            }
+        }
         _log("SAILOR-054/062 lifecycle entry gates are active: default single-lifecycle, V21-V24 multi-cycle before LastEntryMinute, manual/unknown broker positions strategy-managed.");
         if (_scannerSlotManager is not null)
         {
@@ -237,6 +256,11 @@ public sealed class PaperConductLoop
                         Math.Max(0, request.LiveBarFutureToleranceMinutes))
                     : null;
 
+                bool harshForceEntry = request.HarshConductTestEnabled
+                    && session.ScannerSlotActive
+                    && !session.LifecycleClosedForEntry
+                    && !positionBefore.HasOpenPosition;
+
                 if (forceFlatDue && positionBefore.HasOpenPosition)
                 {
                     decision = CreateForceFlatDecision(session, decisionClock);
@@ -244,6 +268,10 @@ public sealed class PaperConductLoop
                 else if (forceFlatDue)
                 {
                     decision = SailorStrategyDecision.Hold(session.Symbol, $"Force-flat window reached at runtimeClock={decisionClock:O}; no open position.");
+                }
+                else if (harshForceEntry)
+                {
+                    decision = CreateHarshConductEntryDecision(session, request);
                 }
                 else if (liveBarCurrentness is { IsCurrent: false })
                 {
@@ -271,7 +299,7 @@ public sealed class PaperConductLoop
 
                 bool isEntry = decision.Type is SailorStrategyDecisionType.EnterLong or SailorStrategyDecisionType.EnterShort;
                 bool isExitOrFlatten = decision.Type is SailorStrategyDecisionType.ExitLong or SailorStrategyDecisionType.ExitShort or SailorStrategyDecisionType.Flatten;
-                if (isEntry && !healthMonitor.CanOpenEntries(request.CanOpenEntries))
+                if (isEntry && !healthMonitor.CanOpenEntries(request.CanOpenEntries) && !request.HarshConductTestEnabled)
                 {
                     string warning = $"{session.Symbol}: entry blocked because runtime safety is {healthMonitor.SafetyState.Mode}. {healthMonitor.SafetyState.Reason}";
                     warnings.Add(warning);
@@ -279,7 +307,7 @@ public sealed class PaperConductLoop
                     continue;
                 }
 
-                if (isEntry)
+                if (isEntry && !request.HarshConductTestEnabled)
                 {
                     int easternMinuteOfDay = MarketTime.GetEasternMinuteOfDay(frame.Time);
                     StrategyLifecycleEntryDecision entryDecision = session.EvaluateEntryPolicy(easternMinuteOfDay, request.RuntimeOptions.LastEntryMinute);
@@ -384,6 +412,7 @@ public sealed class PaperConductLoop
                     await TryRecoverIfNeededAsync($"order receipt for {intent.NormalizedSymbol}").ConfigureAwait(false);
                 }
 
+                int positionQuantityBeforeReceipt = positionBefore.Quantity;
                 bool positionUpdated = session.ApplyReceipt(intent, receipt, bar.Close, request.DryRun, indicators.BarIndex, out string updateMessage);
                 if (positionUpdated)
                 {
@@ -393,6 +422,33 @@ public sealed class PaperConductLoop
                 else
                 {
                     _log(updateMessage);
+                }
+
+                if (harshLogWriter is not null && harshTracker is not null)
+                {
+                    decimal realizedPnl = harshTracker.Record(intent, receipt, positionBefore, session.PositionQuantity, bar.Close, request.DryRun);
+                    harshLogWriter.AppendTrade(new HarshConductTradeEvent(
+                        DateTimeOffset.UtcNow,
+                        request.RuntimeOptions.ModeName,
+                        request.RuntimeOptions.ProfileName,
+                        request.RuntimeOptions.ProfileName,
+                        request.HarshConductTestEnabled ? "S064-harsh-conduct" : "normal-conduct",
+                        iteration,
+                        session.Symbol,
+                        session.ScannerSelectedSide ?? "n/a",
+                        decision.Type,
+                        intent.Side,
+                        intent.OrderType,
+                        intent.Quantity,
+                        bar.Close,
+                        receipt.AverageFillPrice,
+                        receipt.Status == SailorOrderStatus.DryRun ? intent.Quantity : receipt.FilledQuantity,
+                        receipt.Status,
+                        receipt.SentToBroker,
+                        positionQuantityBeforeReceipt,
+                        session.PositionQuantity,
+                        realizedPnl,
+                        decision.Reason));
                 }
 
                 TradeLifecycle lifecycle = _tradeRegistry.ApplyOrderReceipt(
@@ -409,9 +465,11 @@ public sealed class PaperConductLoop
                     && isExitOrFlatten
                     && positionBefore.HasOpenPosition
                     && !session.HasOpenPosition
-                    && session.LifecyclePolicy.ShouldCloseEntryWindowAfterStrategyExit(session.TradeOrigin))
+                    && (request.HarshConductTestEnabled || session.LifecyclePolicy.ShouldCloseEntryWindowAfterStrategyExit(session.TradeOrigin)))
                 {
-                    string lifecycleCloseReason = $"SAILOR-054 {session.LifecyclePolicy.Mode.ToDisplayName()} closed the entry window after strategy exit receipt {receipt.Status}.";
+                    string lifecycleCloseReason = request.HarshConductTestEnabled
+                        ? $"SAILOR-064 closed this scanner slot after exit receipt {receipt.Status}; replenishment must use a different ranked symbol."
+                        : $"SAILOR-054 {session.LifecyclePolicy.Mode.ToDisplayName()} closed the entry window after strategy exit receipt {receipt.Status}.";
                     session.MarkLifecycleClosedAfterStrategyExit(lifecycleCloseReason);
                     _log($"{session.Symbol}: {lifecycleCloseReason}");
                 }
@@ -586,6 +644,20 @@ public sealed class PaperConductLoop
         }
 
         IReadOnlyList<string> activeSymbols = sessions.Select(session => session.Symbol).ToArray();
+        if (harshLogWriter is not null && harshTracker is not null)
+        {
+            HarshConductSummary summary = harshTracker.BuildSummary(
+                request.RuntimeOptions.ProfileName,
+                request.RuntimeOptions.ProfileName,
+                "S064-harsh-conduct",
+                activeSymbols,
+                harshGovernanceStops,
+                harshGovernanceReason);
+            harshLogWriter.WriteSummary(summary);
+            _log($"SAILOR-064 summary Strategy={summary.Strategy} Variant={summary.Variant} Style={summary.Style} Symbols={summary.Symbols} Trades={summary.Trades} >=50={summary.AtLeast50} WinRate={summary.WinRate:P2} PF={summary.ProfitFactor:F2} TotalPnL$={summary.TotalPnl:F2} MaxDD$={summary.MaxDrawdown:F2} GovStops={summary.GovernanceStops} GovReason={summary.GovernanceReason}");
+            _log($"SAILOR-064 latest summary CSV: {harshLogWriter.LatestSummaryCsvPath}");
+        }
+
         return new PaperRuntimeHostResult(
             activeSymbols,
             decisionCount,
@@ -608,6 +680,24 @@ public sealed class PaperConductLoop
             SailorOrderType.Market,
             null,
             $"SAILOR-030 force-flat at/after {frameTime:O} ET minute threshold.");
+    }
+
+    private static SailorStrategyDecision CreateHarshConductEntryDecision(PaperSymbolSession session, PaperRuntimeHostRequest request)
+    {
+        string side = string.IsNullOrWhiteSpace(session.ScannerSelectedSide)
+            ? "LONG"
+            : session.ScannerSelectedSide.Trim().ToUpperInvariant();
+        SailorStrategyDecisionType type = side.Equals("SHORT", StringComparison.OrdinalIgnoreCase)
+            ? SailorStrategyDecisionType.EnterShort
+            : SailorStrategyDecisionType.EnterLong;
+        int quantity = Math.Max(1, request.Quantity > 0 ? request.Quantity : Math.Max(1, request.HarshConductDefaultQuantity));
+        return new SailorStrategyDecision(
+            type,
+            session.Symbol,
+            quantity,
+            SailorOrderType.Market,
+            null,
+            $"SAILOR-064 forced harsh-conduct entry from scanner side={side}; strategy entry filters, stale-bar gate, and scanner block reasons are bypassed for short test execution.");
     }
 
     private static SailorOrderIntent? CreateOrderIntent(

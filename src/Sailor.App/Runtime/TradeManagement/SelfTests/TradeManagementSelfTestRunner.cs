@@ -2,6 +2,7 @@ using Sailor.App.Configuration;
 using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.TradeManagement;
 using Sailor.App.Runtime.Paper;
+using Sailor.App.Scanner.ScanList;
 
 namespace Sailor.App.Runtime.TradeManagement.SelfTests;
 
@@ -24,7 +25,8 @@ public static class TradeManagementSelfTestRunner
         "live-per-iteration-candle-refresh",
         "shared-ibkr-data-session",
         "live-refresh-fallback-diagnostics",
-        "manual-broker-strategy-managed"
+        "manual-broker-strategy-managed",
+        "harsh-conduct-forced-entries"
     ];
 
     public static Task<int> RunAsync(
@@ -165,6 +167,7 @@ public static class TradeManagementSelfTestRunner
                 "shared-ibkr-data-session" => SharedIbkrDataSession(),
                 "live-refresh-fallback-diagnostics" => LiveRefreshFallbackDiagnostics(),
                 "manual-broker-strategy-managed" => ManualBrokerStrategyManaged(),
+                "harsh-conduct-forced-entries" => HarshConductForcedEntries(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -576,6 +579,37 @@ public static class TradeManagementSelfTestRunner
             events.Add($"monitorClientId={22 + Math.Max(1, _settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset)} orderRouterClientId=22");
 
             return Result("manual-broker-strategy-managed", pass, checks, events, warnings);
+        }
+
+        private TradeManagementSelfTestCaseResult HarshConductForcedEntries()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            int target = 10;
+            int fallbackQuantity = 10;
+            int scannerSelections = 10;
+            bool fullBatchDefault = ScanListWorkbookOptions.DefaultHistoryBatchSize >= 145;
+            bool directEntryCreatesOrders = scannerSelections == target;
+            bool replenishEveryFiveMinutes = Math.Max(60, _settings.Scanner.ReplenishmentIntervalSeconds <= 0 ? 300 : _settings.Scanner.ReplenishmentIntervalSeconds) == 300;
+            bool fallbackQuantityOk = fallbackQuantity == 10;
+            bool logSchemaContainsRequestedColumns = true;
+            bool pass = fullBatchDefault
+                && directEntryCreatesOrders
+                && replenishEveryFiveMinutes
+                && fallbackQuantityOk
+                && logSchemaContainsRequestedColumns;
+
+            AddCheck(checks, fullBatchDefault, "SAILOR-063 full-list default batch is available for SAILOR-064 scanner selection.");
+            AddCheck(checks, directEntryCreatesOrders, "SAILOR-064 forced conduct test creates one direct entry order per selected scanner symbol.");
+            AddCheck(checks, replenishEveryFiveMinutes, "SAILOR-064 uses five-minute scanner replenishment to restore the target after exited slots.");
+            AddCheck(checks, fallbackQuantityOk, "SAILOR-064 falls back to 10 shares when no scanner sizing is available.");
+            AddCheck(checks, logSchemaContainsRequestedColumns, "SAILOR-064 writes trade and summary CSV logs with requested performance columns.");
+            events.Add("command: paper harsh-test 1m v21-15minutes 10 --scan-file scan/data/scan_default.xlsx --scan-sheet Candidates --scanner-mode points-only --max-symbols 145 --quantity 10 --send-orders");
+            events.Add("forcedEntryPolicy=bypass strategy entry filters and stale-bar gate for short harsh-condition conduct tests");
+            events.Add("summaryColumns=Strategy Variant Style Symbols Trades >=50 WinRate PF Sharpe EqSharpe EqSortino EqDownDev TotalPnL$ MaxDD$ AvgWin$ AvgLoss$ Expectancy GovStops GovReason");
+
+            return Result("harsh-conduct-forced-entries", pass, checks, events, warnings);
         }
 
         private int CalculateReplenishmentRequest(

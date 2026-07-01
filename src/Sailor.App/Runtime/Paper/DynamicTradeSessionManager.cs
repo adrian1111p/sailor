@@ -27,11 +27,13 @@ public sealed class DynamicTradeSessionManager
         TradeLifecycleRegistrySnapshot registrySnapshot = tradeRegistry.LoadSnapshot();
         DateOnly tradeDate = DateOnly.FromDateTime(DateTime.UtcNow);
 
-        int maxScannerOwned = Math.Max(1, Math.Min(
-            request.RuntimeOptions.TopCount,
-            _settings.Runtime.Safety.MaxActiveSymbols <= 0
-                ? request.RuntimeOptions.TopCount
-                : _settings.Runtime.Safety.MaxActiveSymbols));
+        int maxScannerOwned = request.HarshConductTestEnabled
+            ? Math.Max(1, request.RuntimeOptions.TopCount)
+            : Math.Max(1, Math.Min(
+                request.RuntimeOptions.TopCount,
+                _settings.Runtime.Safety.MaxActiveSymbols <= 0
+                    ? request.RuntimeOptions.TopCount
+                    : _settings.Runtime.Safety.MaxActiveSymbols));
 
         int scannerOwnedCount = 0;
         foreach (PaperScannerCandidate candidate in scannerResult.Candidates.Take(maxScannerOwned))
@@ -47,7 +49,8 @@ public sealed class DynamicTradeSessionManager
                     candidate.Snapshot,
                     SailorTradeOrigin.ScannerOwned,
                     CreateScannerSlotId(symbol, candidate.Rank > 0 ? candidate.Rank : scannerOwnedCount + 1),
-                    reason)))
+                    reason,
+                    candidate.Candidate.Side)))
             {
                 scannerOwnedCount++;
             }

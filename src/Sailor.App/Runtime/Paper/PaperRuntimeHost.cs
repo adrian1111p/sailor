@@ -206,7 +206,9 @@ public sealed class PaperRuntimeHost
             tradeRegistry,
             lifecyclePolicyResolver,
             _log,
-            request.RuntimeOptions.Mode);
+            request.RuntimeOptions.Mode,
+            request.HarshConductTestEnabled ? Math.Max(60, request.HarshConductReplenishmentIntervalSeconds) : null,
+            request.HarshConductTestEnabled ? Math.Max(1, request.HarshConductTargetTrades) : null);
         _log("SAILOR-055 scanner slot target and 5-minute replenishment.");
         _log("Scanner-owned sessions count toward the scanner target; manual/pre-existing/unknown sessions are strategy-managed separately and never reduce scanner shortfall.");
         _log(scannerSlotManager.ToDisplayString());
@@ -349,8 +351,9 @@ public sealed class PaperRuntimeHost
                     request.MaxIterations,
                     request.RuntimeOptions.LastEntryMinute,
                     request.RuntimeOptions.ForceFlatMinute,
-                    request.SendOrders && _settings.Runtime.Safety.RequireCurrentBarsForPaperSendOrders,
-                    _settings.Runtime.Safety.LiveBarMaxAgeMinutes);
+                    request.SendOrders && _settings.Runtime.Safety.RequireCurrentBarsForPaperSendOrders && !request.HarshConductTestEnabled,
+                    _settings.Runtime.Safety.LiveBarMaxAgeMinutes,
+                    seed.ScannerSide);
 
                 StrategyLifecyclePolicy lifecyclePolicy = session.LifecyclePolicy;
 

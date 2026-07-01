@@ -1404,3 +1404,21 @@ Status: implemented.
 
 The scan-list default history batch no longer limits the first cycle to the first 45 alphabetic symbols. When `--history-batch-size` is omitted, Sailor now uses `--max-symbols` when supplied, otherwise the loaded workbook symbol count, with fallback `145`. This lets the scanner rank the best 10 from the full 145-symbol list while preserving explicit `--history-batch-size 45` for pacing-safe staged history loading.
 
+
+## SAILOR-064 — Harsh conduct forced-entry test module
+
+Status: implemented.
+
+S064 adds a dedicated `harsh-test` command for controlled paper/live conduct-strategy testing under harsh market/data conditions. Scanner ranking remains the source of symbols and side selection, but the command directly creates market entry orders for the selected scanner symbols so the conduct/exit path can be exercised without waiting for normal entry filters. S063 full-list scan batching applies to this command through the normal scan-list workflow.
+
+Key evidence expected:
+
+- `SAILOR-064 harsh conduct test is active` in the runtime log.
+- one forced entry order per scanner-selected symbol, using the scanner side;
+- quantity from `--quantity`, default 10 when no scanner sizing exists;
+- S064 closes a scanner slot after an exit so five-minute replenishment can use a different ranked symbol;
+- trade and summary CSV files are written under `logs\Paper\HarshConduct` or `logs\Live\HarshConduct`.
+
+The S064 summary CSV includes: `Strategy, Variant, Style, Symbols, Trades, >=50, WinRate, PF, Sharpe, EqSharpe, EqSortino, EqDownDev, TotalPnL$, MaxDD$, AvgWin$, AvgLoss$, Expectancy, GovStops, GovReason`.
+
+Live harsh-test send-orders requires the explicit `--confirm-live-force` flag.

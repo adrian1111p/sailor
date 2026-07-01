@@ -36,6 +36,7 @@ public sealed class PaperSymbolSession
         int runtimeForceFlatMinute,
         SailorTradeOrigin tradeOrigin,
         string? scannerSlotId,
+        string? scannerSelectedSide,
         StrategyLifecyclePolicy lifecyclePolicy,
         int startIndex,
         int quantity,
@@ -54,6 +55,7 @@ public sealed class PaperSymbolSession
         _runtimeForceFlatMinute = runtimeForceFlatMinute;
         TradeOrigin = tradeOrigin;
         ScannerSlotId = string.IsNullOrWhiteSpace(scannerSlotId) ? null : scannerSlotId.Trim();
+        ScannerSelectedSide = string.IsNullOrWhiteSpace(scannerSelectedSide) ? null : scannerSelectedSide.Trim().ToUpperInvariant();
         LifecyclePolicy = lifecyclePolicy;
         _cursor = Math.Clamp(startIndex - 1, 0, Math.Max(0, _bars.Count - 1));
         _cursorPositionedOnFrame = false;
@@ -73,6 +75,8 @@ public sealed class PaperSymbolSession
     public SailorTradeOrigin TradeOrigin { get; }
 
     public string? ScannerSlotId { get; }
+
+    public string? ScannerSelectedSide { get; }
 
     public StrategyLifecyclePolicy LifecyclePolicy { get; }
 
@@ -124,7 +128,8 @@ public sealed class PaperSymbolSession
         int runtimeLastEntryMinute,
         int runtimeForceFlatMinute,
         bool requireCurrentLiveBars,
-        int liveBarMaxAgeMinutes)
+        int liveBarMaxAgeMinutes,
+        string? scannerSelectedSide = null)
     {
         _ = runtimeLastEntryMinute;
         var provider = new CsvBacktestDataProvider();
@@ -189,6 +194,7 @@ public sealed class PaperSymbolSession
             safeForceFlatMinute,
             tradeOrigin,
             scannerSlotId,
+            scannerSelectedSide,
             lifecyclePolicy,
             startIndex,
             quantity,
@@ -523,8 +529,9 @@ public sealed class PaperSymbolSession
     {
         string side = PositionQuantity > 0 ? "LONG" : PositionQuantity < 0 ? "SHORT" : "FLAT";
         string slot = string.IsNullOrWhiteSpace(ScannerSlotId) ? "slot=n/a" : $"slot={ScannerSlotId}";
+        string scannerSide = string.IsNullOrWhiteSpace(ScannerSelectedSide) ? "scannerSide=n/a" : $"scannerSide={ScannerSelectedSide}";
         string lifecycleClosed = LifecycleClosedForEntry ? " entryClosed=True" : string.Empty;
-        return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex} origin={TradeOrigin.ToDisplayName()} {slot} lifecycle={LifecyclePolicy.Mode.ToDisplayName()}{lifecycleClosed}";
+        return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex} origin={TradeOrigin.ToDisplayName()} {slot} {scannerSide} lifecycle={LifecyclePolicy.Mode.ToDisplayName()}{lifecycleClosed}";
     }
 
     public bool SyncBrokerPosition(int brokerQuantity, decimal brokerAveragePrice, out string message)

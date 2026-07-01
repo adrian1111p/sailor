@@ -26,7 +26,9 @@ public sealed class ScannerSlotManager
         TradeLifecycleRegistryStore tradeRegistry,
         StrategyLifecyclePolicyResolver lifecyclePolicyResolver,
         Action<string> log,
-        SailorRuntimeMode mode)
+        SailorRuntimeMode mode,
+        int? replenishmentIntervalOverrideSeconds = null,
+        int? targetScannerTradesOverride = null)
     {
         _settings = settings;
         _connectionOptions = connectionOptions;
@@ -35,9 +37,9 @@ public sealed class ScannerSlotManager
         _lifecyclePolicyResolver = lifecyclePolicyResolver;
         _log = log;
         _writer = new ScannerSlotReplenishmentReportWriter(mode);
-        ReplenishIntervalSeconds = Math.Max(60, _settings.Scanner.ReplenishmentIntervalSeconds <= 0 ? 300 : _settings.Scanner.ReplenishmentIntervalSeconds);
-        int configuredTarget = Math.Max(0, _settings.Scanner.TargetScannerTrades);
-        TargetScannerTrades = mode == SailorRuntimeMode.Live && !_settings.Runtime.Live.AllowMultiSymbolPilot
+        ReplenishIntervalSeconds = Math.Max(60, replenishmentIntervalOverrideSeconds ?? (_settings.Scanner.ReplenishmentIntervalSeconds <= 0 ? 300 : _settings.Scanner.ReplenishmentIntervalSeconds));
+        int configuredTarget = Math.Max(0, targetScannerTradesOverride ?? _settings.Scanner.TargetScannerTrades);
+        TargetScannerTrades = mode == SailorRuntimeMode.Live && !_settings.Runtime.Live.AllowMultiSymbolPilot && !targetScannerTradesOverride.HasValue
             ? 0
             : configuredTarget;
         _nextReplenishmentUtc = DateTimeOffset.UtcNow.AddSeconds(ReplenishIntervalSeconds);
@@ -113,7 +115,7 @@ public sealed class ScannerSlotManager
             return _writer.Write(BuildReport(sessions, 0, 0, blockedSymbols, $"blocked because ET minute {easternMinute} is at/after LastEntryMinute {request.RuntimeOptions.LastEntryMinute}", referenceTime));
         }
 
-        if (!healthMonitor.CanOpenEntries(request.CanOpenEntries))
+        if (!healthMonitor.CanOpenEntries(request.CanOpenEntries) && !request.HarshConductTestEnabled)
         {
             return _writer.Write(BuildReport(sessions, 0, 0, blockedSymbols, $"blocked because runtime safety is {healthMonitor.SafetyState.Mode}: {healthMonitor.SafetyState.Reason}", referenceTime));
         }
@@ -183,8 +185,9 @@ public sealed class ScannerSlotManager
                     maxIterations: request.MaxIterations,
                     runtimeLastEntryMinute: request.RuntimeOptions.LastEntryMinute,
                     runtimeForceFlatMinute: request.RuntimeOptions.ForceFlatMinute,
-                    requireCurrentLiveBars: request.SendOrders && _settings.Runtime.Safety.RequireCurrentBarsForPaperSendOrders,
-                    liveBarMaxAgeMinutes: request.LiveBarMaxAgeMinutes);
+                    requireCurrentLiveBars: request.SendOrders && _settings.Runtime.Safety.RequireCurrentBarsForPaperSendOrders && !request.HarshConductTestEnabled,
+                    liveBarMaxAgeMinutes: request.LiveBarMaxAgeMinutes,
+                    scannerSelectedSide: candidate.Candidate.Side);
 
                 sessions.Add(session);
                 activeSymbols.Add(symbol);

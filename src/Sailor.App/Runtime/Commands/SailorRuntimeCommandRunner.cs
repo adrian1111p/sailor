@@ -84,6 +84,12 @@ public static class SailorRuntimeCommandRunner
                 await RunStrategySkeletonAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
+            case "harsh-test":
+            case "conduct-harsh-test":
+            case "force-conduct-test":
+                await RunHarshConductTestAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
             case "order":
                 await RunManualOrderAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
@@ -1449,20 +1455,60 @@ public static class SailorRuntimeCommandRunner
     }
 
 
+    private static Task RunHarshConductTestAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        var effectiveArgs = new List<string>(args);
+        if (!HasOption(effectiveArgs.ToArray(), "--harsh-conduct-test"))
+        {
+            effectiveArgs.Add("--harsh-conduct-test");
+        }
+        if (!HasOption(effectiveArgs.ToArray(), "--scanner-mode"))
+        {
+            effectiveArgs.Add("--scanner-mode");
+            effectiveArgs.Add("points-only");
+        }
+        if (!HasOption(effectiveArgs.ToArray(), "--quantity"))
+        {
+            effectiveArgs.Add("--quantity");
+            effectiveArgs.Add("10");
+        }
+        if (!HasOption(effectiveArgs.ToArray(), "--cadence-seconds"))
+        {
+            effectiveArgs.Add("--cadence-seconds");
+            effectiveArgs.Add("60");
+        }
+        if (!HasOption(effectiveArgs.ToArray(), "--iterations"))
+        {
+            effectiveArgs.Add("--iterations");
+            effectiveArgs.Add("10");
+        }
+        if (!HasOption(effectiveArgs.ToArray(), "--no-depth") && !HasOption(effectiveArgs.ToArray(), "--with-depth"))
+        {
+            effectiveArgs.Add("--no-depth");
+        }
+
+        return RunStrategySkeletonAsync(mode, effectiveArgs.ToArray(), settings);
+    }
+
+
     private static async Task RunStrategySkeletonAsync(
         SailorRuntimeMode mode,
         string[] args,
         SailorAppSettings settings)
     {
+        bool harshConductTest = HasOption(args, "--harsh-conduct-test");
         SailorRuntimeOptions runtimeOptions = CreateOptions(mode, args, settings);
-        string logFilePath = CreateRuntimeLogFilePath(mode, "run");
+        string logFilePath = CreateRuntimeLogFilePath(mode, harshConductTest ? "harsh_conduct_test" : "run");
 
         await using var writer = CreateWriter(logFilePath);
         Log(writer, $"sailor {runtimeOptions.ModeName} paper conduct runtime started");
         Log(writer, runtimeOptions.ToCompactString());
         Log(writer, "");
 
-        if (mode == SailorRuntimeMode.Live)
+        if (mode == SailorRuntimeMode.Live && !harshConductTest)
         {
             await RunLivePilotAsync(args, settings, runtimeOptions, logFilePath, writer);
             return;
@@ -1506,12 +1552,31 @@ public static class SailorRuntimeCommandRunner
 
         bool sendOrdersRequested = args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase));
         bool dryRunRequested = args.Any(arg => arg.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
-        bool sendOrders = mode == SailorRuntimeMode.Paper && sendOrdersRequested && !dryRunRequested;
+        bool liveForceConfirmed = mode == SailorRuntimeMode.Live
+            && harshConductTest
+            && HasOption(args, "--confirm-live-force");
+        bool sendOrders = ((mode == SailorRuntimeMode.Paper && sendOrdersRequested)
+                || (mode == SailorRuntimeMode.Live && sendOrdersRequested && liveForceConfirmed))
+            && !dryRunRequested;
         bool dryRun = !sendOrders;
+        runtimeOptions = runtimeOptions with
+        {
+            SendOrders = sendOrders,
+            DryRun = dryRun
+        };
 
         if (sendOrdersRequested && !sendOrders)
         {
-            Log(writer, "WARN: --send-orders was requested but the command is still dry-run. Check mode and --dry-run flag.");
+            Log(writer, mode == SailorRuntimeMode.Live && harshConductTest && !liveForceConfirmed
+                ? "WARN: --send-orders was requested for live SAILOR-064, but command remains dry-run because --confirm-live-force is missing."
+                : "WARN: --send-orders was requested but the command is still dry-run. Check mode and --dry-run flag.");
+        }
+
+        if (harshConductTest && !HasScanListInput(args))
+        {
+            Log(writer, "SAILOR-064 harsh conduct test requires --scan-file/--scan-sheet so forced entries come from scanner ranking. No orders sent.");
+            Log(writer, $"Runtime log: {logFilePath}");
+            return;
         }
 
         var connectionOptions = new IbkrConnectionOptions(
@@ -1681,7 +1746,7 @@ public static class SailorRuntimeCommandRunner
 
         bool manualBrokerEntriesAllowed = settings.Runtime.Safety.ManualBrokerPositionsAllowScannerEntries
             && ManualBrokerOrderWorkflow.AllowsStrategyEntries(reconciliation);
-        bool canOpenEntries = dryRun || reconciliation.CanOpenNewEntries || manualBrokerEntriesAllowed;
+        bool canOpenEntries = harshConductTest || dryRun || reconciliation.CanOpenNewEntries || manualBrokerEntriesAllowed;
         if (sendOrders && !canOpenEntries)
         {
             Log(writer, "");
@@ -1719,21 +1784,25 @@ public static class SailorRuntimeCommandRunner
             simulateDisconnectAtIteration,
             brokerReconcileAsync,
             ReplenishmentScannerOptions: replenishmentScannerOptions,
-            BlockStaleHistoricalReplay: settings.Runtime.Safety.BlockStaleHistoricalReplay,
+            BlockStaleHistoricalReplay: harshConductTest ? false : settings.Runtime.Safety.BlockStaleHistoricalReplay,
             LiveBarMaxAgeMinutes: settings.Runtime.Safety.LiveBarMaxAgeMinutes,
             LiveBarFutureToleranceMinutes: settings.Runtime.Safety.LiveBarFutureToleranceMinutes,
-            LiveCandleRefreshEnabled: settings.Runtime.Safety.LiveCandleRefreshEnabled,
+            LiveCandleRefreshEnabled: harshConductTest ? false : settings.Runtime.Safety.LiveCandleRefreshEnabled,
             LiveCandleRefreshLookbackMinutes: settings.Runtime.Safety.LiveCandleRefreshLookbackMinutes,
             LiveCandleRefreshClientIdOffset: settings.Runtime.Safety.LiveCandleRefreshClientIdOffset,
             LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase,
             LiveCandleRefreshFallbackEnabled: settings.Runtime.Safety.LiveCandleRefreshFallbackEnabled,
             LiveCandleRefreshDiagnosticsEnabled: settings.Runtime.Safety.LiveCandleRefreshDiagnosticsEnabled,
-            LiveRefreshCloseOnlyAfterStale: settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale,
+            LiveRefreshCloseOnlyAfterStale: harshConductTest ? false : settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale,
             ManualBrokerPositionsAllowScannerEntries: settings.Runtime.Safety.ManualBrokerPositionsAllowScannerEntries,
             ManualBrokerPositionsAreStrategyManaged: settings.Runtime.Safety.ManualBrokerPositionsAreStrategyManaged,
             ManualBrokerPositionMonitorEnabled: settings.Runtime.Safety.ManualBrokerPositionMonitorEnabled,
             ManualBrokerPositionMonitorIntervalSeconds: settings.Runtime.Safety.ManualBrokerPositionMonitorIntervalSeconds,
-            ManualBrokerPositionMonitorClientIdOffset: settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset);
+            ManualBrokerPositionMonitorClientIdOffset: settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset,
+            HarshConductTestEnabled: harshConductTest,
+            HarshConductTargetTrades: runtimeOptions.TopCount,
+            HarshConductDefaultQuantity: 10,
+            HarshConductReplenishmentIntervalSeconds: 300);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult result = await host.RunAsync(request, CancellationToken.None);
@@ -3667,6 +3736,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} run --dry-run");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --iterations 10");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
+        Console.WriteLine($"  sailor {name} harsh-test 1m v21-15minutes 10 --scan-file scan/data/scan_default.xlsx --scan-sheet Candidates --scanner-mode points-only --quantity 10 --max-symbols 145 --iterations 10 --cadence-seconds 60 --send-orders");
         if (mode == SailorRuntimeMode.Live)
         {
             Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --account DU123456 --max-notional 100 --confirm-live --operator-watching-tws");

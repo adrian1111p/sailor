@@ -41,7 +41,11 @@ public sealed record PaperRuntimeHostRequest(
     bool ManualBrokerPositionsAreStrategyManaged = true,
     bool ManualBrokerPositionMonitorEnabled = true,
     int ManualBrokerPositionMonitorIntervalSeconds = 60,
-    int ManualBrokerPositionMonitorClientIdOffset = 300);
+    int ManualBrokerPositionMonitorClientIdOffset = 300,
+    bool HarshConductTestEnabled = false,
+    int HarshConductTargetTrades = 10,
+    int HarshConductDefaultQuantity = 10,
+    int HarshConductReplenishmentIntervalSeconds = 300);
 
 public sealed record PaperRuntimeHostResult(
     IReadOnlyList<string> ActiveSymbols,
