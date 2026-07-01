@@ -41,7 +41,7 @@ public sealed class PaperRuntimeHost
             : "Dry-run mode assumes fills locally so the conduct/exit path can be exercised without broker orders. Send-orders mode requires broker reconciliation and only updates local session position after actual filled quantity is reported.");
         _log("");
         _log("SAILOR-031 implementation: disconnection and degraded-state handling.");
-        _log("Runtime health starts in Normal only when the pre-run broker/reconciliation gate is clean. Any disconnect, degraded broker signal, or routing failure moves the runtime to CloseOnly and blocks new entries.");
+        _log("Runtime health starts in Normal when the pre-run broker gate is clean or when SAILOR-062 accepts manual TWS broker positions as strategy-managed state. Disconnect, degraded broker signal, stale data, or routing failure still moves the runtime to CloseOnly.");
         _log($"Incident JSONL: {incidentReporter.DailyJsonlPath}");
         _log($"Latest incident JSON: {incidentReporter.LatestIncidentPath}");
         _log(healthMonitor.SafetyState.ToDisplayString());
@@ -175,7 +175,7 @@ public sealed class PaperRuntimeHost
 
         var lifecyclePolicyResolver = new StrategyLifecyclePolicyResolver(_settings);
         _log("SAILOR-054 strategy lifecycle policies.");
-        _log("V21/V22/V23/V24 are multi-cycle only before the universal LastEntryMinute; default profiles are single-lifecycle; manual/unknown broker trades are exit-only.");
+        _log("V21/V22/V23/V24 are multi-cycle only before the universal LastEntryMinute; default profiles are single-lifecycle; SAILOR-062 manual/unknown broker trades are strategy-managed instead of exit-only.");
         _log(lifecyclePolicyResolver.ToSummaryString());
         _log($"universalLastEntryMinute={request.RuntimeOptions.LastEntryMinute} universalForceFlatMinute={request.RuntimeOptions.ForceFlatMinute}");
         _log("");
@@ -208,7 +208,7 @@ public sealed class PaperRuntimeHost
             _log,
             request.RuntimeOptions.Mode);
         _log("SAILOR-055 scanner slot target and 5-minute replenishment.");
-        _log("Scanner-owned sessions count toward the scanner target; manual/pre-existing/unknown sessions are managed separately and never reduce scanner shortfall.");
+        _log("Scanner-owned sessions count toward the scanner target; manual/pre-existing/unknown sessions are strategy-managed separately and never reduce scanner shortfall.");
         _log(scannerSlotManager.ToDisplayString());
         ScannerSlotReplenishmentReport initialSlotReport = scannerSlotManager.WriteStatusReport(sessions, "initial scanner slot report before conduct loop");
         _log(initialSlotReport.ToSummaryString());
@@ -250,7 +250,21 @@ public sealed class PaperRuntimeHost
             : "Paper send-orders current-candle requirement is disabled by configuration.");
         _log("");
 
-        var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, tradeRegistry, scannerSlotManager, severeRecoveryOrchestrator);
+        ManualBrokerPositionRuntimeSync? manualBrokerPositionRuntimeSync = request.ManualBrokerPositionsAreStrategyManaged
+            ? new ManualBrokerPositionRuntimeSync(
+                _settings,
+                tradeRegistry,
+                lifecyclePolicyResolver,
+                _log)
+            : null;
+        if (manualBrokerPositionRuntimeSync is not null)
+        {
+            _log("SAILOR-062 manual TWS broker position workflow.");
+            _log("Manual/pre-existing/new TWS positions are accepted as strategy-managed sessions; scanner-owned entries are not blocked only because manual broker positions exist.");
+            _log("");
+        }
+
+        var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, tradeRegistry, scannerSlotManager, severeRecoveryOrchestrator, manualBrokerPositionRuntimeSync);
         PaperRuntimeHostResult loopResult = await conductLoop.RunAsync(
             sessions,
             router,

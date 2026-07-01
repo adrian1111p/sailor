@@ -20,7 +20,7 @@ public sealed record StrategyLifecyclePolicy(
         if (IsManualManagedExitOnly)
         {
             return StrategyLifecycleEntryDecision.Block(
-                "SAILOR-054 manual/unknown broker lifecycle is managed for exits only; automatic entries and re-entries are blocked.");
+                "SAILOR-054 lifecycle policy is configured as manual-managed-exit-only; automatic entries and re-entries are blocked.");
         }
 
         if (lastEntryMinute > 0 && easternMinuteOfDay >= lastEntryMinute)
@@ -46,11 +46,10 @@ public sealed record StrategyLifecyclePolicy(
     }
 
     public bool ShouldCloseEntryWindowAfterStrategyExit(SailorTradeOrigin origin)
-        => Mode != StrategyLifecycleMode.MultiCycleUntilLastEntryMinute
-            || origin is SailorTradeOrigin.ManualPreStart
-                or SailorTradeOrigin.ManualIntraday
-                or SailorTradeOrigin.UnknownBroker
-                or SailorTradeOrigin.SailorManualCommand;
+    {
+        _ = origin;
+        return Mode != StrategyLifecycleMode.MultiCycleUntilLastEntryMinute;
+    }
 
     public string ToDisplayString()
         => $"profile={ProfileName} lifecycle={Mode.ToDisplayName()} manualCloseBlocksForDay={ManualCloseBlocksForDay} scannerReselectException={AllowScannerReselectAfterManualStop}";

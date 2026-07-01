@@ -527,6 +527,34 @@ public sealed class PaperSymbolSession
         return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex} origin={TradeOrigin.ToDisplayName()} {slot} lifecycle={LifecyclePolicy.Mode.ToDisplayName()}{lifecycleClosed}";
     }
 
+    public bool SyncBrokerPosition(int brokerQuantity, decimal brokerAveragePrice, out string message)
+    {
+        if (PositionQuantity == brokerQuantity && AveragePrice == brokerAveragePrice)
+        {
+            message = $"SAILOR-062 broker position already synchronized for {Symbol}: qty={brokerQuantity} avg={brokerAveragePrice:F4}.";
+            return false;
+        }
+
+        int previousQuantity = PositionQuantity;
+        decimal previousAveragePrice = AveragePrice;
+        PositionQuantity = brokerQuantity;
+        AveragePrice = brokerQuantity == 0 ? 0m : brokerAveragePrice;
+
+        if (previousQuantity == 0 && brokerQuantity != 0)
+        {
+            EntryBarIndex = Math.Clamp(_cursor, 0, Math.Max(0, _bars.Count - 1));
+            LifecycleClosedForEntry = false;
+            LifecycleClosedReason = null;
+        }
+        else if (brokerQuantity == 0)
+        {
+            EntryBarIndex = -1;
+        }
+
+        message = $"SAILOR-062 synchronized broker/manual position {Symbol}: oldQty={previousQuantity} oldAvg={previousAveragePrice:F4} brokerQty={brokerQuantity} brokerAvg={brokerAveragePrice:F4}.";
+        return true;
+    }
+
     public bool ApplyReceipt(
         SailorOrderIntent intent,
         SailorOrderReceipt receipt,

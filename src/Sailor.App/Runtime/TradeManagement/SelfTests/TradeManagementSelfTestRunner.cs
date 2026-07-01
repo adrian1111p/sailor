@@ -23,7 +23,8 @@ public static class TradeManagementSelfTestRunner
         "live-current-candle-guard",
         "live-per-iteration-candle-refresh",
         "shared-ibkr-data-session",
-        "live-refresh-fallback-diagnostics"
+        "live-refresh-fallback-diagnostics",
+        "manual-broker-strategy-managed"
     ];
 
     public static Task<int> RunAsync(
@@ -163,6 +164,7 @@ public static class TradeManagementSelfTestRunner
                 "live-per-iteration-candle-refresh" => LivePerIterationCandleRefresh(),
                 "shared-ibkr-data-session" => SharedIbkrDataSession(),
                 "live-refresh-fallback-diagnostics" => LiveRefreshFallbackDiagnostics(),
+                "manual-broker-strategy-managed" => ManualBrokerStrategyManaged(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -195,12 +197,12 @@ public static class TradeManagementSelfTestRunner
             StrategyLifecyclePolicy policy = _policyResolver.Resolve("v21-15minutes", origin);
             StrategyLifecycleEntryDecision entry = policy.EvaluateEntry(origin, scannerSlotActive: false, lifecycleClosedForEntry: false, easternMinuteOfDay: 600, lastEntryMinute: _lastEntryMinute);
             bool pass = !origin.CountsTowardScannerTarget()
-                && policy.IsManualManagedExitOnly
-                && !entry.AllowEntry;
+                && !policy.IsManualManagedExitOnly
+                && entry.AllowEntry;
 
             AddCheck(checks, !origin.CountsTowardScannerTarget(), "manual intraday trade is excluded from scanner target count.");
-            AddCheck(checks, policy.IsManualManagedExitOnly, "manual intraday trade resolves to manual-managed exit-only lifecycle.");
-            AddCheck(checks, !entry.AllowEntry, "automatic entry/re-entry is blocked for manual intraday trade.");
+            AddCheck(checks, !policy.IsManualManagedExitOnly, "SAILOR-062 manual intraday trade resolves to the configured strategy lifecycle, not exit-only.");
+            AddCheck(checks, entry.AllowEntry, "SAILOR-062 manual intraday trade may be evaluated by the strategy immediately before LastEntryMinute.");
             events.Add(entry.Reason);
 
             return Result("manual-open-after-start", pass, checks, events, warnings);
@@ -540,6 +542,40 @@ public static class TradeManagementSelfTestRunner
             events.Add("diagnostic command: paper history-refresh-test SYMBOL --client-id 222 --lookback-minutes 60");
 
             return Result("live-refresh-fallback-diagnostics", pass, checks, events, warnings);
+        }
+
+        private TradeManagementSelfTestCaseResult ManualBrokerStrategyManaged()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            SailorTradeOrigin preStart = SailorTradeOrigin.ManualPreStart;
+            SailorTradeOrigin intraday = SailorTradeOrigin.ManualIntraday;
+            StrategyLifecyclePolicy preStartPolicy = _policyResolver.Resolve("v21-15minutes", preStart);
+            StrategyLifecyclePolicy intradayPolicy = _policyResolver.Resolve("v21-15minutes", intraday);
+            StrategyLifecycleEntryDecision preStartEntry = preStartPolicy.EvaluateEntry(preStart, scannerSlotActive: false, lifecycleClosedForEntry: false, easternMinuteOfDay: 600, lastEntryMinute: _lastEntryMinute);
+            StrategyLifecycleEntryDecision intradayEntry = intradayPolicy.EvaluateEntry(intraday, scannerSlotActive: false, lifecycleClosedForEntry: false, easternMinuteOfDay: 600, lastEntryMinute: _lastEntryMinute);
+            bool manualWorkflowEnabled = _settings.Runtime.Safety.ManualBrokerPositionsAllowScannerEntries
+                && _settings.Runtime.Safety.ManualBrokerPositionsAreStrategyManaged
+                && _settings.Runtime.Safety.ManualBrokerPositionMonitorEnabled;
+            bool monitorClientSeparate = 22 + Math.Max(1, _settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset) != 22;
+            bool pass = manualWorkflowEnabled
+                && monitorClientSeparate
+                && !preStartPolicy.IsManualManagedExitOnly
+                && !intradayPolicy.IsManualManagedExitOnly
+                && preStartEntry.AllowEntry
+                && intradayEntry.AllowEntry;
+
+            AddCheck(checks, manualWorkflowEnabled, "SAILOR-062 manual broker workflow settings are enabled by default.");
+            AddCheck(checks, monitorClientSeparate, "manual broker monitor uses a separate read-only IBKR client id from the order router.");
+            AddCheck(checks, !preStartPolicy.IsManualManagedExitOnly, "pre-existing manual TWS position is strategy-managed, not exit-only.");
+            AddCheck(checks, !intradayPolicy.IsManualManagedExitOnly, "new intraday manual TWS position is strategy-managed, not exit-only.");
+            AddCheck(checks, preStartEntry.AllowEntry && intradayEntry.AllowEntry, "manual broker sessions use normal strategy lifecycle gates before LastEntryMinute.");
+            events.Add($"preStartPolicy={preStartPolicy.ToDisplayString()} entry={preStartEntry.AllowEntry}");
+            events.Add($"intradayPolicy={intradayPolicy.ToDisplayString()} entry={intradayEntry.AllowEntry}");
+            events.Add($"monitorClientId={22 + Math.Max(1, _settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset)} orderRouterClientId=22");
+
+            return Result("manual-broker-strategy-managed", pass, checks, events, warnings);
         }
 
         private int CalculateReplenishmentRequest(

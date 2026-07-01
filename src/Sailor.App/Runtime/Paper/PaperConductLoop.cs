@@ -14,19 +14,22 @@ public sealed class PaperConductLoop
     private readonly TradeLifecycleRegistryStore _tradeRegistry;
     private readonly ScannerSlotManager? _scannerSlotManager;
     private readonly SevereDisconnectRecoveryOrchestrator? _severeDisconnectRecoveryOrchestrator;
+    private readonly ManualBrokerPositionRuntimeSync? _manualBrokerPositionRuntimeSync;
 
     public PaperConductLoop(
         SailorRuntimeMode mode,
         Action<string> log,
         TradeLifecycleRegistryStore? tradeRegistry = null,
         ScannerSlotManager? scannerSlotManager = null,
-        SevereDisconnectRecoveryOrchestrator? severeDisconnectRecoveryOrchestrator = null)
+        SevereDisconnectRecoveryOrchestrator? severeDisconnectRecoveryOrchestrator = null,
+        ManualBrokerPositionRuntimeSync? manualBrokerPositionRuntimeSync = null)
     {
         _log = log;
         _ledger = new OrderLedgerStore(mode);
         _tradeRegistry = tradeRegistry ?? new TradeLifecycleRegistryStore(mode);
         _scannerSlotManager = scannerSlotManager;
         _severeDisconnectRecoveryOrchestrator = severeDisconnectRecoveryOrchestrator;
+        _manualBrokerPositionRuntimeSync = manualBrokerPositionRuntimeSync;
     }
 
     public async Task<PaperRuntimeHostResult> RunAsync(
@@ -56,7 +59,7 @@ public sealed class PaperConductLoop
         _log($"cadence={request.CadenceSeconds}s iterations={request.MaxIterations} sendOrders={request.SendOrders} dryRun={request.DryRun} canOpenEntries={request.CanOpenEntries} forceFlatNow={request.ForceFlatNow} enforceMaxNotional={request.EnforceMaxOrderNotional} maxNotional={request.MaxOrderNotional:F2}");
         _log($"reconnectAttempts={request.ReconnectAttempts} reconnectBackoffSeconds={request.ReconnectBackoffSeconds} simulateDisconnectAtIteration={request.SimulateDisconnectAtIteration}");
         _log($"router={router.RouterName}");
-        _log("SAILOR-054 lifecycle entry gates are active: default single-lifecycle, V21-V24 multi-cycle before LastEntryMinute, manual/unknown exit-only.");
+        _log("SAILOR-054/062 lifecycle entry gates are active: default single-lifecycle, V21-V24 multi-cycle before LastEntryMinute, manual/unknown broker positions strategy-managed.");
         if (_scannerSlotManager is not null)
         {
             _log($"SAILOR-055 scanner slot replenishment gate is active: {_scannerSlotManager.ToDisplayString()}");
@@ -80,9 +83,15 @@ public sealed class PaperConductLoop
             _log("SAILOR-060 shared IBKR live market-data/history session is active: scanner/history/snapshot/refresh data requests use one serialized data client and do not reuse the order-router client id.");
             _log($"SAILOR-061 live refresh fallback and diagnostics are active: fallback={request.LiveCandleRefreshFallbackEnabled} diagnostics={request.LiveCandleRefreshDiagnosticsEnabled} closeOnlyAfterStale={request.LiveRefreshCloseOnlyAfterStale}.");
         }
+        if (_manualBrokerPositionRuntimeSync is not null && request.ManualBrokerPositionsAreStrategyManaged)
+        {
+            _log($"SAILOR-062 manual TWS broker workflow is active: scannerEntriesAllowed={request.ManualBrokerPositionsAllowScannerEntries} strategyManaged={request.ManualBrokerPositionsAreStrategyManaged} monitorEnabled={request.ManualBrokerPositionMonitorEnabled} monitorEverySeconds={request.ManualBrokerPositionMonitorIntervalSeconds} monitorClientId={request.ConnectionOptions.ClientId + Math.Max(1, request.ManualBrokerPositionMonitorClientIdOffset)}.");
+        }
 
         _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
+
+        DateTimeOffset? lastManualBrokerSyncUtc = null;
 
         for (int iteration = 1; iteration <= request.MaxIterations; iteration++)
         {
@@ -108,6 +117,50 @@ public sealed class PaperConductLoop
 
             DateTimeOffset heartbeatUtc = DateTimeOffset.UtcNow;
             _log($"Iteration {iteration}/{request.MaxIterations} heartbeatUtc={heartbeatUtc:O} safety={healthMonitor.SafetyState.Mode}");
+
+            if (_manualBrokerPositionRuntimeSync is not null
+                && request.SendOrders
+                && request.ManualBrokerPositionsAreStrategyManaged
+                && request.ManualBrokerPositionMonitorEnabled
+                && request.ReconcileBrokerStateAsync is not null
+                && ShouldRunManualBrokerSync(iteration, heartbeatUtc, lastManualBrokerSyncUtc, request))
+            {
+                lastManualBrokerSyncUtc = heartbeatUtc;
+                try
+                {
+                    ReconciliationResult brokerTruth = await request.ReconcileBrokerStateAsync(cancellationToken).ConfigureAwait(false);
+                    if (ManualBrokerOrderWorkflow.AllowsStrategyEntries(brokerTruth))
+                    {
+                        ManualBrokerPositionSyncReport syncReport = _manualBrokerPositionRuntimeSync.Synchronize(sessions, request, brokerTruth, runtimeState);
+                        _log($"SAILOR-062 {syncReport.ToSummaryString()}");
+                        foreach (string syncEvent in syncReport.Events.Take(30))
+                        {
+                            _log($"manual-broker-sync: {syncEvent}");
+                        }
+                        if (syncReport.Events.Count > 30)
+                        {
+                            _log($"manual-broker-sync: ... {syncReport.Events.Count - 30} more");
+                        }
+                        foreach (string syncWarning in syncReport.Warnings)
+                        {
+                            warnings.Add(syncWarning);
+                            _log($"WARN: {syncWarning}");
+                        }
+                    }
+                    else
+                    {
+                        string warning = $"SAILOR-062 manual broker monitor did not accept broker state for strategy management: {ManualBrokerOrderWorkflow.ToEntryGateReason(brokerTruth)}";
+                        warnings.Add(warning);
+                        _log($"WARN: {warning}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    string warning = $"SAILOR-062 manual broker monitor failed without stopping scanner/conduct loop: {ex.GetType().Name}: {ex.Message}";
+                    warnings.Add(warning);
+                    _log($"WARN: {warning}");
+                }
+            }
 
             if (liveCandleRefreshService is not null)
             {
@@ -404,6 +457,21 @@ public sealed class PaperConductLoop
             {
                 await Task.Delay(TimeSpan.FromSeconds(request.CadenceSeconds), cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        static bool ShouldRunManualBrokerSync(
+            int iteration,
+            DateTimeOffset heartbeatUtc,
+            DateTimeOffset? lastSyncUtc,
+            PaperRuntimeHostRequest hostRequest)
+        {
+            if (iteration == 1)
+            {
+                return true;
+            }
+
+            int intervalSeconds = Math.Max(1, hostRequest.ManualBrokerPositionMonitorIntervalSeconds);
+            return !lastSyncUtc.HasValue || heartbeatUtc - lastSyncUtc.Value >= TimeSpan.FromSeconds(intervalSeconds);
         }
 
         void LogLiveCandleRefreshResults(

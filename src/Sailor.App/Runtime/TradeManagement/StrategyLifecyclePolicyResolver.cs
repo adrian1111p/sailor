@@ -15,9 +15,7 @@ public sealed class StrategyLifecyclePolicyResolver
     public StrategyLifecyclePolicy Resolve(string? profileName, SailorTradeOrigin origin)
     {
         string normalizedProfile = NormalizeProfile(profileName);
-        StrategyLifecycleMode mode = IsManualExitOnlyOrigin(origin)
-            ? StrategyLifecycleMode.ManualManagedExitOnly
-            : ResolveMode(normalizedProfile);
+        StrategyLifecycleMode mode = ResolveMode(normalizedProfile);
 
         return new StrategyLifecyclePolicy(
             normalizedProfile,
@@ -80,12 +78,6 @@ public sealed class StrategyLifecyclePolicyResolver
 
         return policies;
     }
-
-    private static bool IsManualExitOnlyOrigin(SailorTradeOrigin origin)
-        => origin is SailorTradeOrigin.ManualPreStart
-            or SailorTradeOrigin.ManualIntraday
-            or SailorTradeOrigin.UnknownBroker
-            or SailorTradeOrigin.SailorManualCommand;
 
     private static string NormalizeProfile(string? profileName)
         => string.IsNullOrWhiteSpace(profileName) ? DefaultKey : profileName.Trim().ToLowerInvariant();

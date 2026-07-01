@@ -1616,11 +1616,16 @@ public static class SailorRuntimeCommandRunner
 
         RuntimeReconciliationDelegate? brokerReconcileAsync = null;
         int nextRecoveryExecutionRequestId = executionRequestId + 1000;
+        IbkrConnectionOptions brokerMonitorConnectionOptions = connectionOptions with
+        {
+            ClientId = connectionOptions.ClientId + Math.Max(1, settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset),
+            SendOrders = false
+        };
         if (sendOrders)
         {
             brokerReconcileAsync = async cancellationToken =>
             {
-                await using IPositionProvider recoveryProvider = CreatePositionProvider(localOnly: false, connectionOptions);
+                await using IPositionProvider recoveryProvider = CreatePositionProvider(localOnly: false, brokerMonitorConnectionOptions);
                 var recoveryRequest = new PositionRequest(
                     mode,
                     account,
@@ -1631,13 +1636,22 @@ public static class SailorRuntimeCommandRunner
             };
         }
 
-        bool canOpenEntries = dryRun || reconciliation.CanOpenNewEntries;
-        if (sendOrders && !reconciliation.CanOpenNewEntries)
+        bool manualBrokerEntriesAllowed = settings.Runtime.Safety.ManualBrokerPositionsAllowScannerEntries
+            && ManualBrokerOrderWorkflow.AllowsStrategyEntries(reconciliation);
+        bool canOpenEntries = dryRun || reconciliation.CanOpenNewEntries || manualBrokerEntriesAllowed;
+        if (sendOrders && !canOpenEntries)
         {
             Log(writer, "");
-            Log(writer, "SAILOR-031 blocked before conduct loop because broker reconciliation did not match. No orders sent. Runtime remains close-only until reconcile is clean.");
+            Log(writer, "SAILOR-031 blocked before conduct loop because broker reconciliation did not match and no SAILOR-062 manual-broker exception applied. No orders sent. Runtime remains close-only until reconcile is clean.");
             Log(writer, $"Runtime log: {logFilePath}");
             return;
+        }
+
+        if (sendOrders && manualBrokerEntriesAllowed && !reconciliation.CanOpenNewEntries)
+        {
+            Log(writer, "");
+            Log(writer, ManualBrokerOrderWorkflow.ToEntryGateReason(reconciliation));
+            Log(writer, $"SAILOR-062 broker monitor uses read-only clientId={brokerMonitorConnectionOptions.ClientId}; order router remains clientId={connectionOptions.ClientId}.");
         }
 
         Log(writer, "");
@@ -1671,7 +1685,12 @@ public static class SailorRuntimeCommandRunner
             LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase,
             LiveCandleRefreshFallbackEnabled: settings.Runtime.Safety.LiveCandleRefreshFallbackEnabled,
             LiveCandleRefreshDiagnosticsEnabled: settings.Runtime.Safety.LiveCandleRefreshDiagnosticsEnabled,
-            LiveRefreshCloseOnlyAfterStale: settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale);
+            LiveRefreshCloseOnlyAfterStale: settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale,
+            ManualBrokerPositionsAllowScannerEntries: settings.Runtime.Safety.ManualBrokerPositionsAllowScannerEntries,
+            ManualBrokerPositionsAreStrategyManaged: settings.Runtime.Safety.ManualBrokerPositionsAreStrategyManaged,
+            ManualBrokerPositionMonitorEnabled: settings.Runtime.Safety.ManualBrokerPositionMonitorEnabled,
+            ManualBrokerPositionMonitorIntervalSeconds: settings.Runtime.Safety.ManualBrokerPositionMonitorIntervalSeconds,
+            ManualBrokerPositionMonitorClientIdOffset: settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult result = await host.RunAsync(request, CancellationToken.None);
@@ -2006,11 +2025,16 @@ public static class SailorRuntimeCommandRunner
 
         RuntimeReconciliationDelegate? brokerReconcileAsync = null;
         int nextRecoveryExecutionRequestId = executionRequestId + 1000;
+        IbkrConnectionOptions brokerMonitorConnectionOptions = connectionOptions with
+        {
+            ClientId = connectionOptions.ClientId + Math.Max(1, settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset),
+            SendOrders = false
+        };
         if (sendOrders)
         {
             brokerReconcileAsync = async cancellationToken =>
             {
-                await using IPositionProvider recoveryProvider = CreatePositionProvider(localOnly: false, connectionOptions);
+                await using IPositionProvider recoveryProvider = CreatePositionProvider(localOnly: false, brokerMonitorConnectionOptions);
                 var recoveryRequest = new PositionRequest(
                     SailorRuntimeMode.Live,
                     account,
@@ -2051,7 +2075,12 @@ public static class SailorRuntimeCommandRunner
             LiveCandleRefreshRequestIdBase: settings.Runtime.Safety.LiveCandleRefreshRequestIdBase,
             LiveCandleRefreshFallbackEnabled: settings.Runtime.Safety.LiveCandleRefreshFallbackEnabled,
             LiveCandleRefreshDiagnosticsEnabled: settings.Runtime.Safety.LiveCandleRefreshDiagnosticsEnabled,
-            LiveRefreshCloseOnlyAfterStale: settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale);
+            LiveRefreshCloseOnlyAfterStale: settings.Runtime.Safety.LiveRefreshCloseOnlyAfterStale,
+            ManualBrokerPositionsAllowScannerEntries: settings.Runtime.Safety.ManualBrokerPositionsAllowScannerEntries,
+            ManualBrokerPositionsAreStrategyManaged: settings.Runtime.Safety.ManualBrokerPositionsAreStrategyManaged,
+            ManualBrokerPositionMonitorEnabled: settings.Runtime.Safety.ManualBrokerPositionMonitorEnabled,
+            ManualBrokerPositionMonitorIntervalSeconds: settings.Runtime.Safety.ManualBrokerPositionMonitorIntervalSeconds,
+            ManualBrokerPositionMonitorClientIdOffset: settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult runtimeResult = await host.RunAsync(request, CancellationToken.None).ConfigureAwait(false);

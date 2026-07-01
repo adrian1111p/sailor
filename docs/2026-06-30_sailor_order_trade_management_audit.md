@@ -834,7 +834,7 @@ Implementation status update after SAILOR-054 source changes:
 - Added `StrategyLifecycleMode`, `StrategyLifecyclePolicy`, and `StrategyLifecyclePolicyResolver`.
 - Added `StrategyLifecyclePolicies` settings with defaults for V21/V22/V23/V24 and `default`.
 - Attached one lifecycle policy to every `PaperSymbolSession` created by the SAILOR-053 dynamic session plan.
-- Added runtime entry gates: manual/unknown broker sessions are exit-only; V21-V24 may re-enter before universal `LastEntryMinute=945`; all other profiles close their entry window after a strategy exit.
+- Added runtime entry gates: V21-V24 may re-enter before universal `LastEntryMinute=945`; all other profiles close their entry window after a strategy exit. SAILOR-062 later changed manual/unknown broker sessions from exit-only to strategy-managed.
 - Preserved the universal `LastEntryMinute=945` and `ForceFlatMinute=955` safety rule.
 
 Add policy map:
@@ -909,7 +909,7 @@ Implemented behavior:
 5. Mirror broker state through SAILOR-052 and merge it into the SAILOR-051 registry.
 6. Create/resume sessions for every broker position and every broker open-order symbol.
 7. Refresh history/candles for recovered symbols through the scanner history path before rebuilding sessions.
-8. Prioritize exits by classifying unknown broker/open-order symbols as `UnknownBroker`, which is exit-only under SAILOR-054.
+8. Prioritize broker safety by classifying unknown broker/open-order symbols as `UnknownBroker`; SAILOR-062 later promotes manual/unknown broker positions into strategy-managed sessions while preserving force-flat/stale-data safety gates.
 9. Re-enable entries only after clean reconciliation and only before `LastEntryMinute=945`.
 10. Resume scanner replenishment only before 15:45 ET and only after clean reconciliation; after 15:45 ET recovery remains exits/flatten/reconcile only.
 11. Write JSON/CSV recovery reports under `logs/<mode>/Recovery`.
@@ -1370,3 +1370,29 @@ Implemented evidence and diagnostics:
 - new runtime settings control fallback, diagnostics, and CloseOnly timing.
 
 Safety remains conservative: SAILOR-061 does not bypass strategy entry filters, broker reconciliation, lifecycle policies, stale-bar gates, or force-flat logic.
+
+## SAILOR-062 — Manual TWS broker orders become strategy-managed state
+
+Status: implemented.
+
+SAILOR-062 changes the manual-order workflow requested for paper operations:
+
+1. Manual/pre-existing TWS broker positions no longer globally block scanner-owned entries when broker truth is available and the mismatch is explained by manual broker state.
+2. Manual/pre-existing/new broker positions are promoted to strategy-managed runtime sessions instead of manual exit-only sessions.
+3. The conduct loop polls broker truth with a separate read-only IBKR client id and synchronizes newly detected manual broker positions into active strategy sessions.
+4. Scanner-owned sessions still count toward the scanner target; manual broker sessions are managed separately and do not reduce scanner replenishment shortfall.
+5. Stale-bar, force-flat, broker connectivity, market-data degradation, order-router, max-notional, and LastEntryMinute gates remain active.
+
+Operational consequence: a manual TSLA position in TWS can coexist with scanner-owned paper entries for other symbols. TSLA itself is evaluated by the selected Sailor strategy as an open position and can receive strategy exit/flatten decisions, while the scanner remains allowed to create new scanner-owned orders when the other runtime safety gates are normal.
+
+New/default settings:
+
+```json
+"ManualBrokerPositionsAllowScannerEntries": true,
+"ManualBrokerPositionsAreStrategyManaged": true,
+"ManualBrokerPositionMonitorEnabled": true,
+"ManualBrokerPositionMonitorIntervalSeconds": 60,
+"ManualBrokerPositionMonitorClientIdOffset": 300
+```
+
+Self-test coverage: `manual-broker-strategy-managed`.

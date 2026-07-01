@@ -184,7 +184,7 @@ public sealed class BrokerStateManualTradeDetector
             source,
             reconciliation.Status.ToString(),
             brokerVerified,
-            reconciliation.CanOpenNewEntries,
+            reconciliation.CanOpenNewEntries || ManualBrokerOrderWorkflow.AllowsStrategyEntries(reconciliation),
             observedUtc,
             mirroredPositions,
             mirroredOpenOrders,

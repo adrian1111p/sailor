@@ -245,6 +245,16 @@ public sealed class SailorRuntimeSafetySettings
     public bool LiveCandleRefreshDiagnosticsEnabled { get; set; } = true;
 
     public bool LiveRefreshCloseOnlyAfterStale { get; set; } = true;
+
+    public bool ManualBrokerPositionsAllowScannerEntries { get; set; } = true;
+
+    public bool ManualBrokerPositionsAreStrategyManaged { get; set; } = true;
+
+    public bool ManualBrokerPositionMonitorEnabled { get; set; } = true;
+
+    public int ManualBrokerPositionMonitorIntervalSeconds { get; set; } = 60;
+
+    public int ManualBrokerPositionMonitorClientIdOffset { get; set; } = 300;
 }
 
 

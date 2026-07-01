@@ -36,7 +36,12 @@ public sealed record PaperRuntimeHostRequest(
     int LiveCandleRefreshRequestIdBase = 31_000,
     bool LiveCandleRefreshFallbackEnabled = true,
     bool LiveCandleRefreshDiagnosticsEnabled = true,
-    bool LiveRefreshCloseOnlyAfterStale = true);
+    bool LiveRefreshCloseOnlyAfterStale = true,
+    bool ManualBrokerPositionsAllowScannerEntries = true,
+    bool ManualBrokerPositionsAreStrategyManaged = true,
+    bool ManualBrokerPositionMonitorEnabled = true,
+    int ManualBrokerPositionMonitorIntervalSeconds = 60,
+    int ManualBrokerPositionMonitorClientIdOffset = 300);
 
 public sealed record PaperRuntimeHostResult(
     IReadOnlyList<string> ActiveSymbols,
