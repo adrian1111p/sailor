@@ -728,7 +728,7 @@ public static class SailorRuntimeCommandRunner
         string sheet = ReadStringOption(args, "--sheet", ReadStringOption(args, "--scan-sheet", ScanListWorkbookOptions.DefaultSheetName));
         string symbolColumn = ReadStringOption(args, "--symbol-column", ScanListWorkbookOptions.DefaultSymbolColumn);
         int scanRefreshSeconds = ReadIntOption(args, "--scan-refresh-seconds", ScanListWorkbookOptions.DefaultRefreshSeconds);
-        int historyBatchSize = ReadIntOption(args, "--history-batch-size", ScanListWorkbookOptions.DefaultHistoryBatchSize);
+        int historyBatchSize = ResolveScanListHistoryBatchSize(args, file, sheet, symbolColumn);
         int historyBatchIntervalMinutes = ReadIntOption(args, "--history-batch-interval-minutes", ScanListWorkbookOptions.DefaultHistoryBatchIntervalMinutes);
         int tradeTop = Math.Max(10, ReadIntOption(args, "--trade-top", ReadIntOption(args, "--keep-trade-top", Math.Max(10, topCount))));
         int scanCycles = Math.Max(1, ReadIntOption(args, "--scan-cycles", ReadIntOption(args, "--cycles", 1)));
@@ -1132,6 +1132,49 @@ public static class SailorRuntimeCommandRunner
     }
 
 
+    private static int ResolveScanListHistoryBatchSize(
+        string[] args,
+        string file,
+        string sheet,
+        string symbolColumn)
+    {
+        if (HasOption(args, "--history-batch-size"))
+        {
+            return ReadIntOption(args, "--history-batch-size", ScanListWorkbookOptions.DefaultHistoryBatchSize);
+        }
+
+        if (TryReadPositiveIntOption(args, "--max-symbols", out int explicitMaxSymbols))
+        {
+            return explicitMaxSymbols;
+        }
+
+        int workbookSymbolCount = TryReadScanListSymbolCount(file, sheet, symbolColumn);
+        return workbookSymbolCount > 0
+            ? workbookSymbolCount
+            : ScanListWorkbookOptions.DefaultHistoryBatchSize;
+    }
+
+    private static int TryReadScanListSymbolCount(string file, string sheet, string symbolColumn)
+    {
+        try
+        {
+            var options = new ScanListWorkbookOptions(
+                file,
+                sheet,
+                symbolColumn,
+                ScanListWorkbookOptions.DefaultRefreshSeconds,
+                ScanListWorkbookOptions.DefaultTradeTop,
+                ScanListWorkbookOptions.DefaultHistoryBatchSize,
+                ScanListWorkbookOptions.DefaultHistoryBatchIntervalMinutes);
+
+            return new ScanListWorkbookReader().Read(options).SymbolCount;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     private static bool HasScanListInput(string[] args)
         => args.Any(arg => arg.Equals("--scan-file", StringComparison.OrdinalIgnoreCase)
             || arg.Equals("--file", StringComparison.OrdinalIgnoreCase)
@@ -1144,7 +1187,7 @@ public static class SailorRuntimeCommandRunner
         string sheet = ReadStringOption(args, "--scan-sheet", ReadStringOption(args, "--sheet", ScanListWorkbookOptions.DefaultSheetName));
         string symbolColumn = ReadStringOption(args, "--symbol-column", ScanListWorkbookOptions.DefaultSymbolColumn);
         int scanRefreshSeconds = ReadIntOption(args, "--scan-refresh-seconds", ScanListWorkbookOptions.DefaultRefreshSeconds);
-        int historyBatchSize = ReadIntOption(args, "--history-batch-size", ScanListWorkbookOptions.DefaultHistoryBatchSize);
+        int historyBatchSize = ResolveScanListHistoryBatchSize(args, file, sheet, symbolColumn);
         int historyBatchIntervalMinutes = ReadIntOption(args, "--history-batch-interval-minutes", ScanListWorkbookOptions.DefaultHistoryBatchIntervalMinutes);
         int tradeTop = Math.Max(10, ReadIntOption(args, "--trade-top", ReadIntOption(args, "--keep-trade-top", Math.Max(10, requestedTopCount))));
 
@@ -3331,6 +3374,23 @@ public static class SailorRuntimeCommandRunner
 
     private static bool HasOption(string[] args, string optionName)
         => args.Any(arg => arg.Equals(optionName, StringComparison.OrdinalIgnoreCase));
+
+    private static bool TryReadPositiveIntOption(string[] args, string optionName, out int value)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals(optionName, StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(args[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) &&
+                parsed > 0)
+            {
+                value = parsed;
+                return true;
+            }
+        }
+
+        value = 0;
+        return false;
+    }
 
     private static int ReadIntOption(string[] args, string optionName, int defaultValue, bool allowZero = false)
     {

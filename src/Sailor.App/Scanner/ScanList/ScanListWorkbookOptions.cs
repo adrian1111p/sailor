@@ -14,7 +14,7 @@ public sealed record ScanListWorkbookOptions(
     public const string DefaultSymbolColumn = "A";
     public const int DefaultRefreshSeconds = 300;
     public const int DefaultTradeTop = 10;
-    public const int DefaultHistoryBatchSize = 45;
+    public const int DefaultHistoryBatchSize = 145;
     public const int DefaultHistoryBatchIntervalMinutes = 10;
 
     public static ScanListWorkbookOptions Default => new(DefaultFilePath);

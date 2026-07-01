@@ -236,7 +236,7 @@ static Task RunScanListInspectAsync(string[] args)
     string symbolColumn = ReadStringOption(args, "--symbol-column", ScanListWorkbookOptions.DefaultSymbolColumn);
     int refreshSeconds = ReadIntOption(args, "--scan-refresh-seconds", ScanListWorkbookOptions.DefaultRefreshSeconds);
     int tradeTop = Math.Max(10, ReadIntOption(args, "--trade-top", ReadIntOption(args, "--keep-trade-top", ScanListWorkbookOptions.DefaultTradeTop)));
-    int historyBatchSize = ReadIntOption(args, "--history-batch-size", ScanListWorkbookOptions.DefaultHistoryBatchSize);
+    int historyBatchSize = ResolveScanListHistoryBatchSize(args, file, sheet, symbolColumn);
     int historyBatchIntervalMinutes = ReadIntOption(args, "--history-batch-interval-minutes", ScanListWorkbookOptions.DefaultHistoryBatchIntervalMinutes);
 
     var options = new ScanListWorkbookOptions(
@@ -259,7 +259,7 @@ static Task RunScanListInspectAsync(string[] args)
     Console.WriteLine($"intradaySymbolAdditions=enabled add/drop detection will be evaluated every {refreshSeconds}s by the runtime host");
     Console.WriteLine($"tradeSelection=best {tradeTop} scanner-rated symbols retained for paper/live entry eligibility every {refreshSeconds}s");
     Console.WriteLine("removedSymbolRetention=enabled symbols removed from workbook stay managed when they have open positions or recent top selection");
-    Console.WriteLine("historyScheduler=enabled max 45 symbols per batch by default and 10 minutes between batches; SAILOR-039 runtime selects the due batch per scan cycle");
+    Console.WriteLine("historyScheduler=enabled default batch size follows --max-symbols or the loaded workbook symbol count; use --history-batch-size to override");
     Console.WriteLine("connectionInterruptionPolicy=runtime must keep the last clean scan-list snapshot in memory and move trading to CloseOnly when broker/server state is degraded");
     Console.WriteLine();
 
@@ -299,6 +299,65 @@ static Task RunScanListInspectAsync(string[] args)
     }
 
     return Task.CompletedTask;
+}
+
+static int ResolveScanListHistoryBatchSize(string[] args, string file, string sheet, string symbolColumn)
+{
+    if (HasOption(args, "--history-batch-size"))
+    {
+        return ReadIntOption(args, "--history-batch-size", ScanListWorkbookOptions.DefaultHistoryBatchSize);
+    }
+
+    if (TryReadPositiveIntOption(args, "--max-symbols", out int explicitMaxSymbols))
+    {
+        return explicitMaxSymbols;
+    }
+
+    int workbookSymbolCount = TryReadScanListSymbolCount(file, sheet, symbolColumn);
+    return workbookSymbolCount > 0
+        ? workbookSymbolCount
+        : ScanListWorkbookOptions.DefaultHistoryBatchSize;
+}
+
+static int TryReadScanListSymbolCount(string file, string sheet, string symbolColumn)
+{
+    try
+    {
+        var options = new ScanListWorkbookOptions(
+            file,
+            sheet,
+            symbolColumn,
+            ScanListWorkbookOptions.DefaultRefreshSeconds,
+            ScanListWorkbookOptions.DefaultTradeTop,
+            ScanListWorkbookOptions.DefaultHistoryBatchSize,
+            ScanListWorkbookOptions.DefaultHistoryBatchIntervalMinutes);
+
+        return new ScanListWorkbookReader().Read(options).SymbolCount;
+    }
+    catch
+    {
+        return 0;
+    }
+}
+
+static bool HasOption(string[] args, string name)
+    => args.Any(arg => arg.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+static bool TryReadPositiveIntOption(string[] args, string name, out int value)
+{
+    for (int i = 0; i < args.Length - 1; i++)
+    {
+        if (args[i].Equals(name, StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(args[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) &&
+            parsed > 0)
+        {
+            value = parsed;
+            return true;
+        }
+    }
+
+    value = 0;
+    return false;
 }
 
 static string ReadStringOption(string[] args, string name, string defaultValue)

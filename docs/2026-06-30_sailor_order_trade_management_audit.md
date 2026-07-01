@@ -1396,3 +1396,11 @@ New/default settings:
 ```
 
 Self-test coverage: `manual-broker-strategy-managed`.
+---
+
+## SAILOR-063 — Scan-list full default history batch
+
+Status: implemented.
+
+The scan-list default history batch no longer limits the first cycle to the first 45 alphabetic symbols. When `--history-batch-size` is omitted, Sailor now uses `--max-symbols` when supplied, otherwise the loaded workbook symbol count, with fallback `145`. This lets the scanner rank the best 10 from the full 145-symbol list while preserving explicit `--history-batch-size 45` for pacing-safe staged history loading.
+
