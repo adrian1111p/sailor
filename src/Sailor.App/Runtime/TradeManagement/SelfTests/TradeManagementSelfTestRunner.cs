@@ -3,6 +3,7 @@ using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.TradeManagement;
 using Sailor.App.Runtime.Paper;
 using Sailor.App.Scanner.ScanList;
+using Sailor.App.Runtime.Ui;
 
 namespace Sailor.App.Runtime.TradeManagement.SelfTests;
 
@@ -26,7 +27,8 @@ public static class TradeManagementSelfTestRunner
         "shared-ibkr-data-session",
         "live-refresh-fallback-diagnostics",
         "manual-broker-strategy-managed",
-        "harsh-conduct-forced-entries"
+        "harsh-conduct-forced-entries",
+        "sailor-ui-readonly"
     ];
 
     public static Task<int> RunAsync(
@@ -168,6 +170,7 @@ public static class TradeManagementSelfTestRunner
                 "live-refresh-fallback-diagnostics" => LiveRefreshFallbackDiagnostics(),
                 "manual-broker-strategy-managed" => ManualBrokerStrategyManaged(),
                 "harsh-conduct-forced-entries" => HarshConductForcedEntries(),
+                "sailor-ui-readonly" => SailorUiReadOnly(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -610,6 +613,34 @@ public static class TradeManagementSelfTestRunner
             events.Add("summaryColumns=Strategy Variant Style Symbols Trades >=50 WinRate PF Sharpe EqSharpe EqSortino EqDownDev TotalPnL$ MaxDD$ AvgWin$ AvgLoss$ Expectancy GovStops GovReason");
 
             return Result("harsh-conduct-forced-entries", pass, checks, events, warnings);
+        }
+
+        private TradeManagementSelfTestCaseResult SailorUiReadOnly()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            bool defaultPortOk = SailorUiContract.DefaultPort == 5101;
+            bool refreshOk = SailorUiContract.DefaultRefreshMilliseconds == 1000;
+            bool maxStrategiesOk = SailorUiContract.DefaultMaxActiveStrategies == 2;
+            bool section2OpenPriceOk = SailorUiContract.Section2Columns.Contains("Open", StringComparer.OrdinalIgnoreCase)
+                && SailorUiContract.Section2Columns.Contains("Price", StringComparer.OrdinalIgnoreCase)
+                && !SailorUiContract.Section2Columns.Contains("AVG Preis", StringComparer.OrdinalIgnoreCase)
+                && !SailorUiContract.Section2Columns.Contains("Last", StringComparer.OrdinalIgnoreCase);
+            bool section3StrategyControlOk = SailorUiContract.Section3Columns.Contains("Strategy", StringComparer.OrdinalIgnoreCase)
+                && SailorUiContract.Section3Columns.Contains("Trade", StringComparer.OrdinalIgnoreCase);
+            bool pass = defaultPortOk && refreshOk && maxStrategiesOk && section2OpenPriceOk && section3StrategyControlOk;
+
+            AddCheck(checks, defaultPortOk, "SAILOR-066 SailorUI default port is 5101 so it can run separately from the Harvester MonitorUI.");
+            AddCheck(checks, refreshOk, "SAILOR-066 SailorUI browser refresh contract is one second.");
+            AddCheck(checks, maxStrategiesOk, "SAILOR-066 SailorUI strategy chooser is capped at two active strategies for future write-control milestones.");
+            AddCheck(checks, section2OpenPriceOk, "SAILOR-066 Section 2 uses Open and Price labels, with Price representing current 1-minute decision price and stale marking.");
+            AddCheck(checks, section3StrategyControlOk, "SAILOR-066 Section 3 includes read-only trade checkbox and strategy dropdown columns.");
+            events.Add("command: paper sailor-ui --port 5101");
+            events.Add("command: live sailor-ui --port 5101");
+            events.Add("readOnly=True; sends no broker orders and performs no broker API requests");
+
+            return Result("sailor-ui-readonly", pass, checks, events, warnings);
         }
 
         private int CalculateReplenishmentRequest(

@@ -17,6 +17,7 @@ using Sailor.App.Runtime.Live;
 using Sailor.App.Runtime.Paper;
 using Sailor.App.Runtime.TradeManagement;
 using Sailor.App.Runtime.TradeManagement.SelfTests;
+using Sailor.App.Runtime.Ui;
 using Sailor.App.Scanner.Runtime;
 using Sailor.App.Scanner.ScanList;
 using Sailor.App.Scanner.Universe;
@@ -88,6 +89,12 @@ public static class SailorRuntimeCommandRunner
             case "conduct-harsh-test":
             case "force-conduct-test":
                 await RunHarshConductTestAsync(mode, args.Skip(1).ToArray(), settings);
+                break;
+
+            case "sailor-ui":
+            case "ui":
+            case "monitor-ui":
+                await RunSailorUiAsync(mode, args.Skip(1).ToArray(), settings);
                 break;
 
             case "order":
@@ -1491,6 +1498,49 @@ public static class SailorRuntimeCommandRunner
         }
 
         return RunStrategySkeletonAsync(mode, effectiveArgs.ToArray(), settings);
+    }
+
+
+    private static async Task RunSailorUiAsync(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings)
+    {
+        _ = settings;
+        int port = ReadIntOption(args, "--port", SailorUiContract.DefaultPort);
+        string host = ReadStringOption(args, "--host", "127.0.0.1");
+        int maxRows = ReadIntOption(args, "--max-rows", SailorUiContract.DefaultScannerRows);
+        int maxStrategies = ReadIntOption(args, "--max-strategies", SailorUiContract.DefaultMaxActiveStrategies);
+        string logFilePath = CreateRuntimeLogFilePath(mode, "sailor_ui");
+
+        await using var writer = CreateWriter(logFilePath);
+        Log(writer, $"sailor {mode.ToDisplayName()} SailorUI read-only monitor started");
+        Log(writer, $"mode={mode.ToDisplayName()} host={host} port={port} refreshMs={SailorUiContract.DefaultRefreshMilliseconds} maxRows={maxRows} maxStrategies={maxStrategies} readOnly=True sendOrders=False");
+        Log(writer, "SAILOR-066 read-only SailorUI implementation.");
+        Log(writer, "It reads existing state/log files once per browser request and never sends orders or broker API requests.");
+        Log(writer, "Sections: P&L DAILY, active/today trades, and rest scanner symbols.");
+        Log(writer, $"Open in browser: http://localhost:{port}/");
+        Log(writer, $"Runtime log: {logFilePath}");
+        Log(writer, "");
+
+        using var cts = new CancellationTokenSource();
+        ConsoleCancelEventHandler handler = (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            cts.Cancel();
+        };
+        Console.CancelKeyPress += handler;
+        try
+        {
+            var provider = new SailorUiSnapshotProvider(mode, maxRows, maxStrategies);
+            var server = new SailorUiServer(provider, host, port, message => Log(writer, message));
+            await server.RunAsync(cts.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            Console.CancelKeyPress -= handler;
+            Log(writer, "SAILOR-066 SailorUI stopped.");
+        }
     }
 
 
@@ -3737,6 +3787,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --iterations 10");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} harsh-test 1m v21-15minutes 10 --scan-file scan/data/scan_default.xlsx --scan-sheet Candidates --scanner-mode points-only --quantity 10 --max-symbols 145 --iterations 10 --cadence-seconds 60 --send-orders");
+        Console.WriteLine($"  sailor {name} sailor-ui --port 5101");
         if (mode == SailorRuntimeMode.Live)
         {
             Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --account DU123456 --max-notional 100 --confirm-live --operator-watching-tws");
@@ -3792,6 +3843,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - live pilot enforces one explicit symbol, small max notional, operator-watching-TWS acknowledgement, long-only default, pre-run reconciliation, and final zero exposure");
         Console.WriteLine("  - live flatten is available as a close-only command and never opens a new position");
         Console.WriteLine("  - manual live order sending remains blocked; use live run for pilot entries and live flatten for close-only exit");
+        Console.WriteLine("  - SAILOR-066 adds a read-only SailorUI at http://localhost:5101/ for compact TWS-style monitoring");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
         Console.WriteLine($"  host:       {modeSettings.Host}");
