@@ -1511,13 +1511,19 @@ public static class SailorRuntimeCommandRunner
         string host = ReadStringOption(args, "--host", "127.0.0.1");
         int maxRows = ReadIntOption(args, "--max-rows", SailorUiContract.DefaultScannerRows);
         int maxStrategies = ReadIntOption(args, "--max-strategies", SailorUiContract.DefaultMaxActiveStrategies);
-        string logFilePath = CreateRuntimeLogFilePath(mode, "sailor_ui");
+        string? account = ReadOptionalStringOption(args, "--account");
+        bool requestedControls = HasOption(args, "--ui-controls") || HasOption(args, "--controls");
+        bool readOnly = HasOption(args, "--read-only") || mode != SailorRuntimeMode.Paper || !requestedControls;
+        bool controlsEnabled = mode == SailorRuntimeMode.Paper && requestedControls && !readOnly;
+        string logFilePath = CreateRuntimeLogFilePath(mode, controlsEnabled ? "sailor_ui_controls" : "sailor_ui");
 
         await using var writer = CreateWriter(logFilePath);
-        Log(writer, $"sailor {mode.ToDisplayName()} SailorUI read-only monitor started");
-        Log(writer, $"mode={mode.ToDisplayName()} host={host} port={port} refreshMs={SailorUiContract.DefaultRefreshMilliseconds} maxRows={maxRows} maxStrategies={maxStrategies} readOnly=True sendOrders=False");
-        Log(writer, "SAILOR-066 read-only SailorUI implementation.");
-        Log(writer, "It reads existing state/log files once per browser request and never sends orders or broker API requests.");
+        Log(writer, $"sailor {mode.ToDisplayName()} SailorUI {(controlsEnabled ? "paper desired-state controls" : "read-only monitor")} started");
+        Log(writer, $"mode={mode.ToDisplayName()} account={account ?? "n/a"} host={host} port={port} refreshMs={SailorUiContract.DefaultRefreshMilliseconds} maxRows={maxRows} maxStrategies={maxStrategies} readOnly={!controlsEnabled} controlsEnabled={controlsEnabled} sendOrders=False");
+        Log(writer, controlsEnabled ? "SAILOR-067 paper interactive desired-state controls." : "SAILOR-066 read-only SailorUI implementation.");
+        Log(writer, controlsEnabled
+            ? "Checkbox and strategy changes persist desired state only. The paper conduct runtime consumes desired state but broker/router safety gates remain authoritative."
+            : "It reads existing state/log files once per browser request and never sends orders or broker API requests.");
         Log(writer, "Sections: P&L DAILY, active/today trades, and rest scanner symbols.");
         Log(writer, $"Open in browser: http://localhost:{port}/");
         Log(writer, $"Runtime log: {logFilePath}");
@@ -1532,14 +1538,15 @@ public static class SailorRuntimeCommandRunner
         Console.CancelKeyPress += handler;
         try
         {
-            var provider = new SailorUiSnapshotProvider(mode, maxRows, maxStrategies);
-            var server = new SailorUiServer(provider, host, port, message => Log(writer, message));
+            var provider = new SailorUiSnapshotProvider(mode, maxRows, maxStrategies, controlsEnabled, account);
+            var desiredStateStore = new SailorUiDesiredStateStore(mode, account, maxStrategies);
+            var server = new SailorUiServer(mode, provider, desiredStateStore, host, port, controlsEnabled, message => Log(writer, message));
             await server.RunAsync(cts.Token).ConfigureAwait(false);
         }
         finally
         {
             Console.CancelKeyPress -= handler;
-            Log(writer, "SAILOR-066 SailorUI stopped.");
+            Log(writer, controlsEnabled ? "SAILOR-067 SailorUI controls stopped." : "SAILOR-066 SailorUI stopped.");
         }
     }
 
@@ -3595,6 +3602,12 @@ public static class SailorRuntimeCommandRunner
         return defaultValue;
     }
 
+    private static string? ReadOptionalStringOption(string[] args, string optionName)
+    {
+        string value = ReadStringOption(args, optionName, string.Empty);
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
     private static PointsScannerMode ReadScannerMode(string[] args, SailorAppSettings settings)
     {
         PointsScannerMode configuredFallback = PointsScannerModeExtensions.ParseOrDefault(
@@ -3788,6 +3801,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} harsh-test 1m v21-15minutes 10 --scan-file scan/data/scan_default.xlsx --scan-sheet Candidates --scanner-mode points-only --quantity 10 --max-symbols 145 --iterations 10 --cadence-seconds 60 --send-orders");
         Console.WriteLine($"  sailor {name} sailor-ui --port 5101");
+        Console.WriteLine($"  sailor {name} sailor-ui --port 5101 --ui-controls --account DU123456");
         if (mode == SailorRuntimeMode.Live)
         {
             Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --account DU123456 --max-notional 100 --confirm-live --operator-watching-tws");
@@ -3844,6 +3858,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - live flatten is available as a close-only command and never opens a new position");
         Console.WriteLine("  - manual live order sending remains blocked; use live run for pilot entries and live flatten for close-only exit");
         Console.WriteLine("  - SAILOR-066 adds a read-only SailorUI at http://localhost:5101/ for compact TWS-style monitoring");
+        Console.WriteLine("  - SAILOR-067 adds paper-only SailorUI desired-state controls with checkbox/strategy persistence");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
         Console.WriteLine($"  host:       {modeSettings.Host}");

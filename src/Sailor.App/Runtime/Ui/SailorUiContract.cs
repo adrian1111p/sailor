@@ -6,6 +6,9 @@ public static class SailorUiContract
     public const int DefaultRefreshMilliseconds = 1000;
     public const int DefaultMaxActiveStrategies = 2;
     public const int DefaultScannerRows = 145;
+    public const string SnapshotEndpoint = "/api/snapshot";
+    public const string DesiredStateEndpoint = "/api/desired-state";
+    public const string HealthEndpoint = "/api/health";
 
     public static readonly IReadOnlyList<string> Section2Columns =
     [

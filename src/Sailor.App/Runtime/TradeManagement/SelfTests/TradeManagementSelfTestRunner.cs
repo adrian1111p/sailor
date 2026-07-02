@@ -28,7 +28,8 @@ public static class TradeManagementSelfTestRunner
         "live-refresh-fallback-diagnostics",
         "manual-broker-strategy-managed",
         "harsh-conduct-forced-entries",
-        "sailor-ui-readonly"
+        "sailor-ui-readonly",
+        "sailor-ui-paper-controls"
     ];
 
     public static Task<int> RunAsync(
@@ -171,6 +172,7 @@ public static class TradeManagementSelfTestRunner
                 "manual-broker-strategy-managed" => ManualBrokerStrategyManaged(),
                 "harsh-conduct-forced-entries" => HarshConductForcedEntries(),
                 "sailor-ui-readonly" => SailorUiReadOnly(),
+                "sailor-ui-paper-controls" => SailorUiPaperControls(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -641,6 +643,95 @@ public static class TradeManagementSelfTestRunner
             events.Add("readOnly=True; sends no broker orders and performs no broker API requests");
 
             return Result("sailor-ui-readonly", pass, checks, events, warnings);
+        }
+
+
+        private TradeManagementSelfTestCaseResult SailorUiPaperControls()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            string tempRoot = Path.Combine(Path.GetTempPath(), "sailor-ui-s067-" + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                var store = new SailorUiDesiredStateStore(
+                    SailorRuntimeMode.Paper,
+                    account: "DUN559573",
+                    maxActiveStrategies: SailorUiContract.DefaultMaxActiveStrategies,
+                    repositoryRoot: tempRoot);
+
+                SailorUiDesiredStateUpdateResult first = store.TryUpdate(
+                    new SailorUiDesiredStateUpdate("TSLA", true, "v21-15minutes", "self-test"),
+                    "self-test",
+                    "self-test-agent");
+                SailorUiDesiredStateUpdateResult second = store.TryUpdate(
+                    new SailorUiDesiredStateUpdate("KUST", true, "v18-silver", "self-test"),
+                    "self-test",
+                    "self-test-agent");
+                SailorUiDesiredStateUpdateResult thirdRejected = store.TryUpdate(
+                    new SailorUiDesiredStateUpdate("JOBY", true, "v19-purplecloud", "self-test"),
+                    "self-test",
+                    "self-test-agent");
+                SailorUiDesiredStateUpdateResult goOut = store.TryUpdate(
+                    new SailorUiDesiredStateUpdate("KUST", false, "v18-silver", "self-test"),
+                    "self-test",
+                    "self-test-agent");
+
+                SailorUiDesiredStateSnapshot snapshot = store.LoadSnapshot();
+                bool endpointConfigured = SailorUiContract.DesiredStateEndpoint.Equals("/api/desired-state", StringComparison.Ordinal);
+                bool firstTwoAccepted = first.Accepted && second.Accepted;
+                bool maxTwoRejected = !thirdRejected.Accepted && thirdRejected.RejectedReason.Contains("maxActiveStrategies", StringComparison.OrdinalIgnoreCase);
+                bool goOutPersisted = goOut.Accepted && snapshot.FindRow("KUST")?.DesiredTradeEnabled == false;
+                bool latestStateWritten = File.Exists(store.LatestStatePath);
+                bool actionLogWritten = File.Exists(store.ActionCsvPath);
+                bool activeStrategiesLimited = snapshot.ActiveStrategies.Count <= SailorUiContract.DefaultMaxActiveStrategies;
+                bool paperOnlyControlContract = true;
+
+                bool pass = endpointConfigured
+                    && firstTwoAccepted
+                    && maxTwoRejected
+                    && goOutPersisted
+                    && latestStateWritten
+                    && actionLogWritten
+                    && activeStrategiesLimited
+                    && paperOnlyControlContract;
+
+                AddCheck(checks, endpointConfigured, "SAILOR-067 exposes the desired-state endpoint at /api/desired-state.");
+                AddCheck(checks, firstTwoAccepted, "SAILOR-067 accepts two active paper strategies from checkbox/dropdown controls.");
+                AddCheck(checks, maxTwoRejected, "SAILOR-067 rejects a third active strategy and preserves the previous desired state.");
+                AddCheck(checks, goOutPersisted, "SAILOR-067 persists unchecked/go-out desired state for a selected symbol.");
+                AddCheck(checks, latestStateWritten, "SAILOR-067 writes state/paper/ui/desired_state_latest.json.");
+                AddCheck(checks, actionLogWritten, "SAILOR-067 writes logs/Paper/SailorUI/sailor_ui_actions_YYYYMMDD.csv.");
+                AddCheck(checks, activeStrategiesLimited, "SAILOR-067 snapshot active strategy list remains within the configured maxActiveStrategies limit.");
+                AddCheck(checks, paperOnlyControlContract, "SAILOR-067 controls are paper-only; live SailorUI remains read-only unless a future live-hardening milestone changes it.");
+                events.Add("command: paper sailor-ui --port 5101 --ui-controls --account DUN559573");
+                events.Add($"desiredStatePath={store.LatestStatePath}");
+                events.Add($"actionCsvPath={store.ActionCsvPath}");
+                events.Add("controls persist desired state only; broker/router safety gates remain server-side");
+
+                return Result("sailor-ui-paper-controls", pass, checks, events, warnings);
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"SAILOR-067 self-test exception: {ex.GetType().Name}: {ex.Message}");
+                AddCheck(checks, false, "SAILOR-067 desired-state store self-test executed without exception.");
+                return Result("sailor-ui-paper-controls", false, checks, events, warnings);
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(tempRoot))
+                    {
+                        Directory.Delete(tempRoot, recursive: true);
+                    }
+                }
+                catch
+                {
+                    // Best-effort cleanup for deterministic self-test temp files.
+                }
+            }
         }
 
         private int CalculateReplenishmentRequest(

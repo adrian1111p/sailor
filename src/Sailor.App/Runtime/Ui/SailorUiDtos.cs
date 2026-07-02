@@ -10,6 +10,10 @@ public sealed record SailorUiSnapshot(
     IReadOnlyList<SailorUiStrategyOption> Strategies,
     int MaxActiveStrategies,
     int RefreshMilliseconds,
+    bool ControlsEnabled,
+    string ControlMode,
+    IReadOnlyList<string> ActiveDesiredStrategies,
+    string DesiredStateUpdatedUtc,
     string SourceSummary,
     IReadOnlyList<string> Warnings);
 

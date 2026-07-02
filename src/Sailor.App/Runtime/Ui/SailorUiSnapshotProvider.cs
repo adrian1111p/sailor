@@ -15,23 +15,32 @@ public sealed class SailorUiSnapshotProvider
     private readonly SailorRuntimeMode _mode;
     private readonly int _maxScannerRows;
     private readonly int _maxActiveStrategies;
+    private readonly bool _controlsEnabled;
+    private readonly string? _account;
     private readonly string _repositoryRoot;
+    private readonly SailorUiDesiredStateStore _desiredStateStore;
 
     public SailorUiSnapshotProvider(
         SailorRuntimeMode mode,
         int maxScannerRows = SailorUiContract.DefaultScannerRows,
-        int maxActiveStrategies = SailorUiContract.DefaultMaxActiveStrategies)
+        int maxActiveStrategies = SailorUiContract.DefaultMaxActiveStrategies,
+        bool controlsEnabled = false,
+        string? account = null)
     {
         _mode = mode;
         _maxScannerRows = Math.Max(1, maxScannerRows);
         _maxActiveStrategies = Math.Max(1, maxActiveStrategies);
+        _controlsEnabled = controlsEnabled && mode == SailorRuntimeMode.Paper;
+        _account = string.IsNullOrWhiteSpace(account) ? null : account.Trim();
         _repositoryRoot = FindRepositoryRoot();
+        _desiredStateStore = new SailorUiDesiredStateStore(mode, _account, _maxActiveStrategies, _repositoryRoot);
     }
 
     public SailorUiSnapshot ReadSnapshot()
     {
         var warnings = new List<string>();
         IReadOnlyList<SailorUiStrategyOption> strategies = LoadStrategyOptions(warnings);
+        SailorUiDesiredStateSnapshot desiredState = _desiredStateStore.LoadSnapshot();
         IReadOnlyList<SailorUiScannerCandidate> scannerCandidates = LoadScannerCandidates(warnings);
         IReadOnlyDictionary<string, SailorUiScannerCandidate> scannerBySymbol = scannerCandidates
             .GroupBy(candidate => candidate.Symbol, StringComparer.OrdinalIgnoreCase)
@@ -74,8 +83,11 @@ public sealed class SailorUiSnapshotProvider
             decimal dailyPnl = open > 0m && price > 0m && quantity != 0
                 ? (price - open) * quantity
                 : 0m;
-            string strategy = lifecycle?.ProfileName ?? ResolveDefaultStrategy(strategies);
-            bool tradeEnabled = lifecycle?.IsActive == true || quantity != 0;
+            SailorUiDesiredStateRow? desiredRow = desiredState.FindRow(symbol);
+            string strategy = !string.IsNullOrWhiteSpace(desiredRow?.SelectedStrategy)
+                ? desiredRow!.SelectedStrategy
+                : lifecycle?.ProfileName ?? ResolveDefaultStrategy(strategies);
+            bool tradeEnabled = desiredRow?.DesiredTradeEnabled ?? (lifecycle?.IsActive == true || quantity != 0);
             bool stale = candidate?.PriceStale ?? true;
             string status = lifecycle?.Status.ToDisplayName() ?? (quantity == 0 ? "flat" : "open");
             string reason = lifecycle?.LastReason ?? candidate?.Reason ?? "broker/scanner state loaded for read-only UI";
@@ -108,19 +120,23 @@ public sealed class SailorUiSnapshotProvider
         IReadOnlyList<SailorUiScannerRow> scannerRows = scannerCandidates
             .Where(candidate => !activeSymbolSet.Contains(candidate.Symbol))
             .Take(_maxScannerRows)
-            .Select(candidate => new SailorUiScannerRow(
-                candidate.Rank,
-                candidate.Symbol,
-                candidate.Status.Equals("Ready", StringComparison.OrdinalIgnoreCase),
-                ResolveDefaultStrategy(strategies),
-                strategies,
-                candidate.Volume,
-                candidate.Price,
-                candidate.PriceStale,
-                candidate.SelectedSide,
-                candidate.FinalScore,
-                candidate.Status,
-                candidate.Reason))
+            .Select(candidate =>
+            {
+                SailorUiDesiredStateRow? desiredRow = desiredState.FindRow(candidate.Symbol);
+                return new SailorUiScannerRow(
+                    candidate.Rank,
+                    candidate.Symbol,
+                    desiredRow?.DesiredTradeEnabled ?? false,
+                    !string.IsNullOrWhiteSpace(desiredRow?.SelectedStrategy) ? desiredRow!.SelectedStrategy : ResolveDefaultStrategy(strategies),
+                    strategies,
+                    candidate.Volume,
+                    candidate.Price,
+                    candidate.PriceStale,
+                    candidate.SelectedSide,
+                    candidate.FinalScore,
+                    candidate.Status,
+                    candidate.Reason);
+            })
             .ToArray();
 
         decimal realized = LoadRealizedPnlToday(warnings);
@@ -145,6 +161,10 @@ public sealed class SailorUiSnapshotProvider
             strategies,
             _maxActiveStrategies,
             SailorUiContract.DefaultRefreshMilliseconds,
+            _controlsEnabled,
+            _controlsEnabled ? "paper-desired-state" : "read-only",
+            desiredState.ActiveStrategies,
+            desiredState.UpdatedUtc == DateTimeOffset.MinValue ? "n/a" : desiredState.UpdatedUtc.ToString("O", CultureInfo.InvariantCulture),
             sourceSummary,
             warnings.Distinct(StringComparer.OrdinalIgnoreCase).Take(12).ToArray());
     }
