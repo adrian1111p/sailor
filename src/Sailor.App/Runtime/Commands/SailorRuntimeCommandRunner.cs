@@ -1588,6 +1588,8 @@ public static class SailorRuntimeCommandRunner
         Log(writer, runtimeOptions.ToCompactString());
         Log(writer, "");
 
+        await using SailorUiAutoServer autoUi = StartAutoSailorUiForConduct(mode, args, settings, writer, harshConductTest);
+
         if (mode == SailorRuntimeMode.Live && !harshConductTest)
         {
             await RunLivePilotAsync(args, settings, runtimeOptions, logFilePath, writer);
@@ -3773,6 +3775,136 @@ public static class SailorRuntimeCommandRunner
         };
     }
 
+    private static SailorUiAutoServer StartAutoSailorUiForConduct(
+        SailorRuntimeMode mode,
+        string[] args,
+        SailorAppSettings settings,
+        StreamWriter writer,
+        bool harshConductTest)
+    {
+        if (HasOption(args, "--no-auto-ui")
+            || HasOption(args, "--no-sailor-ui")
+            || HasOption(args, "--no-ui"))
+        {
+            Log(writer, "SAILOR-071 automatic SailorUI startup disabled by command option.");
+            return SailorUiAutoServer.Disabled;
+        }
+
+        SailorRuntimeModeSettings modeSettings = GetModeSettings(mode, settings);
+        string? account = ReadOptionalStringOption(args, "--account") ?? modeSettings.Account;
+        int uiPort = ReadIntOption(args, "--sailor-ui-port", ReadIntOption(args, "--ui-port", SailorUiContract.DefaultPort));
+        string requestedHost = ReadStringOption(args, "--sailor-ui-host", "127.0.0.1");
+        var hardeningWarnings = new List<string>();
+        string host = SailorUiLiveHardening.NormalizeHost(mode, requestedHost, hardeningWarnings);
+        int maxRows = ReadIntOption(args, "--sailor-ui-max-rows", ReadIntOption(args, "--ui-max-rows", SailorUiContract.DefaultScannerRows));
+        int maxStrategies = ReadIntOption(args, "--max-strategies", SailorUiContract.DefaultMaxActiveStrategies);
+        bool uiDesiredStateIgnored = HasOption(args, "--no-ui-desired-state") || HasOption(args, "--ignore-ui-desired-state");
+        bool paperControlsRequested = mode == SailorRuntimeMode.Paper && !uiDesiredStateIgnored;
+        bool controlsEnabled = SailorUiLiveHardening.ResolveControlsEnabled(mode, paperControlsRequested, explicitReadOnly: uiDesiredStateIgnored);
+        string controlMode = SailorUiLiveHardening.ResolveControlMode(mode, controlsEnabled);
+        string runKind = harshConductTest ? "harsh-test" : "normal run";
+
+        Log(writer, $"SAILOR-071 automatic SailorUI startup is active for {mode.ToDisplayName()} {runKind}: http://localhost:{uiPort}/ controlMode={controlMode} controlsEnabled={controlsEnabled} maxStrategies={maxStrategies}.");
+        if (uiDesiredStateIgnored)
+        {
+            Log(writer, "SAILOR-071 auto SailorUI is read-only because --no-ui-desired-state/--ignore-ui-desired-state was supplied.");
+        }
+        foreach (string warning in hardeningWarnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
+
+        var provider = new SailorUiSnapshotProvider(mode, maxRows, maxStrategies, controlsEnabled, account);
+        var desiredStateStore = new SailorUiDesiredStateStore(mode, account, maxStrategies);
+        var server = new SailorUiServer(
+            mode,
+            provider,
+            desiredStateStore,
+            host,
+            uiPort,
+            controlsEnabled,
+            message => SafeLog(writer, message));
+
+        return SailorUiAutoServer.Start(server, message => SafeLog(writer, message));
+    }
+
+    private static void SafeLog(StreamWriter writer, string message)
+    {
+        try
+        {
+            lock (writer)
+            {
+                Log(writer, message);
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            Console.WriteLine(message);
+        }
+    }
+
+    private sealed class SailorUiAutoServer : IAsyncDisposable
+    {
+        public static SailorUiAutoServer Disabled { get; } = new(null, null);
+
+        private readonly CancellationTokenSource? _cts;
+        private readonly Task? _serverTask;
+
+        private SailorUiAutoServer(CancellationTokenSource? cts, Task? serverTask)
+        {
+            _cts = cts;
+            _serverTask = serverTask;
+        }
+
+        public static SailorUiAutoServer Start(SailorUiServer server, Action<string> log)
+        {
+            var cts = new CancellationTokenSource();
+            Task serverTask = Task.Run(async () =>
+            {
+                try
+                {
+                    await server.RunAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Normal command shutdown.
+                }
+                catch (Exception ex)
+                {
+                    log($"WARN: SAILOR-071 automatic SailorUI could not start or stopped early: {ex.GetType().Name}: {ex.Message}. Trading runtime continues; an external SailorUI may already be using the port.");
+                }
+            });
+
+            return new SailorUiAutoServer(cts, serverTask);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_cts is null || _serverTask is null)
+            {
+                return;
+            }
+
+            try
+            {
+                _cts.Cancel();
+                Task completed = await Task.WhenAny(_serverTask, Task.Delay(TimeSpan.FromSeconds(2))).ConfigureAwait(false);
+                if (completed == _serverTask)
+                {
+                    await _serverTask.ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal shutdown.
+            }
+            finally
+            {
+                _cts.Dispose();
+            }
+        }
+    }
+
     private static StreamWriter CreateWriter(string logFilePath)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(logFilePath)!);
@@ -3831,6 +3963,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --dry-run --local-cache --no-quotes --iterations 10");
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} harsh-test 1m v21-15minutes 10 --scan-file scan/data/scan_default.xlsx --scan-sheet Candidates --scanner-mode points-only --quantity 10 --max-symbols 145 --iterations 10 --cadence-seconds 60 --send-orders");
+        Console.WriteLine($"  sailor {name} run/harsh-test auto-starts SailorUI on http://localhost:5101/ by default; disable with --no-auto-ui or change with --sailor-ui-port 5102");
         Console.WriteLine($"  sailor {name} sailor-ui --port 5101");
         if (mode == SailorRuntimeMode.Paper)
         {

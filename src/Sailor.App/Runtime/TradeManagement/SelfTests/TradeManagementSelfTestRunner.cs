@@ -32,7 +32,8 @@ public static class TradeManagementSelfTestRunner
         "sailor-ui-paper-controls",
         "sailor-ui-multistrategy-routing",
         "sailor-ui-live-hardening",
-        "sailor-ui-report-export"
+        "sailor-ui-report-export",
+        "sailor-ui-auto-start-defaults"
     ];
 
     public static Task<int> RunAsync(
@@ -179,6 +180,7 @@ public static class TradeManagementSelfTestRunner
                 "sailor-ui-multistrategy-routing" => SailorUiMultiStrategyRouting(),
                 "sailor-ui-live-hardening" => SailorUiLiveHardening(),
                 "sailor-ui-report-export" => SailorUiReportExport(),
+                "sailor-ui-auto-start-defaults" => SailorUiAutoStartDefaults(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -1027,6 +1029,43 @@ public static class TradeManagementSelfTestRunner
                     // Best-effort cleanup for deterministic self-test temp files.
                 }
             }
+        }
+
+        private TradeManagementSelfTestCaseResult SailorUiAutoStartDefaults()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+
+            bool defaultPort = SailorUiContract.DefaultPort == 5101;
+            bool defaultPaperControls = Sailor.App.Runtime.Ui.SailorUiLiveHardening.ResolveControlsEnabled(SailorRuntimeMode.Paper, requestedControls: true, explicitReadOnly: false);
+            bool liveControlsLocked = !Sailor.App.Runtime.Ui.SailorUiLiveHardening.ResolveControlsEnabled(SailorRuntimeMode.Live, requestedControls: true, explicitReadOnly: false);
+            string liveControlMode = Sailor.App.Runtime.Ui.SailorUiLiveHardening.ResolveControlMode(SailorRuntimeMode.Live, controlsEnabled: false);
+            bool liveReadOnlyLocked = liveControlMode.Equals("live-read-only-locked", StringComparison.OrdinalIgnoreCase);
+            bool maxTwoStrategies = SailorUiContract.DefaultMaxActiveStrategies == 2;
+            bool desiredEndpointAvailable = SailorUiContract.DesiredStateEndpoint.Equals("/api/desired-state", StringComparison.OrdinalIgnoreCase);
+            bool exportEndpointAvailable = SailorUiContract.ExportEndpoint.Equals("/api/export", StringComparison.OrdinalIgnoreCase);
+
+            bool pass = defaultPort
+                && defaultPaperControls
+                && liveControlsLocked
+                && liveReadOnlyLocked
+                && maxTwoStrategies
+                && desiredEndpointAvailable
+                && exportEndpointAvailable;
+
+            AddCheck(checks, defaultPort, "SAILOR-071 automatic SailorUI uses port 5101 by default.");
+            AddCheck(checks, defaultPaperControls, "SAILOR-071 paper run/harsh-test auto-starts SailorUI with paper desired-state controls when UI routing is not disabled.");
+            AddCheck(checks, liveControlsLocked, "SAILOR-071 live run/harsh-test auto-starts SailorUI read-only; controls are not enabled in live mode.");
+            AddCheck(checks, liveReadOnlyLocked, "SAILOR-071 live auto SailorUI keeps the SAILOR-069 live-read-only-locked mode.");
+            AddCheck(checks, maxTwoStrategies, "SAILOR-071 auto SailorUI keeps the SAILOR-068 maximum of two active strategies.");
+            AddCheck(checks, desiredEndpointAvailable, "SAILOR-071 auto SailorUI reuses SAILOR-067 desired-state endpoint in paper mode.");
+            AddCheck(checks, exportEndpointAvailable, "SAILOR-071 auto SailorUI keeps SAILOR-070 report export available.");
+            events.Add("default paper run/harsh-test: auto SailorUI http://localhost:5101/ controlsEnabled=True");
+            events.Add("default live run/harsh-test: auto SailorUI http://localhost:5101/ controlsEnabled=False live-read-only-locked");
+            events.Add("disable flags: --no-auto-ui / --no-sailor-ui / --no-ui; port override: --sailor-ui-port 5102");
+
+            return Result("sailor-ui-auto-start-defaults", pass, checks, events, warnings);
         }
 
         private static string FindRepositoryRootForSelfTest()
