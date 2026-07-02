@@ -1606,6 +1606,10 @@ public static class SailorRuntimeCommandRunner
         bool pointsAllowWeakEntry = ReadBooleanOption(args, "--points-allow-weak-entry", settings.Scanner.PointsAllowWeakEntry);
         bool pointsRetainWatchOnly = ReadBooleanOption(args, "--points-retain-watch-only", settings.Scanner.PointsRetainWatchOnly);
         bool forceFlatNow = args.Any(arg => arg.Equals("--force-flat-now", StringComparison.OrdinalIgnoreCase));
+        int uiMaxStrategies = ReadIntOption(args, "--max-strategies", SailorUiContract.DefaultMaxActiveStrategies);
+        bool uiDesiredStateRouting = mode == SailorRuntimeMode.Paper
+            && !HasOption(args, "--no-ui-desired-state")
+            && !HasOption(args, "--ignore-ui-desired-state");
 
         bool sendOrdersRequested = args.Any(arg => arg.Equals("--send-orders", StringComparison.OrdinalIgnoreCase));
         bool dryRunRequested = args.Any(arg => arg.Equals("--dry-run", StringComparison.OrdinalIgnoreCase));
@@ -1857,6 +1861,8 @@ public static class SailorRuntimeCommandRunner
             ManualBrokerPositionMonitorIntervalSeconds: settings.Runtime.Safety.ManualBrokerPositionMonitorIntervalSeconds,
             ManualBrokerPositionMonitorClientIdOffset: settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset,
             HarshConductTestEnabled: harshConductTest,
+            UiDesiredStateRoutingEnabled: uiDesiredStateRouting,
+            UiDesiredStateMaxActiveStrategies: uiMaxStrategies,
             HarshConductTargetTrades: runtimeOptions.TopCount,
             HarshConductDefaultQuantity: 10,
             HarshConductReplenishmentIntervalSeconds: 300);
@@ -2249,7 +2255,9 @@ public static class SailorRuntimeCommandRunner
             ManualBrokerPositionsAreStrategyManaged: settings.Runtime.Safety.ManualBrokerPositionsAreStrategyManaged,
             ManualBrokerPositionMonitorEnabled: settings.Runtime.Safety.ManualBrokerPositionMonitorEnabled,
             ManualBrokerPositionMonitorIntervalSeconds: settings.Runtime.Safety.ManualBrokerPositionMonitorIntervalSeconds,
-            ManualBrokerPositionMonitorClientIdOffset: settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset);
+            ManualBrokerPositionMonitorClientIdOffset: settings.Runtime.Safety.ManualBrokerPositionMonitorClientIdOffset,
+            UiDesiredStateRoutingEnabled: false,
+            UiDesiredStateMaxActiveStrategies: SailorUiContract.DefaultMaxActiveStrategies);
 
         var host = new PaperRuntimeHost(settings, message => Log(writer, message));
         PaperRuntimeHostResult runtimeResult = await host.RunAsync(request, CancellationToken.None).ConfigureAwait(false);
@@ -3859,6 +3867,7 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine("  - manual live order sending remains blocked; use live run for pilot entries and live flatten for close-only exit");
         Console.WriteLine("  - SAILOR-066 adds a read-only SailorUI at http://localhost:5101/ for compact TWS-style monitoring");
         Console.WriteLine("  - SAILOR-067 adds paper-only SailorUI desired-state controls with checkbox/strategy persistence");
+        Console.WriteLine("  - SAILOR-068 routes paper conduct sessions by SailorUI desired state with max two active strategies");
         Console.WriteLine();
         Console.WriteLine("Configured defaults:");
         Console.WriteLine($"  host:       {modeSettings.Host}");

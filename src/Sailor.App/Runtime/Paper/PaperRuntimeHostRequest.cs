@@ -43,6 +43,8 @@ public sealed record PaperRuntimeHostRequest(
     int ManualBrokerPositionMonitorIntervalSeconds = 60,
     int ManualBrokerPositionMonitorClientIdOffset = 300,
     bool HarshConductTestEnabled = false,
+    bool UiDesiredStateRoutingEnabled = false,
+    int UiDesiredStateMaxActiveStrategies = 2,
     int HarshConductTargetTrades = 10,
     int HarshConductDefaultQuantity = 10,
     int HarshConductReplenishmentIntervalSeconds = 300);

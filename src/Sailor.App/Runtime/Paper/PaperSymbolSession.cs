@@ -3,6 +3,7 @@ using Sailor.App.Backtest.Indicators;
 using Sailor.App.Backtest.Models;
 using Sailor.App.Backtest.Profiles;
 using Sailor.App.Backtest.Data;
+using Sailor.App.Configuration;
 using Sailor.App.Broker.Orders;
 using Sailor.App.Broker.State;
 using Sailor.App.MarketData.Snapshots;
@@ -18,7 +19,7 @@ public sealed class PaperSymbolSession
     private List<BacktestIndicatorSnapshot> _indicators;
     private readonly SailorRuntimeMode _mode;
     private readonly string _timeframe;
-    private readonly SailorStrategyProfile _profile;
+    private SailorStrategyProfile _profile;
     private readonly int _runtimeForceFlatMinute;
     private int _cursor;
     private bool _cursorPositionedOnFrame;
@@ -70,7 +71,9 @@ public sealed class PaperSymbolSession
 
     public SailorMarketSnapshot? MarketSnapshot { get; }
 
-    public SailorStrategyAdapter Strategy { get; }
+    public SailorStrategyAdapter Strategy { get; private set; }
+
+    public string ProfileName => _profile.Name;
 
     public SailorTradeOrigin TradeOrigin { get; }
 
@@ -78,7 +81,7 @@ public sealed class PaperSymbolSession
 
     public string? ScannerSelectedSide { get; }
 
-    public StrategyLifecyclePolicy LifecyclePolicy { get; }
+    public StrategyLifecyclePolicy LifecyclePolicy { get; private set; }
 
     public bool LifecycleClosedForEntry { get; private set; }
 
@@ -203,6 +206,31 @@ public sealed class PaperSymbolSession
         {
             StartReason = startReason
         };
+    }
+
+
+    public bool TrySwitchStrategyProfile(
+        SailorAppSettings settings,
+        string requestedProfileName,
+        StrategyLifecyclePolicy lifecyclePolicy,
+        out string message)
+    {
+        string normalizedProfileName = string.IsNullOrWhiteSpace(requestedProfileName)
+            ? _profile.Name
+            : requestedProfileName.Trim().ToLowerInvariant();
+        if (_profile.Name.Equals(normalizedProfileName, StringComparison.OrdinalIgnoreCase))
+        {
+            message = $"SAILOR-068 {Symbol} already uses strategy {_profile.Name}.";
+            return false;
+        }
+
+        SailorStrategyProfile nextProfile = SailorStrategyProfile.FromName(normalizedProfileName, settings);
+        string previousProfileName = _profile.Name;
+        _profile = nextProfile;
+        Strategy = new SailorStrategyAdapter(settings, nextProfile, Symbol, _timeframe);
+        LifecyclePolicy = lifecyclePolicy;
+        message = $"SAILOR-068 switched {Symbol} strategy {previousProfileName} -> {nextProfile.Name}; lifecycle={lifecyclePolicy.Mode.ToDisplayName()}.";
+        return true;
     }
 
     public SailorStrategyFrame NextFrame(SailorRuntimeState runtimeState, bool advanceCursor = true)
@@ -531,7 +559,7 @@ public sealed class PaperSymbolSession
         string slot = string.IsNullOrWhiteSpace(ScannerSlotId) ? "slot=n/a" : $"slot={ScannerSlotId}";
         string scannerSide = string.IsNullOrWhiteSpace(ScannerSelectedSide) ? "scannerSide=n/a" : $"scannerSide={ScannerSelectedSide}";
         string lifecycleClosed = LifecycleClosedForEntry ? " entryClosed=True" : string.Empty;
-        return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex} origin={TradeOrigin.ToDisplayName()} {slot} {scannerSide} lifecycle={LifecyclePolicy.Mode.ToDisplayName()}{lifecycleClosed}";
+        return $"{Symbol} {side} qty={PositionQuantity} avg={AveragePrice:F4} entryBar={EntryBarIndex} origin={TradeOrigin.ToDisplayName()} {slot} {scannerSide} strategy={ProfileName} lifecycle={LifecyclePolicy.Mode.ToDisplayName()}{lifecycleClosed}";
     }
 
     public bool SyncBrokerPosition(int brokerQuantity, decimal brokerAveragePrice, out string message)

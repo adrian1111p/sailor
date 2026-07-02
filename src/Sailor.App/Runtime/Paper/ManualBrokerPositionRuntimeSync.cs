@@ -3,6 +3,7 @@ using Sailor.App.Broker.State;
 using Sailor.App.Configuration;
 using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.TradeManagement;
+using Sailor.App.Runtime.Ui;
 
 namespace Sailor.App.Runtime.Paper;
 
@@ -43,7 +44,15 @@ public sealed class ManualBrokerPositionRuntimeSync
         int existingSynced = 0;
         int newSessionsCreated = 0;
         int manualFlatSynced = 0;
-        SailorStrategyProfile profile = SailorStrategyProfile.FromName(request.RuntimeOptions.ProfileName, _settings);
+        SailorUiDesiredStateRoutingSnapshot desiredRouting = SailorUiDesiredStateRouter.Load(
+            request.UiDesiredStateRoutingEnabled,
+            request.RuntimeOptions.Mode,
+            request.Account,
+            request.UiDesiredStateMaxActiveStrategies);
+        foreach (string desiredWarning in desiredRouting.Warnings)
+        {
+            warnings.Add(desiredWarning);
+        }
 
         foreach (BrokerPositionRow brokerPosition in brokerBySymbol.Values.OrderBy(position => position.Symbol, StringComparer.OrdinalIgnoreCase))
         {
@@ -64,6 +73,8 @@ public sealed class ManualBrokerPositionRuntimeSync
             {
                 TradeLifecycle? lifecycle = FindRelevantLifecycle(_tradeRegistry.LoadSnapshot(), symbol);
                 SailorTradeOrigin origin = ResolveManualBrokerOrigin(lifecycle);
+                string strategyProfileName = desiredRouting.ResolveProfileName(symbol, lifecycle?.ProfileName ?? request.RuntimeOptions.ProfileName);
+                SailorStrategyProfile profile = SailorStrategyProfile.FromName(strategyProfileName, _settings);
                 StrategyLifecyclePolicy lifecyclePolicy = _lifecyclePolicyResolver.Resolve(profile.Name, origin);
                 PaperSymbolSession session = PaperSymbolSession.Create(
                     request.RuntimeOptions.Mode,
@@ -92,12 +103,12 @@ public sealed class ManualBrokerPositionRuntimeSync
                     session.AveragePrice,
                     request.RuntimeOptions.Timeframe,
                     request.Account,
-                    "SAILOR-062 manual TWS broker position was promoted to a strategy-managed runtime session.");
+                    $"SAILOR-062 manual TWS broker position was promoted to a strategy-managed runtime session. SAILOR-068 strategy={profile.Name}.");
 
                 sessions.Add(session);
                 newSessionsCreated++;
-                events.Add($"{symbol}: SAILOR-062 created strategy-managed manual broker session tradeLifecycle={registered.TradeId} qty={session.PositionQuantity} avg={session.AveragePrice:F4} origin={origin.ToDisplayName()} policy={lifecyclePolicy.Mode.ToDisplayName()}.");
-                _log($"manual-broker-session-created: {symbol} tradeLifecycle={registered.TradeId} qty={session.PositionQuantity} avg={session.AveragePrice:F4} origin={origin.ToDisplayName()} policy={lifecyclePolicy.Mode.ToDisplayName()}");
+                events.Add($"{symbol}: SAILOR-062 created strategy-managed manual broker session tradeLifecycle={registered.TradeId} qty={session.PositionQuantity} avg={session.AveragePrice:F4} origin={origin.ToDisplayName()} strategy={profile.Name} policy={lifecyclePolicy.Mode.ToDisplayName()}.");
+                _log($"manual-broker-session-created: {symbol} tradeLifecycle={registered.TradeId} qty={session.PositionQuantity} avg={session.AveragePrice:F4} origin={origin.ToDisplayName()} strategy={profile.Name} policy={lifecyclePolicy.Mode.ToDisplayName()}");
             }
             catch (Exception ex)
             {

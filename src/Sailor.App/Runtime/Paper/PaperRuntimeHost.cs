@@ -6,6 +6,7 @@ using Sailor.App.Configuration;
 using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.TradeManagement;
 using Sailor.App.Scanner.Runtime;
+using Sailor.App.Runtime.Ui;
 
 namespace Sailor.App.Runtime.Paper;
 
@@ -180,6 +181,24 @@ public sealed class PaperRuntimeHost
         _log($"universalLastEntryMinute={request.RuntimeOptions.LastEntryMinute} universalForceFlatMinute={request.RuntimeOptions.ForceFlatMinute}");
         _log("");
 
+        if (request.UiDesiredStateRoutingEnabled)
+        {
+            SailorUiDesiredStateRoutingSnapshot routingSnapshot = SailorUiDesiredStateRouter.Load(
+                true,
+                request.RuntimeOptions.Mode,
+                request.Account,
+                request.UiDesiredStateMaxActiveStrategies);
+            _log("SAILOR-068 multi-strategy conduct routing.");
+            _log("Paper conduct can consume SailorUI desired state: checked symbols are allowed to enter, unchecked open symbols are forced out, and at most two active strategies are routed.");
+            _log(routingSnapshot.ToSummaryString());
+            foreach (string routingWarning in routingSnapshot.Warnings)
+            {
+                warnings.Add(routingWarning);
+                _log($"WARN: {routingWarning}");
+            }
+            _log("");
+        }
+
         List<PaperSymbolSession> sessions = CreateSessions(request, sessionPlan.Seeds, warnings, tradeRegistry, lifecyclePolicyResolver);
         if (sessions.Count == 0)
         {
@@ -266,7 +285,7 @@ public sealed class PaperRuntimeHost
             _log("");
         }
 
-        var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, tradeRegistry, scannerSlotManager, severeRecoveryOrchestrator, manualBrokerPositionRuntimeSync);
+        var conductLoop = new PaperConductLoop(request.RuntimeOptions.Mode, _log, _settings, lifecyclePolicyResolver, tradeRegistry, scannerSlotManager, severeRecoveryOrchestrator, manualBrokerPositionRuntimeSync);
         PaperRuntimeHostResult loopResult = await conductLoop.RunAsync(
             sessions,
             router,
@@ -305,7 +324,7 @@ public sealed class PaperRuntimeHost
         TradeLifecycleRegistryStore tradeRegistry,
         StrategyLifecyclePolicyResolver lifecyclePolicyResolver)
     {
-        SailorStrategyProfile profile = SailorStrategyProfile.FromName(request.RuntimeOptions.ProfileName, _settings);
+        SailorStrategyProfile defaultProfile = SailorStrategyProfile.FromName(request.RuntimeOptions.ProfileName, _settings);
 
         var localBySymbol = request.Reconciliation.LocalPositions
             .Where(position => !position.IsFlat)
@@ -336,18 +355,23 @@ public sealed class PaperRuntimeHost
                     origin = SailorTradeOrigin.SailorPreExisting;
                 }
 
+                string requestedProfileName = string.IsNullOrWhiteSpace(seed.StrategyProfileName)
+                    ? defaultProfile.Name
+                    : SailorUiStrategyProfileNames.Normalize(seed.StrategyProfileName);
+                SailorStrategyProfile sessionProfile = SailorStrategyProfile.FromName(requestedProfileName, _settings);
+
                 PaperSymbolSession session = PaperSymbolSession.Create(
                     request.RuntimeOptions.Mode,
                     normalizedSymbol,
                     request.RuntimeOptions.Timeframe,
-                    profile,
+                    sessionProfile,
                     _settings,
                     seed.Snapshot,
                     localSeed,
                     brokerSeed,
                     origin,
                     seed.ScannerSlotId,
-                    lifecyclePolicyResolver.Resolve(profile.Name, origin),
+                    lifecyclePolicyResolver.Resolve(sessionProfile.Name, origin),
                     request.MaxIterations,
                     request.RuntimeOptions.LastEntryMinute,
                     request.RuntimeOptions.ForceFlatMinute,
@@ -359,7 +383,7 @@ public sealed class PaperRuntimeHost
 
                 TradeLifecycle lifecycle = tradeRegistry.RegisterRuntimeSession(
                     normalizedSymbol,
-                    profile.Name,
+                    sessionProfile.Name,
                     origin,
                     seed.ScannerSlotId,
                     session.PositionQuantity,

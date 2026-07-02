@@ -2,6 +2,7 @@ using Sailor.App.Broker.State;
 using Sailor.App.Configuration;
 using Sailor.App.Runtime.TradeManagement;
 using Sailor.App.Scanner.Runtime;
+using Sailor.App.Runtime.Ui;
 
 namespace Sailor.App.Runtime.Paper;
 
@@ -26,6 +27,15 @@ public sealed class DynamicTradeSessionManager
         var addedSymbols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         TradeLifecycleRegistrySnapshot registrySnapshot = tradeRegistry.LoadSnapshot();
         DateOnly tradeDate = DateOnly.FromDateTime(DateTime.UtcNow);
+        SailorUiDesiredStateRoutingSnapshot desiredRouting = SailorUiDesiredStateRouter.Load(
+            request.UiDesiredStateRoutingEnabled,
+            request.RuntimeOptions.Mode,
+            request.Account,
+            request.UiDesiredStateMaxActiveStrategies);
+        foreach (string desiredWarning in desiredRouting.Warnings)
+        {
+            warnings.Add(desiredWarning);
+        }
 
         int maxScannerOwned = request.HarshConductTestEnabled
             ? Math.Max(1, request.RuntimeOptions.TopCount)
@@ -36,13 +46,27 @@ public sealed class DynamicTradeSessionManager
                     : _settings.Runtime.Safety.MaxActiveSymbols));
 
         int scannerOwnedCount = 0;
-        foreach (PaperScannerCandidate candidate in scannerResult.Candidates.Take(maxScannerOwned))
+        foreach (PaperScannerCandidate candidate in scannerResult.Candidates)
         {
+            if (scannerOwnedCount >= maxScannerOwned)
+            {
+                break;
+            }
+
             string symbol = NormalizeSymbol(candidate.Symbol);
+            if (desiredRouting.ShouldSkipFlatScannerEntry(symbol, out string desiredSkipReason))
+            {
+                warnings.Add(desiredSkipReason);
+                continue;
+            }
+
+            string strategyProfileName = desiredRouting.ResolveProfileName(symbol, request.RuntimeOptions.ProfileName);
             TradeLifecycle? stopped = FindStoppedForDay(registrySnapshot, symbol, tradeDate);
             string reason = stopped is null
-                ? "SAILOR-053 scanner-selected symbol."
-                : $"SAILOR-053 scanner re-selected a symbol that had stop-for-day evidence earlier today ({stopped.TradeId}); preserving scanner decision for the later replenishment policy audit.";
+                ? desiredRouting.Enabled && desiredRouting.HasAnyRows
+                    ? $"SAILOR-053 scanner-selected symbol. SAILOR-068 strategy={strategyProfileName} from SailorUI desired-state routing."
+                    : "SAILOR-053 scanner-selected symbol."
+                : $"SAILOR-053 scanner re-selected a symbol that had stop-for-day evidence earlier today ({stopped.TradeId}); preserving scanner decision for the later replenishment policy audit. SAILOR-068 strategy={strategyProfileName}.";
 
             if (AddSeed(seeds, addedSymbols, new DynamicTradeSessionSeed(
                     symbol,
@@ -50,7 +74,8 @@ public sealed class DynamicTradeSessionManager
                     SailorTradeOrigin.ScannerOwned,
                     CreateScannerSlotId(symbol, candidate.Rank > 0 ? candidate.Rank : scannerOwnedCount + 1),
                     reason,
-                    candidate.Candidate.Side)))
+                    candidate.Candidate.Side,
+                    strategyProfileName)))
             {
                 scannerOwnedCount++;
             }
@@ -76,7 +101,7 @@ public sealed class DynamicTradeSessionManager
                 ? "SAILOR-053 verified broker position was not selected by scanner; dynamic manager adds it as manual/external managed session."
                 : $"SAILOR-053 verified broker position matched lifecycle {lifecycle.TradeId}; dynamic manager keeps it under conduct.";
 
-            if (AddSeed(seeds, addedSymbols, new DynamicTradeSessionSeed(symbol, null, origin, lifecycle?.ScannerSlotId, reason)))
+            if (AddSeed(seeds, addedSymbols, new DynamicTradeSessionSeed(symbol, null, origin, lifecycle?.ScannerSlotId, reason, StrategyProfileName: desiredRouting.ResolveProfileName(symbol, lifecycle?.ProfileName ?? request.RuntimeOptions.ProfileName))))
             {
                 brokerPositionCount++;
             }
@@ -92,7 +117,7 @@ public sealed class DynamicTradeSessionManager
                 ? "SAILOR-053 local Sailor position was not selected by scanner; dynamic manager adds it as Sailor pre-existing managed session."
                 : $"SAILOR-053 local position matched lifecycle {lifecycle.TradeId}; dynamic manager keeps it under conduct.";
 
-            if (AddSeed(seeds, addedSymbols, new DynamicTradeSessionSeed(symbol, null, origin, lifecycle?.ScannerSlotId, reason)))
+            if (AddSeed(seeds, addedSymbols, new DynamicTradeSessionSeed(symbol, null, origin, lifecycle?.ScannerSlotId, reason, StrategyProfileName: desiredRouting.ResolveProfileName(symbol, lifecycle?.ProfileName ?? request.RuntimeOptions.ProfileName))))
             {
                 localPositionCount++;
             }
@@ -105,7 +130,7 @@ public sealed class DynamicTradeSessionManager
         {
             string symbol = NormalizeSymbol(lifecycle.Symbol);
             string reason = $"SAILOR-053 active lifecycle {lifecycle.TradeId} was recovered into the runtime session plan from registry evidence.";
-            if (AddSeed(seeds, addedSymbols, new DynamicTradeSessionSeed(symbol, null, lifecycle.Origin, lifecycle.ScannerSlotId, reason)))
+            if (AddSeed(seeds, addedSymbols, new DynamicTradeSessionSeed(symbol, null, lifecycle.Origin, lifecycle.ScannerSlotId, reason, StrategyProfileName: desiredRouting.ResolveProfileName(symbol, lifecycle.ProfileName))))
             {
                 registryRecoveredCount++;
             }
@@ -132,15 +157,27 @@ public sealed class DynamicTradeSessionManager
 
             foreach (string fallbackSymbol in fallbackSymbols
                          .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
-                         .Distinct(StringComparer.OrdinalIgnoreCase)
-                         .Take(maxScannerOwned))
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
             {
+                if (fallbackCount >= maxScannerOwned)
+                {
+                    break;
+                }
+
+                string normalizedFallback = NormalizeSymbol(fallbackSymbol);
+                if (desiredRouting.ShouldSkipFlatScannerEntry(normalizedFallback, out string desiredFallbackSkipReason))
+                {
+                    warnings.Add(desiredFallbackSkipReason);
+                    continue;
+                }
+
                 if (AddSeed(seeds, addedSymbols, new DynamicTradeSessionSeed(
-                        NormalizeSymbol(fallbackSymbol),
+                        normalizedFallback,
                         null,
                         SailorTradeOrigin.ExplicitRuntime,
                         null,
-                        "SAILOR-053 fallback explicit runtime session for smoke testing because no scanner/broker/local/registry session was available.")))
+                        "SAILOR-053 fallback explicit runtime session for smoke testing because no scanner/broker/local/registry session was available.",
+                        StrategyProfileName: desiredRouting.ResolveProfileName(fallbackSymbol, request.RuntimeOptions.ProfileName))))
                 {
                     fallbackCount++;
                 }

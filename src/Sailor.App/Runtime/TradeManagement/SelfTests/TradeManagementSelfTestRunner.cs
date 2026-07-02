@@ -29,7 +29,8 @@ public static class TradeManagementSelfTestRunner
         "manual-broker-strategy-managed",
         "harsh-conduct-forced-entries",
         "sailor-ui-readonly",
-        "sailor-ui-paper-controls"
+        "sailor-ui-paper-controls",
+        "sailor-ui-multistrategy-routing"
     ];
 
     public static Task<int> RunAsync(
@@ -173,6 +174,7 @@ public static class TradeManagementSelfTestRunner
                 "harsh-conduct-forced-entries" => HarshConductForcedEntries(),
                 "sailor-ui-readonly" => SailorUiReadOnly(),
                 "sailor-ui-paper-controls" => SailorUiPaperControls(),
+                "sailor-ui-multistrategy-routing" => SailorUiMultiStrategyRouting(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -717,6 +719,98 @@ public static class TradeManagementSelfTestRunner
                 warnings.Add($"SAILOR-067 self-test exception: {ex.GetType().Name}: {ex.Message}");
                 AddCheck(checks, false, "SAILOR-067 desired-state store self-test executed without exception.");
                 return Result("sailor-ui-paper-controls", false, checks, events, warnings);
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(tempRoot))
+                    {
+                        Directory.Delete(tempRoot, recursive: true);
+                    }
+                }
+                catch
+                {
+                    // Best-effort cleanup for deterministic self-test temp files.
+                }
+            }
+        }
+
+
+        private TradeManagementSelfTestCaseResult SailorUiMultiStrategyRouting()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            string tempRoot = Path.Combine(Path.GetTempPath(), "sailor-ui-s068-" + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                var store = new SailorUiDesiredStateStore(
+                    SailorRuntimeMode.Paper,
+                    account: "DUN559573",
+                    maxActiveStrategies: SailorUiContract.DefaultMaxActiveStrategies,
+                    repositoryRoot: tempRoot);
+
+                SailorUiDesiredStateUpdateResult first = store.TryUpdate(
+                    new SailorUiDesiredStateUpdate("ABTC", true, "v21-15minutes", "self-test"),
+                    "self-test",
+                    "self-test-agent");
+                SailorUiDesiredStateUpdateResult second = store.TryUpdate(
+                    new SailorUiDesiredStateUpdate("KUST", true, "V18-Silver", "self-test"),
+                    "self-test",
+                    "self-test-agent");
+                SailorUiDesiredStateUpdateResult disabled = store.TryUpdate(
+                    new SailorUiDesiredStateUpdate("CEPO", false, "v21-15minutes", "self-test"),
+                    "self-test",
+                    "self-test-agent");
+
+                SailorUiDesiredStateRoutingSnapshot routing = SailorUiDesiredStateRouter.Load(
+                    enabled: true,
+                    mode: SailorRuntimeMode.Paper,
+                    account: "DUN559573",
+                    maxActiveStrategies: SailorUiContract.DefaultMaxActiveStrategies,
+                    repositoryRoot: tempRoot);
+
+                bool twoStrategiesActive = routing.ActiveStrategies.Count == 2
+                    && routing.ActiveStrategies.Contains("v21-15minutes", StringComparer.OrdinalIgnoreCase)
+                    && routing.ActiveStrategies.Contains("v18-silver", StringComparer.OrdinalIgnoreCase);
+                bool checkedSymbolRoutesV18 = routing.ResolveProfileName("KUST", "v21-15minutes").Equals("v18-silver", StringComparison.OrdinalIgnoreCase);
+                bool disabledSymbolForcesExit = routing.ShouldForceExit("CEPO");
+                bool disabledFlatSkipped = routing.ShouldSkipFlatScannerEntry("CEPO", out string skipReason)
+                    && skipReason.Contains("SAILOR-068", StringComparison.OrdinalIgnoreCase);
+                bool uncheckedWhenActiveRowsSkipped = routing.ShouldSkipFlatScannerEntry("JOBY", out string inactiveReason)
+                    && inactiveReason.Contains("active strategy selections", StringComparison.OrdinalIgnoreCase);
+                bool requestContractAvailable = typeof(PaperRuntimeHostRequest).GetProperty(nameof(PaperRuntimeHostRequest.UiDesiredStateRoutingEnabled)) is not null;
+
+                bool pass = first.Accepted
+                    && second.Accepted
+                    && disabled.Accepted
+                    && twoStrategiesActive
+                    && checkedSymbolRoutesV18
+                    && disabledSymbolForcesExit
+                    && disabledFlatSkipped
+                    && uncheckedWhenActiveRowsSkipped
+                    && requestContractAvailable;
+
+                AddCheck(checks, first.Accepted && second.Accepted, "SAILOR-068 consumes the same SAILOR-067 desired-state store as SailorUI controls.");
+                AddCheck(checks, twoStrategiesActive, "SAILOR-068 routes at most two active paper strategies from checked UI rows.");
+                AddCheck(checks, checkedSymbolRoutesV18, "SAILOR-068 resolves per-symbol strategy profile names for conduct sessions.");
+                AddCheck(checks, disabledSymbolForcesExit, "SAILOR-068 unchecked open symbols are interpreted as go-out/force-exit desired state.");
+                AddCheck(checks, disabledFlatSkipped, "SAILOR-068 unchecked flat scanner symbols are held inactive and skipped.");
+                AddCheck(checks, uncheckedWhenActiveRowsSkipped, "SAILOR-068 when UI active rows exist, non-checked scanner symbols remain inactive.");
+                AddCheck(checks, requestContractAvailable, "SAILOR-068 PaperRuntimeHostRequest exposes UiDesiredStateRoutingEnabled for the conduct host.");
+                events.Add("command: paper sailor-ui --port 5101 --ui-controls --account DUN559573");
+                events.Add("conduct: paper run/harsh-test consumes state/paper/ui/desired_state_latest.json unless --no-ui-desired-state is supplied");
+                events.Add($"routing={routing.ToSummaryString()}");
+
+                return Result("sailor-ui-multistrategy-routing", pass, checks, events, warnings);
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"SAILOR-068 self-test exception: {ex.GetType().Name}: {ex.Message}");
+                AddCheck(checks, false, "SAILOR-068 multi-strategy desired-state routing self-test executed without exception.");
+                return Result("sailor-ui-multistrategy-routing", false, checks, events, warnings);
             }
             finally
             {

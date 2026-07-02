@@ -479,33 +479,7 @@ public sealed class SailorUiSnapshotProvider
     }
 
     private static string StrategyNameToProfileName(string strategy)
-    {
-        string normalized = strategy.Trim().ToLowerInvariant().Replace(" ", string.Empty, StringComparison.Ordinal);
-        return normalized switch
-        {
-            "sailor-trendvolume" => "sailor-trend-volume",
-            "sailor-conductv3" => "sailor-conduct-v3",
-            "simplemomentum" => "simple-momentum",
-            "harvester-conductv3" => "harvester-conduct-v3",
-            "harvester-conductv9" => "harvester-conduct-v9",
-            "v21-15minutes" => "v21-15minutes",
-            "v22-15minutes" => "v22-15minutes",
-            "v23-5minutes" => "v23-5minutes",
-            "v24-5minutes" => "v24-5minutes",
-            "v20-gen001-choppyshield" => "v20-gen001-choppyshield",
-            "v19-purplecloud" => "v19-purplecloud",
-            "v18-silver" => "v18-silver",
-            "v17-hybridflow" => "v17-hybridflow",
-            "v16-sqzbreakout" => "v16-sqzbreakout",
-            "v15-shortcap" => "v15-shortcap",
-            "v14-smallcap" => "v14-smallcap",
-            "v10-hybrid" => "v10-hybrid",
-            "v2-conduct" => "v2-conduct",
-            "v1-first" => "v1-first",
-            "conduct-v3" => "conduct-v3",
-            _ => normalized
-        };
-    }
+        => SailorUiStrategyProfileNames.Normalize(strategy);
 
     private static IReadOnlyList<SailorUiStrategyOption> BuiltInStrategyFallback()
     {

@@ -186,7 +186,7 @@ public sealed class SailorUiDesiredStateStore
         => string.IsNullOrWhiteSpace(symbol) ? string.Empty : symbol.Trim().ToUpperInvariant();
 
     public static string NormalizeStrategy(string strategy)
-        => string.IsNullOrWhiteSpace(strategy) ? string.Empty : strategy.Trim().ToLowerInvariant();
+        => SailorUiStrategyProfileNames.Normalize(strategy);
 
     private SailorUiDesiredStateSnapshot EmptySnapshot()
         => new(_mode.ToDisplayName(), _account, DateTimeOffset.MinValue, _maxActiveStrategies, Array.Empty<SailorUiDesiredStateRow>());

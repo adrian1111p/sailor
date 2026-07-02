@@ -4,6 +4,7 @@ using Sailor.App.Broker.Ibkr;
 using Sailor.App.Configuration;
 using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.TradeManagement;
+using Sailor.App.Runtime.Ui;
 using Sailor.App.Scanner.Runtime;
 
 namespace Sailor.App.Runtime.Paper;
@@ -143,7 +144,15 @@ public sealed class ScannerSlotManager
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         TradeLifecycleRegistrySnapshot registrySnapshot = _tradeRegistry.LoadSnapshot();
         DateOnly tradeDate = MarketTime.GetEasternDate(referenceTime);
-        SailorStrategyProfile profile = SailorStrategyProfile.FromName(request.RuntimeOptions.ProfileName, _settings);
+        SailorUiDesiredStateRoutingSnapshot desiredRouting = SailorUiDesiredStateRouter.Load(
+            request.UiDesiredStateRoutingEnabled,
+            request.RuntimeOptions.Mode,
+            request.Account,
+            request.UiDesiredStateMaxActiveStrategies);
+        foreach (string desiredWarning in desiredRouting.Warnings)
+        {
+            blockedSymbols.Add($"desired-state-warning:{desiredWarning}");
+        }
         int newSlotsCreated = 0;
 
         foreach (PaperScannerCandidate candidate in scannerResult.Candidates.OrderBy(candidate => candidate.Rank))
@@ -161,6 +170,12 @@ public sealed class ScannerSlotManager
                 continue;
             }
 
+            if (desiredRouting.ShouldSkipFlatScannerEntry(symbol, out string desiredSkipReason))
+            {
+                blockedSymbols.Add($"{symbol}:desired-state-inactive:{desiredSkipReason}");
+                continue;
+            }
+
             if (AvoidSameDayStoppedSymbols && WasStoppedForDay(registrySnapshot, symbol, tradeDate))
             {
                 blockedSymbols.Add($"{symbol}:stopped-for-day");
@@ -170,6 +185,8 @@ public sealed class ScannerSlotManager
             string scannerSlotId = CreateScannerSlotId(symbol, candidate.Rank, newSlotsCreated + 1);
             try
             {
+                string strategyProfileName = desiredRouting.ResolveProfileName(symbol, request.RuntimeOptions.ProfileName);
+                SailorStrategyProfile profile = SailorStrategyProfile.FromName(strategyProfileName, _settings);
                 PaperSymbolSession session = PaperSymbolSession.Create(
                     request.RuntimeOptions.Mode,
                     symbol,
@@ -202,9 +219,9 @@ public sealed class ScannerSlotManager
                     brokerAveragePrice: 0m,
                     timeframe: request.RuntimeOptions.Timeframe,
                     account: request.Account,
-                    reason: $"SAILOR-055 scanner replenishment created slot from scanner rank {candidate.Rank}.");
+                    reason: $"SAILOR-055 scanner replenishment created slot from scanner rank {candidate.Rank}. SAILOR-068 strategy={profile.Name}.");
 
-                _log($"scanner-slot-created: {symbol} slot={scannerSlotId} tradeLifecycle={lifecycle.TradeId} rank={candidate.Rank}");
+                _log($"scanner-slot-created: {symbol} slot={scannerSlotId} tradeLifecycle={lifecycle.TradeId} rank={candidate.Rank} strategy={profile.Name}");
             }
             catch (Exception ex)
             {

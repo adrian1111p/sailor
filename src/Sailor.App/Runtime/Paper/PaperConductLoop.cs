@@ -1,8 +1,10 @@
 using Sailor.App.Backtest;
 using Sailor.App.Broker.Orders;
 using Sailor.App.Broker.State;
+using Sailor.App.Configuration;
 using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.TradeManagement;
+using Sailor.App.Runtime.Ui;
 using Sailor.App.Strategy.Runtime;
 
 namespace Sailor.App.Runtime.Paper;
@@ -15,16 +17,22 @@ public sealed class PaperConductLoop
     private readonly ScannerSlotManager? _scannerSlotManager;
     private readonly SevereDisconnectRecoveryOrchestrator? _severeDisconnectRecoveryOrchestrator;
     private readonly ManualBrokerPositionRuntimeSync? _manualBrokerPositionRuntimeSync;
+    private readonly SailorAppSettings _settings;
+    private readonly StrategyLifecyclePolicyResolver _lifecyclePolicyResolver;
 
     public PaperConductLoop(
         SailorRuntimeMode mode,
         Action<string> log,
+        SailorAppSettings settings,
+        StrategyLifecyclePolicyResolver lifecyclePolicyResolver,
         TradeLifecycleRegistryStore? tradeRegistry = null,
         ScannerSlotManager? scannerSlotManager = null,
         SevereDisconnectRecoveryOrchestrator? severeDisconnectRecoveryOrchestrator = null,
         ManualBrokerPositionRuntimeSync? manualBrokerPositionRuntimeSync = null)
     {
         _log = log;
+        _settings = settings;
+        _lifecyclePolicyResolver = lifecyclePolicyResolver;
         _ledger = new OrderLedgerStore(mode);
         _tradeRegistry = tradeRegistry ?? new TradeLifecycleRegistryStore(mode);
         _scannerSlotManager = scannerSlotManager;
@@ -106,6 +114,10 @@ public sealed class PaperConductLoop
         {
             _log($"SAILOR-062 manual TWS broker workflow is active: scannerEntriesAllowed={request.ManualBrokerPositionsAllowScannerEntries} strategyManaged={request.ManualBrokerPositionsAreStrategyManaged} monitorEnabled={request.ManualBrokerPositionMonitorEnabled} monitorEverySeconds={request.ManualBrokerPositionMonitorIntervalSeconds} monitorClientId={request.ConnectionOptions.ClientId + Math.Max(1, request.ManualBrokerPositionMonitorClientIdOffset)}.");
         }
+        if (request.UiDesiredStateRoutingEnabled)
+        {
+            _log($"SAILOR-068 multi-strategy conduct routing is active: maxStrategies={request.UiDesiredStateMaxActiveStrategies}; unchecked open symbols are routed to exit/flatten, unchecked flat symbols are held inactive.");
+        }
 
         _log(healthMonitor.SafetyState.ToDisplayString());
         _log("");
@@ -136,6 +148,21 @@ public sealed class PaperConductLoop
 
             DateTimeOffset heartbeatUtc = DateTimeOffset.UtcNow;
             _log($"Iteration {iteration}/{request.MaxIterations} heartbeatUtc={heartbeatUtc:O} safety={healthMonitor.SafetyState.Mode}");
+
+            SailorUiDesiredStateRoutingSnapshot desiredRouting = SailorUiDesiredStateRouter.Load(
+                request.UiDesiredStateRoutingEnabled,
+                request.RuntimeOptions.Mode,
+                request.Account,
+                request.UiDesiredStateMaxActiveStrategies);
+            if (request.UiDesiredStateRoutingEnabled)
+            {
+                _log($"SAILOR-068 desired-state routing iteration={iteration} {desiredRouting.ToSummaryString()}");
+                foreach (string desiredWarning in desiredRouting.Warnings)
+                {
+                    warnings.Add(desiredWarning);
+                    _log($"WARN: {desiredWarning}");
+                }
+            }
 
             if (_manualBrokerPositionRuntimeSync is not null
                 && request.SendOrders
@@ -247,6 +274,20 @@ public sealed class PaperConductLoop
                 SailorStrategyPositionContext positionBefore = session.ToPositionContext();
                 SailorStrategyDecision decision;
 
+                if (request.UiDesiredStateRoutingEnabled)
+                {
+                    SailorUiDesiredStateRow? desiredRow = desiredRouting.FindRow(session.Symbol);
+                    if (desiredRow?.DesiredTradeEnabled == true)
+                    {
+                        string desiredProfile = desiredRouting.ResolveProfileName(session.Symbol, session.ProfileName);
+                        StrategyLifecyclePolicy nextPolicy = _lifecyclePolicyResolver.Resolve(desiredProfile, session.TradeOrigin);
+                        if (session.TrySwitchStrategyProfile(_settings, desiredProfile, nextPolicy, out string switchMessage))
+                        {
+                            _log(switchMessage);
+                        }
+                    }
+                }
+
                 DateTimeOffset decisionClock = request.SendOrders ? DateTimeOffset.UtcNow : frame.Time;
                 bool forceFlatDue = request.ForceFlatNow || MarketTime.GetEasternMinuteOfDay(decisionClock) >= request.RuntimeOptions.ForceFlatMinute;
                 PaperLiveBarCurrentness? liveBarCurrentness = request.SendOrders && request.BlockStaleHistoricalReplay
@@ -260,6 +301,13 @@ public sealed class PaperConductLoop
                     && session.ScannerSlotActive
                     && !session.LifecycleClosedForEntry
                     && !positionBefore.HasOpenPosition;
+                bool desiredForceExit = request.UiDesiredStateRoutingEnabled
+                    && desiredRouting.ShouldForceExit(session.Symbol)
+                    && positionBefore.HasOpenPosition;
+                string desiredSkipReason = string.Empty;
+                bool desiredSkipFlat = request.UiDesiredStateRoutingEnabled
+                    && !positionBefore.HasOpenPosition
+                    && desiredRouting.ShouldSkipFlatScannerEntry(session.Symbol, out desiredSkipReason);
 
                 if (forceFlatDue && positionBefore.HasOpenPosition)
                 {
@@ -268,6 +316,18 @@ public sealed class PaperConductLoop
                 else if (forceFlatDue)
                 {
                     decision = SailorStrategyDecision.Hold(session.Symbol, $"Force-flat window reached at runtimeClock={decisionClock:O}; no open position.");
+                }
+                else if (desiredForceExit)
+                {
+                    decision = CreateUiDesiredStateExitDecision(session);
+                }
+                else if (desiredSkipFlat)
+                {
+                    if (session.ScannerSlotActive && !session.LifecycleClosedForEntry)
+                    {
+                        session.MarkLifecycleClosedAfterStrategyExit(desiredSkipReason);
+                    }
+                    decision = SailorStrategyDecision.Hold(session.Symbol, desiredSkipReason);
                 }
                 else if (harshForceEntry)
                 {
@@ -351,7 +411,7 @@ public sealed class PaperConductLoop
                     }
                 }
 
-                SailorOrderIntent? intent = CreateOrderIntent(request, decision, positionBefore, bar.Close);
+                SailorOrderIntent? intent = CreateOrderIntent(request, decision, positionBefore, bar.Close, session.ProfileName);
                 if (intent is null)
                 {
                     string warning = $"{session.Symbol}: decision {decision.Type} did not produce a routable intent.";
@@ -430,8 +490,8 @@ public sealed class PaperConductLoop
                     harshLogWriter.AppendTrade(new HarshConductTradeEvent(
                         DateTimeOffset.UtcNow,
                         request.RuntimeOptions.ModeName,
-                        request.RuntimeOptions.ProfileName,
-                        request.RuntimeOptions.ProfileName,
+                        session.ProfileName,
+                        session.ProfileName,
                         request.HarshConductTestEnabled ? "S064-harsh-conduct" : "normal-conduct",
                         iteration,
                         session.Symbol,
@@ -682,6 +742,21 @@ public sealed class PaperConductLoop
             $"SAILOR-030 force-flat at/after {frameTime:O} ET minute threshold.");
     }
 
+    private static SailorStrategyDecision CreateUiDesiredStateExitDecision(PaperSymbolSession session)
+    {
+        SailorStrategyDecisionType type = session.PositionSide < 0
+            ? SailorStrategyDecisionType.ExitShort
+            : SailorStrategyDecisionType.ExitLong;
+
+        return new SailorStrategyDecision(
+            type,
+            session.Symbol,
+            session.AbsoluteQuantity,
+            SailorOrderType.Market,
+            null,
+            "SAILOR-068 SailorUI desired state unchecked this symbol; route existing paper position out/flat.");
+    }
+
     private static SailorStrategyDecision CreateHarshConductEntryDecision(PaperSymbolSession session, PaperRuntimeHostRequest request)
     {
         string side = string.IsNullOrWhiteSpace(session.ScannerSelectedSide)
@@ -704,7 +779,8 @@ public sealed class PaperConductLoop
         PaperRuntimeHostRequest request,
         SailorStrategyDecision decision,
         SailorStrategyPositionContext position,
-        decimal fallbackPrice)
+        decimal fallbackPrice,
+        string profileName)
     {
         SailorOrderSide side = decision.Type switch
         {
@@ -737,7 +813,7 @@ public sealed class PaperConductLoop
             decision.OrderType,
             quantity,
             limitPrice,
-            request.RuntimeOptions.ProfileName,
+            string.IsNullOrWhiteSpace(profileName) ? request.RuntimeOptions.ProfileName : profileName.Trim(),
             $"SAILOR-030/S034 {request.RuntimeOptions.ModeName} conduct loop: {decision.Reason}",
             request.DryRun,
             DateTimeOffset.Now,

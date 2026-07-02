@@ -9,7 +9,8 @@ public sealed record DynamicTradeSessionSeed(
     SailorTradeOrigin Origin,
     string? ScannerSlotId,
     string Reason,
-    string? ScannerSide = null)
+    string? ScannerSide = null,
+    string? StrategyProfileName = null)
 {
     public string NormalizedSymbol => string.IsNullOrWhiteSpace(Symbol) ? "UNKNOWN" : Symbol.Trim().ToUpperInvariant();
 
@@ -22,6 +23,7 @@ public sealed record DynamicTradeSessionSeed(
             ? "snapshot=n/a"
             : $"snapshotL1={Snapshot.HasL1} snapshotL2={Snapshot.HasL2}";
         string scannerSide = string.IsNullOrWhiteSpace(ScannerSide) ? "scannerSide=n/a" : $"scannerSide={ScannerSide.Trim().ToUpperInvariant()}";
-        return $"{NormalizedSymbol}: origin={Origin.ToDisplayName()} {slot} scannerTarget={CountsTowardScannerTarget} {scannerSide} {snapshot} reason={Reason}";
+        string strategy = string.IsNullOrWhiteSpace(StrategyProfileName) ? "strategy=runtime-default" : $"strategy={StrategyProfileName.Trim().ToLowerInvariant()}";
+        return $"{NormalizedSymbol}: origin={Origin.ToDisplayName()} {slot} scannerTarget={CountsTowardScannerTarget} {scannerSide} {strategy} {snapshot} reason={Reason}";
     }
 }
