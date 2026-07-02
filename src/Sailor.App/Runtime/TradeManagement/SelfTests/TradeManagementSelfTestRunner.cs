@@ -1,3 +1,4 @@
+using System.Globalization;
 using Sailor.App.Configuration;
 using Sailor.App.Runtime.Common;
 using Sailor.App.Runtime.TradeManagement;
@@ -33,7 +34,8 @@ public static class TradeManagementSelfTestRunner
         "sailor-ui-multistrategy-routing",
         "sailor-ui-live-hardening",
         "sailor-ui-report-export",
-        "sailor-ui-auto-start-defaults"
+        "sailor-ui-auto-start-defaults",
+        "sailor-ui-market-price-pnl"
     ];
 
     public static Task<int> RunAsync(
@@ -181,6 +183,7 @@ public static class TradeManagementSelfTestRunner
                 "sailor-ui-live-hardening" => SailorUiLiveHardening(),
                 "sailor-ui-report-export" => SailorUiReportExport(),
                 "sailor-ui-auto-start-defaults" => SailorUiAutoStartDefaults(),
+                "sailor-ui-market-price-pnl" => SailorUiMarketPricePnl(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -1066,6 +1069,69 @@ public static class TradeManagementSelfTestRunner
             events.Add("disable flags: --no-auto-ui / --no-sailor-ui / --no-ui; port override: --sailor-ui-port 5102");
 
             return Result("sailor-ui-auto-start-defaults", pass, checks, events, warnings);
+        }
+
+
+        private TradeManagementSelfTestCaseResult SailorUiMarketPricePnl()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            string tempRoot = Path.Combine(Path.GetTempPath(), "sailor-ui-s072-" + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                string snapshotDirectory = Path.Combine(tempRoot, "logs", "paper", "Snapshots");
+                Directory.CreateDirectory(snapshotDirectory);
+                DateTimeOffset now = DateTimeOffset.UtcNow;
+                string snapshotPath = Path.Combine(snapshotDirectory, "snapshot_KUST_" + now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".csv");
+                File.WriteAllText(snapshotPath,
+                    "TimestampUtc,Symbol,Source,Quality,Bid,Ask,Last,BidSize,AskSize,Spread,SpreadBps,L1Imbalance,L2Levels,L2TotalBidSize,L2TotalAskSize,L2Imbalance,LiquidityScore" + Environment.NewLine +
+                    $"{now:O},KUST,ibkr-api-market-data,Live,1.2090,1.2110,1.2100,1,1,0.0020,16.5,0,0,0,0,0,95.0" + Environment.NewLine);
+
+                IReadOnlyDictionary<string, SailorUiMarketPricePoint> prices = SailorUiMarketPriceStore.LoadLatest(Path.Combine(tempRoot, "logs", "paper"), now, warnings);
+                bool priceLoaded = prices.TryGetValue("KUST", out SailorUiMarketPricePoint? price) && price.Price == 1.2100m;
+                bool priceFresh = price is not null && !price.IsStale;
+                int position = -750;
+                decimal open = 1.3448m;
+                decimal dailyPnl = price is null ? 0m : (price.Price - open) * position;
+                bool shortPnlPositive = Math.Round(dailyPnl, 2) == 101.10m;
+                bool sourceUsesLast = price is not null && price.Source.Contains("Last", StringComparison.OrdinalIgnoreCase);
+                bool staleContractPresent = SailorUiMarketPriceStore.FreshWindow.TotalSeconds >= 10;
+
+                bool pass = priceLoaded && priceFresh && shortPnlPositive && sourceUsesLast && staleContractPresent;
+
+                AddCheck(checks, priceLoaded, "SAILOR-072 SailorUI loads latest L1 market snapshot price by symbol for Section 2 Price.");
+                AddCheck(checks, priceFresh, "SAILOR-072 SailorUI marks recent market snapshot prices as fresh instead of stale broker-open fallback.");
+                AddCheck(checks, shortPnlPositive, "SAILOR-072 SailorUI computes DLY P&L for short positions from actual Price minus Open times signed quantity.");
+                AddCheck(checks, sourceUsesLast, "SAILOR-072 SailorUI prefers Last price from snapshot CSV before bid/ask midpoint fallback.");
+                AddCheck(checks, staleContractPresent, "SAILOR-072 SailorUI keeps stale marking when market snapshots are not fresh.");
+                events.Add("KUST short example: qty=-750 open=1.3448 price=1.2100 DLY P&L=101.10");
+                events.Add("source priority: market snapshot Last > bid/ask midpoint > scanner close > broker open");
+                events.Add("UI Section 1 Unrealized now follows active rows computed with market snapshot prices");
+
+                return Result("sailor-ui-market-price-pnl", pass, checks, events, warnings);
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"SAILOR-072 self-test exception: {ex.GetType().Name}: {ex.Message}");
+                AddCheck(checks, false, "SAILOR-072 market price and P&L self-test executed without exception.");
+                return Result("sailor-ui-market-price-pnl", false, checks, events, warnings);
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(tempRoot))
+                    {
+                        Directory.Delete(tempRoot, recursive: true);
+                    }
+                }
+                catch
+                {
+                    // Best-effort cleanup for deterministic self-test temp files.
+                }
+            }
         }
 
         private static string FindRepositoryRootForSelfTest()

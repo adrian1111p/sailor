@@ -47,6 +47,7 @@ public sealed class SailorUiSnapshotProvider
         IReadOnlyDictionary<string, SailorUiScannerCandidate> scannerBySymbol = scannerCandidates
             .GroupBy(candidate => candidate.Symbol, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.OrderBy(candidate => candidate.Rank).First(), StringComparer.OrdinalIgnoreCase);
+        IReadOnlyDictionary<string, SailorUiMarketPricePoint> marketPriceBySymbol = SailorUiMarketPriceStore.LoadLatest(ModeLogRoot(), DateTimeOffset.UtcNow, warnings);
 
         TradeLifecycleRegistrySnapshot registry = new TradeLifecycleRegistryStore(_mode).LoadSnapshot();
         IReadOnlyList<BrokerMirrorPositionRow> brokerPositions = LoadBrokerPositions(warnings);
@@ -79,7 +80,12 @@ public sealed class SailorUiSnapshotProvider
                 : lifecycle?.BrokerAveragePrice > 0m
                     ? lifecycle.BrokerAveragePrice
                     : 0m;
-            decimal price = candidate?.Price > 0m ? candidate.Price : open;
+            marketPriceBySymbol.TryGetValue(symbol, out SailorUiMarketPricePoint? marketPrice);
+            decimal price = marketPrice?.Price > 0m
+                ? marketPrice.Price
+                : candidate?.Price > 0m
+                    ? candidate.Price
+                    : open;
             decimal marketValue = quantity * price;
             decimal buyValue = Math.Abs(quantity) * open;
             decimal dailyPnl = open > 0m && price > 0m && quantity != 0
@@ -90,7 +96,12 @@ public sealed class SailorUiSnapshotProvider
                 ? desiredRow!.SelectedStrategy
                 : lifecycle?.ProfileName ?? ResolveDefaultStrategy(strategies);
             bool tradeEnabled = desiredRow?.DesiredTradeEnabled ?? (lifecycle?.IsActive == true || quantity != 0);
-            bool stale = candidate?.PriceStale ?? true;
+            bool stale = marketPrice is not null ? marketPrice.IsStale : candidate?.PriceStale ?? true;
+            string priceSource = marketPrice is not null
+                ? marketPrice.Source
+                : candidate is null
+                    ? "broker-open-price"
+                    : "scanner-current-1m-decision-price";
             string status = lifecycle?.Status.ToDisplayName() ?? (quantity == 0 ? "flat" : "open");
             string reason = lifecycle?.LastReason ?? candidate?.Reason ?? "broker/scanner state loaded for read-only UI";
 
@@ -104,7 +115,7 @@ public sealed class SailorUiSnapshotProvider
                 open,
                 price,
                 stale,
-                candidate is null ? "broker-open-price" : "scanner-current-1m-decision-price",
+                priceSource,
                 tradeEnabled,
                 strategy,
                 strategies,
@@ -125,6 +136,9 @@ public sealed class SailorUiSnapshotProvider
             .Select(candidate =>
             {
                 SailorUiDesiredStateRow? desiredRow = desiredState.FindRow(candidate.Symbol);
+                marketPriceBySymbol.TryGetValue(candidate.Symbol, out SailorUiMarketPricePoint? marketPrice);
+                decimal displayPrice = marketPrice?.Price > 0m ? marketPrice.Price : candidate.Price;
+                bool priceStale = marketPrice is not null ? marketPrice.IsStale : candidate.PriceStale;
                 return new SailorUiScannerRow(
                     candidate.Rank,
                     candidate.Symbol,
@@ -132,8 +146,8 @@ public sealed class SailorUiSnapshotProvider
                     !string.IsNullOrWhiteSpace(desiredRow?.SelectedStrategy) ? desiredRow!.SelectedStrategy : ResolveDefaultStrategy(strategies),
                     strategies,
                     candidate.Volume,
-                    candidate.Price,
-                    candidate.PriceStale,
+                    displayPrice,
+                    priceStale,
                     candidate.SelectedSide,
                     candidate.FinalScore,
                     candidate.Status,
@@ -145,8 +159,8 @@ public sealed class SailorUiSnapshotProvider
         decimal unrealized = activeRows.Sum(row => row.DailyPnl);
         bool pnlStale = activeRows.Any(row => row.PriceStale) || scannerCandidates.Any(candidate => candidate.PriceStale);
         string staleReason = pnlStale
-            ? "one or more prices are stale or loaded from historical scanner files"
-            : "current scanner/decision prices available";
+            ? "one or more prices are stale, loaded from historical scanner files, or missing fresh market snapshots"
+            : "current market snapshot/scanner decision prices available";
 
         string statusText = warnings.Count == 0
             ? "OK"
