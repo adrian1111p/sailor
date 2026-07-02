@@ -49,12 +49,18 @@ public sealed class SailorUiServer
 
         var listener = new TcpListener(address, _port);
         listener.Start();
-        _log($"SAILOR-{(_controlsEnabled ? "067" : "066")} SailorUI monitor is listening at http://localhost:{_port}/");
+        string milestone = _controlsEnabled ? "067" : _mode == SailorRuntimeMode.Live ? "069" : "066";
+        _log($"SAILOR-{milestone} SailorUI monitor is listening at http://localhost:{_port}/");
         if (_controlsEnabled)
         {
             _log("SAILOR-067 paper desired-state controls are enabled. Browser actions persist desired state only; paper runtime safety gates remain server-side.");
             _log($"SAILOR-067 desired state JSON: {_desiredStateStore.LatestStatePath}");
             _log($"SAILOR-067 action CSV: {_desiredStateStore.ActionCsvPath}");
+        }
+        else if (_mode == SailorRuntimeMode.Live)
+        {
+            _log("SAILOR-069 live SailorUI hardening is active: UI is read-only, loopback-only, and cannot persist desired-state actions.");
+            _log(SailorUiLiveHardening.LiveControlsForbiddenReason);
         }
         else
         {
@@ -127,7 +133,9 @@ public sealed class SailorUiServer
                 mode = _mode.ToDisplayName(),
                 readOnly = !_controlsEnabled,
                 controlsEnabled = _controlsEnabled,
-                desiredStatePath = _desiredStateStore.LatestStatePath
+                controlMode = SailorUiLiveHardening.ResolveControlMode(_mode, _controlsEnabled),
+                liveUiLocked = _mode == SailorRuntimeMode.Live,
+                desiredStatePath = _mode == SailorRuntimeMode.Live ? "n/a" : _desiredStateStore.LatestStatePath
             }, JsonOptions);
             await WriteResponseAsync(stream, "200 OK", "application/json; charset=utf-8", health, cancellationToken).ConfigureAwait(false);
             return;
@@ -292,6 +300,7 @@ const fmt2 = new Intl.NumberFormat(undefined,{minimumFractionDigits:2,maximumFra
 const fmt4 = new Intl.NumberFormat(undefined,{minimumFractionDigits:2,maximumFractionDigits:4});
 const fmt0 = new Intl.NumberFormat(undefined,{maximumFractionDigits:0});
 let controlsEnabled = false;
+let currentMode = 'paper';
 let loading = false;
 function cls(v){ return v > 0 ? 'pos' : v < 0 ? 'neg' : 'zero'; }
 function n2(v){ return fmt2.format(Number(v || 0)); }
@@ -308,7 +317,11 @@ function strategySelect(symbol, selected, options){
     return `<option value="${esc(value)}"${sel}>${esc(label)}</option>`;
   }).join('');
   const disabled = controlsEnabled ? '' : ' disabled';
-  const title = controlsEnabled ? 'SAILOR-067 desired-state strategy control' : 'read-only; start paper sailor-ui with --ui-controls true';
+  const title = controlsEnabled
+    ? 'SAILOR-067 desired-state strategy control'
+    : String(currentMode).toLowerCase() === 'live'
+      ? 'SAILOR-069 live SailorUI is read-only locked; strategy changes are disabled'
+      : 'read-only; start paper sailor-ui with --ui-controls true';
   return `<select ${disabled} data-symbol="${esc(symbol)}" onchange="setStrategy(this)" title="${esc(title)}">${opts}</select>`;
 }
 function tradeBox(symbol, enabled){
@@ -344,6 +357,7 @@ async function load(force=false){
     const r = await fetch('/api/snapshot?ts=' + Date.now(), {cache:'no-store'});
     const s = await r.json();
     controlsEnabled = !!s.controlsEnabled;
+    currentMode = s.mode || 'paper';
     document.getElementById('dailyPnl').textContent = n2(s.pnl.dailyPnl);
     document.getElementById('dailyPnl').className = 'pnlValue ' + cls(Number(s.pnl.dailyPnl || 0));
     document.getElementById('unrealized').textContent = n2(s.pnl.unrealized);
@@ -352,7 +366,8 @@ async function load(force=false){
     document.getElementById('status').className = s.status === 'OK' ? 'statusOk' : 'statusWarn';
     document.getElementById('source').textContent = `${s.sourceSummary} ${s.pnl.stale ? '| STALE: ' + s.pnl.staleReason : ''}`;
     const badge = document.getElementById('controlBadge');
-    badge.textContent = controlsEnabled ? 'paper controls' : 'read-only';
+    const liveLocked = String(s.controlMode || '').toLowerCase() === 'live-read-only-locked' || String(s.mode || '').toLowerCase() === 'live';
+    badge.textContent = controlsEnabled ? 'paper controls' : liveLocked ? 'LIVE read-only lock' : 'read-only';
     badge.className = controlsEnabled ? 'badge badgeActive' : 'badge badgeWarn';
     document.getElementById('activeStrategies').textContent = (s.activeDesiredStrategies || []).length ? ` activeStrategies=${(s.activeDesiredStrategies || []).join(',')}` : '';
     document.getElementById('activeRows').innerHTML = (s.activeRows || []).map(row => `

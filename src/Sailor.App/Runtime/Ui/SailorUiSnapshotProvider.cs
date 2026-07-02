@@ -40,7 +40,9 @@ public sealed class SailorUiSnapshotProvider
     {
         var warnings = new List<string>();
         IReadOnlyList<SailorUiStrategyOption> strategies = LoadStrategyOptions(warnings);
-        SailorUiDesiredStateSnapshot desiredState = _desiredStateStore.LoadSnapshot();
+        SailorUiDesiredStateSnapshot desiredState = _mode == SailorRuntimeMode.Live
+            ? new SailorUiDesiredStateSnapshot(_mode.ToDisplayName(), _account, DateTimeOffset.MinValue, _maxActiveStrategies, Array.Empty<SailorUiDesiredStateRow>())
+            : _desiredStateStore.LoadSnapshot();
         IReadOnlyList<SailorUiScannerCandidate> scannerCandidates = LoadScannerCandidates(warnings);
         IReadOnlyDictionary<string, SailorUiScannerCandidate> scannerBySymbol = scannerCandidates
             .GroupBy(candidate => candidate.Symbol, StringComparer.OrdinalIgnoreCase)
@@ -150,6 +152,9 @@ public sealed class SailorUiSnapshotProvider
             ? "OK"
             : "WARN";
         string sourceSummary = $"scannerRows={scannerCandidates.Count} activeRows={activeRows.Count} strategies={strategies.Count} state={_mode.ToDisplayName()}";
+        IReadOnlyList<string> activeDesiredStrategies = _mode == SailorRuntimeMode.Live
+            ? Array.Empty<string>()
+            : desiredState.ActiveStrategies;
 
         return new SailorUiSnapshot(
             _mode.ToDisplayName(),
@@ -162,8 +167,8 @@ public sealed class SailorUiSnapshotProvider
             _maxActiveStrategies,
             SailorUiContract.DefaultRefreshMilliseconds,
             _controlsEnabled,
-            _controlsEnabled ? "paper-desired-state" : "read-only",
-            desiredState.ActiveStrategies,
+            SailorUiLiveHardening.ResolveControlMode(_mode, _controlsEnabled),
+            activeDesiredStrategies,
             desiredState.UpdatedUtc == DateTimeOffset.MinValue ? "n/a" : desiredState.UpdatedUtc.ToString("O", CultureInfo.InvariantCulture),
             sourceSummary,
             warnings.Distinct(StringComparer.OrdinalIgnoreCase).Take(12).ToArray());

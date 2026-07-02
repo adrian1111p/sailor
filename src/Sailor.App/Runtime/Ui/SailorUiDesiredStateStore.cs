@@ -130,6 +130,11 @@ public sealed class SailorUiDesiredStateStore
         string updatedBy,
         string userAgent)
     {
+        if (_mode != SailorRuntimeMode.Paper)
+        {
+            return new SailorUiDesiredStateUpdateResult(false, SailorUiLiveHardening.LiveControlsForbiddenReason, EmptySnapshot(), null);
+        }
+
         string symbol = NormalizeSymbol(update.Symbol);
         SailorUiDesiredStateSnapshot before = LoadSnapshot();
         if (string.IsNullOrWhiteSpace(symbol))

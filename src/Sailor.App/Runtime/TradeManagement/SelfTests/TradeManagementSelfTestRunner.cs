@@ -30,7 +30,8 @@ public static class TradeManagementSelfTestRunner
         "harsh-conduct-forced-entries",
         "sailor-ui-readonly",
         "sailor-ui-paper-controls",
-        "sailor-ui-multistrategy-routing"
+        "sailor-ui-multistrategy-routing",
+        "sailor-ui-live-hardening"
     ];
 
     public static Task<int> RunAsync(
@@ -175,6 +176,7 @@ public static class TradeManagementSelfTestRunner
                 "sailor-ui-readonly" => SailorUiReadOnly(),
                 "sailor-ui-paper-controls" => SailorUiPaperControls(),
                 "sailor-ui-multistrategy-routing" => SailorUiMultiStrategyRouting(),
+                "sailor-ui-live-hardening" => SailorUiLiveHardening(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -811,6 +813,98 @@ public static class TradeManagementSelfTestRunner
                 warnings.Add($"SAILOR-068 self-test exception: {ex.GetType().Name}: {ex.Message}");
                 AddCheck(checks, false, "SAILOR-068 multi-strategy desired-state routing self-test executed without exception.");
                 return Result("sailor-ui-multistrategy-routing", false, checks, events, warnings);
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(tempRoot))
+                    {
+                        Directory.Delete(tempRoot, recursive: true);
+                    }
+                }
+                catch
+                {
+                    // Best-effort cleanup for deterministic self-test temp files.
+                }
+            }
+        }
+
+
+        private TradeManagementSelfTestCaseResult SailorUiLiveHardening()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            string tempRoot = Path.Combine(Path.GetTempPath(), "sailor-ui-s069-" + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                var hostWarnings = new List<string>();
+                string hardenedHost = Sailor.App.Runtime.Ui.SailorUiLiveHardening.NormalizeHost(SailorRuntimeMode.Live, "0.0.0.0", hostWarnings);
+                bool loopbackOnly = hardenedHost.Equals("127.0.0.1", StringComparison.Ordinal)
+                    && hostWarnings.Any(warning => warning.Contains("SAILOR-069", StringComparison.OrdinalIgnoreCase));
+                bool liveControlsDisabled = !Sailor.App.Runtime.Ui.SailorUiLiveHardening.ResolveControlsEnabled(SailorRuntimeMode.Live, requestedControls: true, explicitReadOnly: false);
+                bool controlModeLocked = Sailor.App.Runtime.Ui.SailorUiLiveHardening.ResolveControlMode(SailorRuntimeMode.Live, controlsEnabled: false)
+                    .Equals("live-read-only-locked", StringComparison.OrdinalIgnoreCase);
+
+                var store = new SailorUiDesiredStateStore(
+                    SailorRuntimeMode.Live,
+                    account: "DU-LIVE-SELFTEST",
+                    maxActiveStrategies: SailorUiContract.DefaultMaxActiveStrategies,
+                    repositoryRoot: tempRoot);
+                SailorUiDesiredStateUpdateResult liveUpdate = store.TryUpdate(
+                    new SailorUiDesiredStateUpdate("TSLA", true, "v21-15minutes", "self-test"),
+                    "self-test",
+                    "self-test-agent");
+                bool liveUpdateRejected = !liveUpdate.Accepted
+                    && liveUpdate.RejectedReason.Contains("SAILOR-069", StringComparison.OrdinalIgnoreCase)
+                    && !File.Exists(store.LatestStatePath)
+                    && !File.Exists(store.ActionCsvPath);
+
+                SailorUiDesiredStateRoutingSnapshot routing = SailorUiDesiredStateRouter.Load(
+                    enabled: true,
+                    mode: SailorRuntimeMode.Live,
+                    account: "DU-LIVE-SELFTEST",
+                    maxActiveStrategies: SailorUiContract.DefaultMaxActiveStrategies,
+                    repositoryRoot: tempRoot);
+                bool liveRoutingDisabled = !routing.Enabled && routing.ActiveStrategies.Count == 0;
+
+                var snapshotProvider = new SailorUiSnapshotProvider(
+                    SailorRuntimeMode.Live,
+                    maxScannerRows: 1,
+                    maxActiveStrategies: SailorUiContract.DefaultMaxActiveStrategies,
+                    controlsEnabled: true,
+                    account: "DU-LIVE-SELFTEST");
+                SailorUiSnapshot snapshot = snapshotProvider.ReadSnapshot();
+                bool snapshotLocked = !snapshot.ControlsEnabled
+                    && snapshot.ControlMode.Equals("live-read-only-locked", StringComparison.OrdinalIgnoreCase)
+                    && snapshot.ActiveDesiredStrategies.Count == 0;
+
+                bool pass = loopbackOnly
+                    && liveControlsDisabled
+                    && controlModeLocked
+                    && liveUpdateRejected
+                    && liveRoutingDisabled
+                    && snapshotLocked;
+
+                AddCheck(checks, loopbackOnly, "SAILOR-069 forces live SailorUI to loopback-only host binding.");
+                AddCheck(checks, liveControlsDisabled, "SAILOR-069 ignores --ui-controls in live mode and keeps controls disabled.");
+                AddCheck(checks, controlModeLocked, "SAILOR-069 exposes live-read-only-locked control mode.");
+                AddCheck(checks, liveUpdateRejected, "SAILOR-069 rejects live desired-state updates without writing live state/action files.");
+                AddCheck(checks, liveRoutingDisabled, "SAILOR-069 keeps desired-state conduct routing disabled in live mode.");
+                AddCheck(checks, snapshotLocked, "SAILOR-069 live snapshot is read-only and exposes no active desired strategies.");
+                events.Add("command: live sailor-ui --port 5101 --read-only");
+                events.Add("command: live sailor-ui --port 5101 --ui-controls  # controls ignored by SAILOR-069");
+                events.Add($"hardenedHost={hardenedHost}; rejectedReason={liveUpdate.RejectedReason}");
+
+                return Result("sailor-ui-live-hardening", pass, checks, events, warnings);
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"SAILOR-069 self-test exception: {ex.GetType().Name}: {ex.Message}");
+                AddCheck(checks, false, "SAILOR-069 live UI hardening self-test executed without exception.");
+                return Result("sailor-ui-live-hardening", false, checks, events, warnings);
             }
             finally
             {

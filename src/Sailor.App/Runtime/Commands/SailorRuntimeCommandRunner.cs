@@ -1508,22 +1508,41 @@ public static class SailorRuntimeCommandRunner
     {
         _ = settings;
         int port = ReadIntOption(args, "--port", SailorUiContract.DefaultPort);
-        string host = ReadStringOption(args, "--host", "127.0.0.1");
+        string requestedHost = ReadStringOption(args, "--host", "127.0.0.1");
+        var hardeningWarnings = new List<string>();
+        string host = SailorUiLiveHardening.NormalizeHost(mode, requestedHost, hardeningWarnings);
         int maxRows = ReadIntOption(args, "--max-rows", SailorUiContract.DefaultScannerRows);
         int maxStrategies = ReadIntOption(args, "--max-strategies", SailorUiContract.DefaultMaxActiveStrategies);
         string? account = ReadOptionalStringOption(args, "--account");
         bool requestedControls = HasOption(args, "--ui-controls") || HasOption(args, "--controls");
-        bool readOnly = HasOption(args, "--read-only") || mode != SailorRuntimeMode.Paper || !requestedControls;
-        bool controlsEnabled = mode == SailorRuntimeMode.Paper && requestedControls && !readOnly;
-        string logFilePath = CreateRuntimeLogFilePath(mode, controlsEnabled ? "sailor_ui_controls" : "sailor_ui");
+        bool explicitReadOnly = HasOption(args, "--read-only");
+        bool controlsEnabled = SailorUiLiveHardening.ResolveControlsEnabled(mode, requestedControls, explicitReadOnly);
+        string controlMode = SailorUiLiveHardening.ResolveControlMode(mode, controlsEnabled);
+        string logAction = controlsEnabled
+            ? "sailor_ui_controls"
+            : mode == SailorRuntimeMode.Live
+                ? "sailor_ui_live_hardened"
+                : "sailor_ui";
+        string logFilePath = CreateRuntimeLogFilePath(mode, logAction);
 
         await using var writer = CreateWriter(logFilePath);
-        Log(writer, $"sailor {mode.ToDisplayName()} SailorUI {(controlsEnabled ? "paper desired-state controls" : "read-only monitor")} started");
-        Log(writer, $"mode={mode.ToDisplayName()} account={account ?? "n/a"} host={host} port={port} refreshMs={SailorUiContract.DefaultRefreshMilliseconds} maxRows={maxRows} maxStrategies={maxStrategies} readOnly={!controlsEnabled} controlsEnabled={controlsEnabled} sendOrders=False");
-        Log(writer, controlsEnabled ? "SAILOR-067 paper interactive desired-state controls." : "SAILOR-066 read-only SailorUI implementation.");
+        string startLabel = controlsEnabled
+            ? "paper desired-state controls"
+            : mode == SailorRuntimeMode.Live
+                ? "live read-only hardened monitor"
+                : "read-only monitor";
+        Log(writer, $"sailor {mode.ToDisplayName()} SailorUI {startLabel} started");
+        Log(writer, $"mode={mode.ToDisplayName()} account={account ?? "n/a"} host={host} requestedHost={requestedHost} port={port} refreshMs={SailorUiContract.DefaultRefreshMilliseconds} maxRows={maxRows} maxStrategies={maxStrategies} readOnly={!controlsEnabled} controlsEnabled={controlsEnabled} requestedControls={requestedControls} controlMode={controlMode} sendOrders=False");
         Log(writer, controlsEnabled
-            ? "Checkbox and strategy changes persist desired state only. The paper conduct runtime consumes desired state but broker/router safety gates remain authoritative."
-            : "It reads existing state/log files once per browser request and never sends orders or broker API requests.");
+            ? "SAILOR-067 paper interactive desired-state controls."
+            : mode == SailorRuntimeMode.Live
+                ? "SAILOR-069 live UI hardening."
+                : "SAILOR-066 read-only SailorUI implementation.");
+        Log(writer, SailorUiLiveHardening.DescribeStartup(mode, requestedControls, controlsEnabled));
+        foreach (string warning in hardeningWarnings)
+        {
+            Log(writer, $"WARN: {warning}");
+        }
         Log(writer, "Sections: P&L DAILY, active/today trades, and rest scanner symbols.");
         Log(writer, $"Open in browser: http://localhost:{port}/");
         Log(writer, $"Runtime log: {logFilePath}");
@@ -1546,7 +1565,11 @@ public static class SailorRuntimeCommandRunner
         finally
         {
             Console.CancelKeyPress -= handler;
-            Log(writer, controlsEnabled ? "SAILOR-067 SailorUI controls stopped." : "SAILOR-066 SailorUI stopped.");
+            Log(writer, controlsEnabled
+                ? "SAILOR-067 SailorUI controls stopped."
+                : mode == SailorRuntimeMode.Live
+                    ? "SAILOR-069 live-hardened SailorUI stopped."
+                    : "SAILOR-066 SailorUI stopped.");
         }
     }
 
@@ -3809,7 +3832,14 @@ public static class SailorRuntimeCommandRunner
         Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --send-orders --account DU123456 --wait-seconds 15");
         Console.WriteLine($"  sailor {name} harsh-test 1m v21-15minutes 10 --scan-file scan/data/scan_default.xlsx --scan-sheet Candidates --scanner-mode points-only --quantity 10 --max-symbols 145 --iterations 10 --cadence-seconds 60 --send-orders");
         Console.WriteLine($"  sailor {name} sailor-ui --port 5101");
-        Console.WriteLine($"  sailor {name} sailor-ui --port 5101 --ui-controls --account DU123456");
+        if (mode == SailorRuntimeMode.Paper)
+        {
+            Console.WriteLine($"  sailor {name} sailor-ui --port 5101 --ui-controls --account DU123456");
+        }
+        else
+        {
+            Console.WriteLine($"  sailor {name} sailor-ui --port 5101 --read-only");
+        }
         if (mode == SailorRuntimeMode.Live)
         {
             Console.WriteLine($"  sailor {name} run 1m v21-15minutes 1 TSLA --account DU123456 --max-notional 100 --confirm-live --operator-watching-tws");
