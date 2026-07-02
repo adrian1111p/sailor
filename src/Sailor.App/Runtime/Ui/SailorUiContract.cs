@@ -9,6 +9,7 @@ public static class SailorUiContract
     public const string SnapshotEndpoint = "/api/snapshot";
     public const string DesiredStateEndpoint = "/api/desired-state";
     public const string HealthEndpoint = "/api/health";
+    public const string ExportEndpoint = "/api/export";
 
     public static readonly IReadOnlyList<string> Section2Columns =
     [

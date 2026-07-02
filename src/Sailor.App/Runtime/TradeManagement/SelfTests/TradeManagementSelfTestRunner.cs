@@ -31,7 +31,8 @@ public static class TradeManagementSelfTestRunner
         "sailor-ui-readonly",
         "sailor-ui-paper-controls",
         "sailor-ui-multistrategy-routing",
-        "sailor-ui-live-hardening"
+        "sailor-ui-live-hardening",
+        "sailor-ui-report-export"
     ];
 
     public static Task<int> RunAsync(
@@ -177,6 +178,7 @@ public static class TradeManagementSelfTestRunner
                 "sailor-ui-paper-controls" => SailorUiPaperControls(),
                 "sailor-ui-multistrategy-routing" => SailorUiMultiStrategyRouting(),
                 "sailor-ui-live-hardening" => SailorUiLiveHardening(),
+                "sailor-ui-report-export" => SailorUiReportExport(),
                 _ => Fail(scenario, $"Unsupported scenario '{scenario}'.")
             };
 
@@ -920,6 +922,127 @@ public static class TradeManagementSelfTestRunner
                     // Best-effort cleanup for deterministic self-test temp files.
                 }
             }
+        }
+
+
+        private TradeManagementSelfTestCaseResult SailorUiReportExport()
+        {
+            var checks = new List<string>();
+            var events = new List<string>();
+            var warnings = new List<string>();
+            string tempRoot = Path.Combine(Path.GetTempPath(), "sailor-ui-s070-" + Guid.NewGuid().ToString("N"));
+
+            try
+            {
+                var strategies = new[]
+                {
+                    new SailorUiStrategyOption("V18-Silver", "v18-silver", "self-test", "self-test", 3602.72m, 54, 62.5m, 1.7m),
+                    new SailorUiStrategyOption("V21-15Minutes", "v21-15minutes", "self-test", "self-test", -75.22m, 12, 41.0m, 0.8m)
+                };
+                var snapshot = new SailorUiSnapshot(
+                    "paper",
+                    DateTimeOffset.UtcNow,
+                    "OK",
+                    new SailorUiPnlSection(67.25m, 42.25m, 25.00m, "USD", false, "current"),
+                    new[]
+                    {
+                        new SailorUiTradeRow(18.75m, 1, "LONGX", 100, 1250m, 1231.25m, 12.3125m, 12.5000m, false, "self-test", true, "v18-silver", strategies, 120_000, "open", "winning long test row"),
+                        new SailorUiTradeRow(-22.50m, 2, "SHORTX", -50, -610m, 632.50m, 12.6500m, 12.2000m, false, "self-test", true, "v21-15minutes", strategies, 80_000, "open", "short/loss test row")
+                    },
+                    new[]
+                    {
+                        new SailorUiScannerRow(3, "SCNLONG", true, "v18-silver", strategies, 50_000, 7.25m, false, "LONG", 88.5m, "Ready", "long scanner test row"),
+                        new SailorUiScannerRow(4, "SCNSHORT", false, "v21-15minutes", strategies, 60_000, 9.75m, true, "SHORT", 91.2m, "Ready", "short scanner test row")
+                    },
+                    strategies,
+                    SailorUiContract.DefaultMaxActiveStrategies,
+                    SailorUiContract.DefaultRefreshMilliseconds,
+                    true,
+                    "paper-controls",
+                    new[] { "v18-silver", "v21-15minutes" },
+                    DateTimeOffset.UtcNow.ToString("O"),
+                    "self-test",
+                    Array.Empty<string>());
+
+                SailorUiReportExportResult export = new SailorUiReportExporter(SailorRuntimeMode.Paper, tempRoot).Write(snapshot);
+                string csv = File.ReadAllText(export.CsvPath);
+                string html = File.ReadAllText(export.HtmlPath);
+                string latestCsv = Path.Combine(tempRoot, "logs", "paper", "SailorUI", "sailor_ui_report_latest.csv");
+                string latestHtml = Path.Combine(tempRoot, "logs", "paper", "SailorUI", "sailor_ui_report_latest.html");
+
+                bool endpointExists = SailorUiContract.ExportEndpoint.Equals("/api/export", StringComparison.OrdinalIgnoreCase);
+                bool filesWritten = File.Exists(export.CsvPath) && File.Exists(export.HtmlPath) && File.Exists(latestCsv) && File.Exists(latestHtml);
+                bool csvContainsSections = csv.Contains("ActiveToday", StringComparison.OrdinalIgnoreCase)
+                    && csv.Contains("ScannerRest", StringComparison.OrdinalIgnoreCase)
+                    && csv.Contains("SHORTX", StringComparison.OrdinalIgnoreCase)
+                    && csv.Contains("SCNLONG", StringComparison.OrdinalIgnoreCase);
+                bool htmlUsesTwsColors = html.Contains("class=\"win long\"", StringComparison.OrdinalIgnoreCase)
+                    && html.Contains("class=\"loss short\"", StringComparison.OrdinalIgnoreCase)
+                    && html.Contains("background:#04230c", StringComparison.OrdinalIgnoreCase)
+                    && html.Contains("background:#340707", StringComparison.OrdinalIgnoreCase);
+                bool exportSummaryValid = export.ActiveRows == 2
+                    && export.ScannerRows == 2
+                    && export.DailyPnl == 67.25m
+                    && export.Unrealized == 42.25m
+                    && export.Realized == 25.00m;
+                bool serverContainsExportButton = File.ReadAllText(Path.Combine(FindRepositoryRootForSelfTest(), "src", "Sailor.App", "Runtime", "Ui", "SailorUiServer.cs"))
+                    .Contains("exportReport()", StringComparison.OrdinalIgnoreCase);
+
+                bool pass = endpointExists
+                    && filesWritten
+                    && csvContainsSections
+                    && htmlUsesTwsColors
+                    && exportSummaryValid
+                    && serverContainsExportButton;
+
+                AddCheck(checks, endpointExists, "SAILOR-070 exposes /api/export for browser-triggered SailorUI report export.");
+                AddCheck(checks, filesWritten, "SAILOR-070 writes timestamped and latest CSV/HTML report files under logs/{Mode}/SailorUI.");
+                AddCheck(checks, csvContainsSections, "SAILOR-070 CSV export includes Section 2 active/today trades and Section 3 scanner symbols.");
+                AddCheck(checks, htmlUsesTwsColors, "SAILOR-070 HTML export and UI styling support green long/win and red short/loss backgrounds.");
+                AddCheck(checks, exportSummaryValid, "SAILOR-070 export summary preserves P&L and row counts.");
+                AddCheck(checks, serverContainsExportButton, "SAILOR-070 SailorUI browser page includes an export action.");
+                events.Add("command: paper sailor-ui --port 5101 --ui-controls --account DUN559573");
+                events.Add("browser: click export -> POST /api/export");
+                events.Add(export.ToSummaryString());
+
+                return Result("sailor-ui-report-export", pass, checks, events, warnings);
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"SAILOR-070 self-test exception: {ex.GetType().Name}: {ex.Message}");
+                AddCheck(checks, false, "SAILOR-070 report export self-test executed without exception.");
+                return Result("sailor-ui-report-export", false, checks, events, warnings);
+            }
+            finally
+            {
+                try
+                {
+                    if (Directory.Exists(tempRoot))
+                    {
+                        Directory.Delete(tempRoot, recursive: true);
+                    }
+                }
+                catch
+                {
+                    // Best-effort cleanup for deterministic self-test temp files.
+                }
+            }
+        }
+
+        private static string FindRepositoryRootForSelfTest()
+        {
+            DirectoryInfo? current = new(Directory.GetCurrentDirectory());
+            while (current is not null)
+            {
+                if (File.Exists(Path.Combine(current.FullName, "Sailor.sln")))
+                {
+                    return current.FullName;
+                }
+
+                current = current.Parent;
+            }
+
+            return Directory.GetCurrentDirectory();
         }
 
         private int CalculateReplenishmentRequest(
